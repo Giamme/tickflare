@@ -7,6 +7,8 @@ interface Waiting {
   hint: string | null;
   /** When the player started waiting, in epoch milliseconds. */
   since: number;
+  /** Place in the queue. Two players can arrive in the same millisecond; this still tells them apart. */
+  order: number;
 }
 
 /**
@@ -68,12 +70,17 @@ export abstract class Matchmaker<Env = Cloudflare.Env> extends DurableObject<Env
     for (const old of this.ctx.getWebSockets(player)) {
       old.close(CloseCode.Replaced, "replaced");
     }
+    const last = Math.max(
+      0,
+      ...this.ctx.getWebSockets().map((ws) => (ws.deserializeAttachment() as Waiting | null)?.order ?? 0),
+    );
     const pair = new WebSocketPair();
     this.ctx.acceptWebSocket(pair[1], [player]);
     pair[1].serializeAttachment({
       player,
       hint: request.headers.get(HINT_HEADER),
       since: Date.now(),
+      order: last + 1,
     } satisfies Waiting);
 
     await this.#match();
@@ -99,7 +106,7 @@ export abstract class Matchmaker<Env = Cloudflare.Env> extends DurableObject<Env
       .getWebSockets()
       .filter((ws) => ws.readyState === 1)
       .map((ws) => ({ ws, ...(ws.deserializeAttachment() as Waiting) }))
-      .sort((a, b) => a.since - b.since);
+      .sort((a, b) => a.order - b.order);
 
     while (queue.length >= this.matchSize) {
       if (!(await this.#start(queue.splice(0, this.matchSize)))) return;
