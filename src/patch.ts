@@ -67,7 +67,8 @@ function own(object: Record<string, unknown>, key: string): unknown {
   return Object.prototype.hasOwnProperty.call(object, key) ? object[key] : undefined;
 }
 
-function jsonEqual(a: unknown, b: unknown): boolean {
+/** Whether two values are the same as JSON. @internal */
+export function jsonEqual(a: unknown, b: unknown): boolean {
   if (a === b) return true;
   if (Array.isArray(a)) {
     if (!Array.isArray(b) || a.length !== b.length) return false;
@@ -80,6 +81,7 @@ function jsonEqual(a: unknown, b: unknown): boolean {
   return false;
 }
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
+/** @internal */
+export function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
