@@ -1,3 +1,4 @@
+import { applyPatch } from "../patch.js";
 import {
   PING,
   PONG,
@@ -12,7 +13,11 @@ export { CloseCode, type Player } from "../protocol.js";
 export type ConnectionStatus = "connecting" | "open" | "closed";
 
 export interface RoomClientOptions<View> {
-  /** The state changed, or was received for the first time after (re)connecting. */
+  /**
+   * The state changed, or was received for the first time after (re)connecting.
+   * Every call gets a new object; parts that did not change are the same
+   * objects as before, so they can be compared by reference.
+   */
   onState?(state: View, seq: number): void;
   /** Someone joined, dropped or came back. */
   onPresence?(players: Player[]): void;
@@ -45,6 +50,10 @@ const MAX_BACKOFF_MS = 5_000;
 export class RoomClient<View = unknown, Command = unknown> {
   state: View | undefined;
   seq = 0;
+  /** Simulation ticks the room has run. Stays 0 in event mode. */
+  tick = 0;
+  /** The room's simulation rate in ticks per second; 0 in event mode. */
+  tickRate = 0;
   /** This player's id, as the server knows it. Set once connected. */
   you: string | undefined;
   players: Player[] = [];
@@ -147,6 +156,8 @@ export class RoomClient<View = unknown, Command = unknown> {
         this.#attempt = 0;
         this.you = message.you;
         this.players = message.players;
+        this.tick = message.tick;
+        this.tickRate = message.tickRate;
         this.#startPing();
         this.#setStatus("open");
         this.#options.onPresence?.(this.players);
@@ -154,7 +165,12 @@ export class RoomClient<View = unknown, Command = unknown> {
         break;
       }
       case "state":
+        if (message.tick !== undefined) this.tick = message.tick;
         this.#setState(message.state, message.seq);
+        break;
+      case "patch":
+        this.tick = message.tick;
+        this.#setState(applyPatch(this.state as View, message.p), message.seq);
         break;
       case "presence":
         this.players = message.players;

@@ -5,6 +5,8 @@
  * literal string "ping" and the runtime answers "pong" without waking the room.
  */
 
+import type { Patch } from "./patch.js";
+
 export const PROTOCOL_VERSION = 1;
 
 export const PING = "ping";
@@ -23,10 +25,24 @@ export type ClientMessage<Command = unknown> =
   | { t: "leave"; id: number };
 
 export type ServerMessage<View = unknown> =
-  /** First frame on every connection, including reconnects. */
-  | { t: "welcome"; v: number; you: string; seq: number; state: View; players: Player[] }
-  /** The state changed. `seq` increases by one per change. */
-  | { t: "state"; seq: number; state: View }
+  /**
+   * First frame on every connection, including reconnects. `tickRate` is 0 in
+   * event mode, otherwise the simulation rate in ticks per second.
+   */
+  | {
+      t: "welcome";
+      v: number;
+      you: string;
+      seq: number;
+      tick: number;
+      tickRate: number;
+      state: View;
+      players: Player[];
+    }
+  /** The state changed. `seq` increases by one per change. `tick` is set while the room is ticking. */
+  | { t: "state"; seq: number; tick?: number; state: View }
+  /** The state changed while the room is ticking: only the difference from what this player last received. */
+  | { t: "patch"; seq: number; tick: number; p: Patch }
   /** Someone joined, dropped or came back. */
   | { t: "presence"; players: Player[] }
   /** The command or leave was applied. Sent after the `state` frame it caused. */

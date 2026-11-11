@@ -7,6 +7,7 @@ import {
   type Player,
   type ServerMessage,
 } from "../protocol.js";
+import { applyPatch, diff } from "../patch.js";
 import { PLAYER_HEADER } from "./gateway.js";
 
 /** Thrown by a hook to refuse a command, a join or a leave. The reason is sent to the client. */
@@ -40,17 +41,23 @@ interface Committed {
 }
 
 const SOCKET_OPEN = 1;
+/** Consecutive failed ticks after which the simulation pauses until the next event. */
+const MAX_FAILED_TICKS = 5;
 /** Close reasons are limited to 123 bytes by the WebSocket protocol. */
 const MAX_CLOSE_REASON = 120;
 
 /**
- * An authoritative game room in event mode: one Durable Object per room.
+ * An authoritative game room: one Durable Object per room.
  *
- * There is no tick loop. The room wakes when a player connects, sends a
- * command, drops or leaves, or when a timer fires. It runs the matching hook,
- * saves what changed and sends each connected player their view of the state.
- * Between events it hibernates while the WebSockets stay open, and rebuilds
- * itself from storage on the next event.
+ * Event mode (the default) has no tick loop. The room wakes when a player
+ * connects, sends a command, drops or leaves, or when a timer fires. It runs
+ * the matching hook, saves what changed and sends each connected player their
+ * view of the state. Between events it hibernates while the WebSockets stay
+ * open, and rebuilds itself from storage on the next event.
+ *
+ * State sync adds a simulation: set `tickRate` and the room calls `onTick`
+ * that many times a second while players are connected, sending each player
+ * only what changed in their view since the previous tick.
  *
  * Hooks are synchronous and change `this.state` in place. The state must be
  * JSON-serializable. A hook that calls `reject()` or throws leaves no trace:
@@ -62,6 +69,17 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
 
   /** Longest client frame accepted, in characters. */
   protected maxMessageLength = 16 * 1024;
+
+  /** Simulation rate in ticks per second. 0, the default, is event mode: no tick loop. */
+  protected tickRate = 0;
+
+  /**
+   * While the room is ticking, how often the state is written to storage, in
+   * milliseconds. It is also written whenever the simulation stops. A room
+   * that is torn down mid-simulation (a deploy, a crash) resumes from the
+   * last write.
+   */
+  protected saveIntervalMs = 5_000;
 
   /** The authoritative state. Change it only inside hooks. */
   protected state!: State;
@@ -76,6 +94,21 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
   #removed: { id: string; reason: string }[] = [];
   /** The timers changed, so the object's alarm has to be moved before the event ends. */
   #alarmStale = false;
+
+  /** Ticks run since the room was created. */
+  #tick = 0;
+  /** Set while the simulation is running. */
+  #loop: ReturnType<typeof setInterval> | undefined;
+  /** The committed state is newer than what is in storage. Only happens while ticking. */
+  #unsaved = false;
+  #ticksSinceSave = 0;
+  #failedTicks = 0;
+  /** onTick kept failing, so the loop stays off until something else happens. */
+  #stalled = false;
+  /** What each socket was last sent, to diff the next tick against. */
+  #baselines = new Map<WebSocket, unknown>();
+  /** The `seq` of the last tick broadcast. */
+  #sentSeq = -1;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -113,6 +146,22 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
   /** A timer set with `setTimer(name, ...)` ran out. */
   protected onTimer(_name: string): void {}
 
+  /**
+   * Advance the simulation by one step of `dt` seconds (always `1 / tickRate`).
+   * Runs `tickRate` times a second while the room is ticking.
+   */
+  protected onTick(_dt: number): void {}
+
+  /**
+   * Whether the simulation should be running. Checked after every event and
+   * every tick, so base it on the state, e.g. `this.state.phase === "playing"`.
+   * While it returns false the room behaves as in event mode and can
+   * hibernate. The room never ticks while nobody is connected.
+   */
+  protected shouldTick(): boolean {
+    return true;
+  }
+
   /** What `player` is allowed to see. Defaults to the whole state. */
   protected view(_player: Player): unknown {
     return this.state;
@@ -126,6 +175,11 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
   /** Number of state changes so far. */
   protected get seq(): number {
     return this.#seq;
+  }
+
+  /** Number of ticks run so far. */
+  protected get tick(): number {
+    return this.#tick;
   }
 
   /**
@@ -252,14 +306,21 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     }
     this.ctx.acceptWebSocket(server, [playerId]);
 
-    this.#send(server, {
+    const welcome = JSON.stringify({
       t: "welcome",
       v: PROTOCOL_VERSION,
       you: playerId,
       seq: this.#seq,
+      tick: this.#tick,
+      tickRate: this.tickRate,
       state: this.view(player),
       players: this.players,
-    });
+    } satisfies ServerMessage);
+    server.send(welcome);
+    if (this.tickRate > 0) {
+      // Remember exactly what this socket has, as a copy the simulation cannot touch.
+      this.#baselines.set(server, (JSON.parse(welcome) as { state: unknown }).state);
+    }
     this.#broadcastPresence(server);
 
     return new Response(null, { status: 101, webSocket: client });
@@ -324,8 +385,11 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     this.#broadcastPresence(ws);
   }
 
-  /** The end of every event: close the sockets of removed players and move the alarm. */
-  async #finish(): Promise<void> {
+  /**
+   * The end of every event and every tick: close the sockets of removed
+   * players, move the alarm, and start or stop the simulation.
+   */
+  async #finish(afterEvent = true): Promise<void> {
     if (this.#removed.length > 0) {
       for (const { id, reason } of this.#removed.splice(0)) {
         for (const ws of this.ctx.getWebSockets(id)) {
@@ -345,6 +409,50 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
       if (next === undefined) await this.ctx.storage.deleteAlarm();
       else await this.ctx.storage.setAlarm(next);
     }
+
+    if (afterEvent) this.#stalled = false;
+    this.#syncLoop();
+  }
+
+  /** Starts the simulation if it should be running and stops it if it should not. */
+  #syncLoop(): void {
+    let wanted = false;
+    if (this.tickRate > 0 && !this.#stalled && this.#seatedSockets().length > 0) {
+      try {
+        wanted = this.shouldTick() === true;
+      } catch (err) {
+        console.error("[tickflare] shouldTick() failed:", err);
+      }
+    }
+    if (wanted && this.#loop === undefined) {
+      this.#loop = setInterval(() => this.#runTick(), 1000 / this.tickRate);
+    } else if (!wanted && this.#loop !== undefined) {
+      clearInterval(this.#loop);
+      this.#loop = undefined;
+      // Send what changed since the last tick, or it would never go out.
+      this.#broadcastTick();
+      if (this.#unsaved) this.#writeRoom(this.#seq, this.#committed);
+      this.#baselines.clear();
+    }
+  }
+
+  #runTick(): void {
+    this.#tick += 1;
+    const ticked = this.#apply(() => this.onTick(1 / this.tickRate));
+    if (ticked.ok) {
+      this.#failedTicks = 0;
+    } else if (++this.#failedTicks >= MAX_FAILED_TICKS) {
+      console.error("[tickflare] onTick keeps failing; the simulation is paused until the next event");
+      this.#failedTicks = 0;
+      this.#stalled = true;
+    }
+
+    if (++this.#ticksSinceSave * 1000 >= this.saveIntervalMs * this.tickRate) {
+      this.#ticksSinceSave = 0;
+      if (this.#unsaved) this.#writeRoom(this.#seq, this.#committed);
+    }
+    this.#broadcastTick();
+    this.#finish(false).catch((err) => console.error("[tickflare] tick cleanup failed:", err));
   }
 
   /** Reads the room from storage the first time an event arrives after a (re)start. */
@@ -365,6 +473,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
          fire_at INTEGER NOT NULL
        )`,
     );
+    sql.exec("CREATE TABLE IF NOT EXISTS tickflare_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
     const room = sql
       .exec<StoredRoom>("SELECT seq, state, players FROM tickflare_room WHERE id = 1")
       .toArray()[0];
@@ -382,6 +491,10 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
         throw new TypeError("initialState() must return a JSON-serializable value");
       }
     }
+    const tick = sql
+      .exec<{ value: string }>("SELECT value FROM tickflare_meta WHERE key = 'tick'")
+      .toArray()[0];
+    this.#tick = tick ? Number(tick.value) : 0;
     this.#seq = room?.seq ?? 0;
     this.#committed = { state, roster: room?.players ?? "[]", timers: JSON.stringify(timers) };
     // Start from the JSON round-trip, so new and resumed rooms behave the same.
@@ -396,10 +509,28 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     this.#timers = new Map(JSON.parse(this.#committed.timers) as [string, number][]);
   }
 
+  #writeRoom(seq: number, committed: Committed): void {
+    const sql = this.ctx.storage.sql;
+    sql.exec(
+      "INSERT OR REPLACE INTO tickflare_room (id, seq, state, players) VALUES (1, ?, ?, ?)",
+      seq,
+      committed.state,
+      committed.roster,
+    );
+    if (this.tickRate > 0) {
+      sql.exec("INSERT OR REPLACE INTO tickflare_meta (key, value) VALUES ('tick', ?)", String(this.#tick));
+    }
+    this.#unsaved = false;
+  }
+
   /**
-   * Runs a hook, then commits what it changed: saves it and, if the state
-   * changed, broadcasts the state. If the hook fails, everything it touched is
-   * put back and the reason is returned.
+   * Runs a hook, then commits what it changed. If the hook fails, everything
+   * it touched is put back and the reason is returned.
+   *
+   * Outside the simulation a commit is saved and broadcast at once. While the
+   * room is ticking, state changes are only kept in memory here: the next tick
+   * sends them and the save interval writes them. Seats and timers are always
+   * saved at once.
    */
   #apply(hook: () => void): Outcome {
     const removedBefore = this.#removed.length;
@@ -419,17 +550,15 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
         timers: JSON.stringify([...this.#timers].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))),
       };
       const was = this.#committed;
+      const ticking = this.#loop !== undefined;
       const stateChanged = next.state !== was.state;
       const seq = stateChanged ? this.#seq + 1 : this.#seq;
 
       const sql = this.ctx.storage.sql;
-      if (stateChanged || next.roster !== was.roster) {
-        sql.exec(
-          "INSERT OR REPLACE INTO tickflare_room (id, seq, state, players) VALUES (1, ?, ?, ?)",
-          seq,
-          next.state,
-          next.roster,
-        );
+      if (next.roster !== was.roster || (stateChanged && !ticking)) {
+        this.#writeRoom(seq, next);
+      } else if (stateChanged) {
+        this.#unsaved = true;
       }
       if (next.timers !== was.timers) {
         sql.exec("DELETE FROM tickflare_timers");
@@ -441,7 +570,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
 
       this.#seq = seq;
       this.#committed = next;
-      if (stateChanged) this.#broadcastState();
+      if (stateChanged && !ticking) this.#broadcastState();
       return { ok: true };
     } catch (err) {
       this.#restore();
@@ -452,7 +581,10 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     }
   }
 
+  /** Sends everyone their whole view. Used outside the simulation. */
   #broadcastState(): void {
+    // Whatever the sockets were sent during an earlier simulation is now out of date.
+    this.#baselines.clear();
     // Without a custom view everyone gets the same frame, so build it once.
     const shared =
       this.view === Room.prototype.view
@@ -474,6 +606,65 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
         console.error(`[tickflare] could not send state to ${id}:`, err);
       }
     }
+  }
+
+  /** Sends everyone what changed in their view since the last tick. */
+  #broadcastTick(): void {
+    const custom = this.view !== Room.prototype.view;
+    const sockets = this.#seatedSockets();
+    if (
+      !custom &&
+      this.#seq === this.#sentSeq &&
+      sockets.every(({ ws }) => this.#baselines.has(ws))
+    ) {
+      return;
+    }
+
+    const baselines = new Map<WebSocket, unknown>();
+    // Without a custom view, sockets that were last sent the same snapshot share one diff,
+    // and everyone ends the tick on the same snapshot.
+    const shared = new Map<unknown, { frame?: string; next: unknown }>();
+    let common: { next: unknown } | undefined;
+
+    for (const { ws, id } of sockets) {
+      try {
+        const base = this.#baselines.get(ws);
+        let update = custom || base === undefined ? undefined : shared.get(base);
+        if (!update) {
+          update = this.#tickFrame(base, custom ? this.view({ id, connected: true }) : this.state);
+          if (!custom) {
+            if (common) update.next = common.next;
+            else common = update;
+            if (base !== undefined) shared.set(base, update);
+          }
+        }
+        if (update.frame) ws.send(update.frame);
+        baselines.set(ws, update.next);
+      } catch (err) {
+        // A view() that threw must not starve the other players.
+        console.error(`[tickflare] could not send the tick to ${id}:`, err);
+      }
+    }
+    this.#baselines = baselines;
+    this.#sentSeq = this.#seq;
+  }
+
+  /** The frame that brings a socket from `base` to `live`, and the snapshot it will then hold. */
+  #tickFrame(base: unknown, live: unknown): { frame?: string; next: unknown } {
+    const head = `"seq":${this.#seq},"tick":${this.#tick}`;
+    if (base !== undefined) {
+      const patch = diff(base, live);
+      if (patch === undefined) return { next: base };
+      if (patch !== null) {
+        const json = JSON.stringify(patch);
+        return {
+          frame: `{"t":"patch",${head},"p":${json}}`,
+          next: applyPatch(base, JSON.parse(json)),
+        };
+      }
+    }
+    const json = JSON.stringify(live) ?? "null";
+    return { frame: `{"t":"state",${head},"state":${json}}`, next: JSON.parse(json) };
   }
 
   #broadcastPresence(except?: WebSocket): void {

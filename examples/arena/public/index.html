@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Tickflare arena</title>
+    <link rel="icon" href="data:," />
+    <style>
+      :root {
+        color-scheme: light dark;
+        --line: light-dark(#d6d3cb, #45433e);
+        --muted: light-dark(#6b6962, #a3a096);
+        --floor: light-dark(#f6f4ee, #24231f);
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        font: 16px/1.5 system-ui, sans-serif;
+      }
+      main {
+        width: min(30rem, 100vw - 2rem);
+      }
+      h1 {
+        font-size: 1.5rem;
+        margin: 0;
+      }
+      #status {
+        margin: 0 0 0.75rem;
+        min-height: 1.5em;
+      }
+      canvas {
+        display: block;
+        width: 100%;
+        aspect-ratio: 1;
+        background: var(--floor);
+        border: 1px solid var(--line);
+        border-radius: 0.5rem;
+        touch-action: none;
+        cursor: crosshair;
+      }
+      #scores {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.25rem 1rem;
+        list-style: none;
+        margin: 0.75rem 0 0;
+        padding: 0;
+        min-height: 1.5em;
+      }
+      #scores li::before {
+        content: "";
+        display: inline-block;
+        width: 0.75em;
+        height: 0.75em;
+        margin-right: 0.35em;
+        border-radius: 50%;
+        background: var(--dot);
+      }
+      .hint {
+        color: var(--muted);
+        font-size: 0.875rem;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Arena</h1>
+      <p id="status" role="status">Connecting…</p>
+      <canvas id="arena" width="480" height="480" aria-label="Arena. Click to move your dot."></canvas>
+      <ul id="scores"></ul>
+      <p class="hint">
+        Click or tap to move and eat the pellets. Room <code id="room"></code>: open this page in
+        more tabs to add players. The room runs 20 ticks a second and sends each tab only what
+        changed.
+      </p>
+    </main>
+
+    <script type="module">
+      import { RoomClient } from "./tickflare-client.js";
+
+      const SIZE = 480;
+      const room = /^[A-Za-z0-9_-]{1,64}$/.test(location.hash.slice(1))
+        ? location.hash.slice(1)
+        : "lobby";
+      const player = playerId();
+
+      const statusEl = document.getElementById("status");
+      const scoresEl = document.getElementById("scores");
+      const canvas = document.getElementById("arena");
+      const ctx = canvas.getContext("2d");
+      document.getElementById("room").textContent = room;
+      addEventListener("hashchange", () => location.reload());
+
+      // Where each dot is drawn: it glides from where it was shown to where the room last put it.
+      const shown = new Map();
+      let closedBecause = "";
+
+      const scheme = location.protocol === "https:" ? "wss" : "ws";
+      const client = new RoomClient(`${scheme}://${location.host}/rooms/${room}?player=${player}`, {
+        onState(state) {
+          const now = performance.now();
+          for (const [id, dot] of Object.entries(state.dots)) {
+            const at = position(id, now) ?? { x: dot.x, y: dot.y };
+            shown.set(id, { fromX: at.x, fromY: at.y, toX: dot.x, toY: dot.y, since: now });
+          }
+          for (const id of shown.keys()) if (!state.dots[id]) shown.delete(id);
+          renderScores(state);
+        },
+        onStatus(status, detail) {
+          if (status === "closed") {
+            closedBecause =
+              detail?.code === 4001
+                ? "This arena is full."
+                : detail?.code === 4000
+                  ? "You opened this arena somewhere else."
+                  : detail?.code === 4003
+                    ? "You were away too long. Reload to join again."
+                    : "Disconnected.";
+          }
+          statusEl.textContent =
+            status === "open" ? "Connected." : status === "closed" ? closedBecause : "Connecting…";
+        },
+      });
+
+      canvas.addEventListener("pointerdown", (event) => {
+        const box = canvas.getBoundingClientRect();
+        const x = ((event.clientX - box.left) / box.width) * SIZE;
+        const y = ((event.clientY - box.top) / box.height) * SIZE;
+        client.send({ type: "move", x, y }).catch((error) => console.info(error.message));
+      });
+
+      function position(id, now) {
+        const dot = shown.get(id);
+        if (!dot) return undefined;
+        const tickMs = 1000 / (client.tickRate || 20);
+        const t = Math.min(1, (now - dot.since) / tickMs);
+        return { x: dot.fromX + (dot.toX - dot.fromX) * t, y: dot.fromY + (dot.toY - dot.fromY) * t };
+      }
+
+      function draw(now) {
+        const state = client.state;
+        ctx.clearRect(0, 0, SIZE, SIZE);
+        if (state) {
+          ctx.fillStyle = getComputedStyle(document.body).color;
+          for (const pellet of Object.values(state.pellets)) {
+            ctx.beginPath();
+            ctx.arc(pellet.x, pellet.y, 3, 0, Math.PI * 2);
+            ctx.fill();
+          }
+          for (const [id, dot] of Object.entries(state.dots)) {
+            const at = position(id, now) ?? dot;
+            ctx.fillStyle = `hsl(${dot.hue} 70% 50%)`;
+            ctx.beginPath();
+            ctx.arc(at.x, at.y, 10, 0, Math.PI * 2);
+            ctx.fill();
+            if (id === client.you) {
+              ctx.lineWidth = 2;
+              ctx.strokeStyle = getComputedStyle(document.body).color;
+              ctx.stroke();
+            }
+          }
+        }
+        requestAnimationFrame(draw);
+      }
+      requestAnimationFrame(draw);
+
+      function renderScores(state) {
+        const rows = Object.entries(state.dots).sort((a, b) => b[1].score - a[1].score);
+        scoresEl.replaceChildren(
+          ...rows.map(([id, dot]) => {
+            const item = document.createElement("li");
+            item.style.setProperty("--dot", `hsl(${dot.hue} 70% 50%)`);
+            item.textContent = `${id === client.you ? "You" : "Player"}: ${dot.score}`;
+            return item;
+          }),
+        );
+      }
+
+      function playerId() {
+        // Per tab, so every tab is a player. Survives a reload.
+        try {
+          const saved = sessionStorage.getItem("tickflare-player");
+          if (saved) return saved;
+          const fresh = crypto.randomUUID();
+          sessionStorage.setItem("tickflare-player", fresh);
+          return fresh;
+        } catch {
+          return crypto.randomUUID();
+        }
+      }
+    </script>
+  </body>
+</html>

@@ -119,15 +119,96 @@ export class TestRoom extends Room<TestState, TestCommand> {
   }
 }
 
+export interface TickState {
+  phase: "lobby" | "playing";
+  /** Goes up by one per tick. */
+  count: number;
+  /** Per player, `count` times their seat number. `view` hides everyone else's. */
+  secrets: Record<string, number>;
+  /** Never changes: there to show that patches leave it out. */
+  ballast: Record<string, string>;
+  bumps: number;
+  broken: boolean;
+  log: string[];
+}
+
+export type TickCommand =
+  | { type: "start" | "stop" | "bump" | "half" | "break" | "fix" }
+  | { type: "timer"; ms: number };
+
+/** A ticking room: 50 ticks a second while `phase` is "playing". */
+export class TickRoom extends Room<TickState, TickCommand> {
+  protected override tickRate = 50;
+  protected override saveIntervalMs = 100;
+
+  protected initialState(): TickState {
+    const ballast: Record<string, string> = {};
+    for (let i = 0; i < 50; i++) ballast[`k${i}`] = "x".repeat(20);
+    return { phase: "playing", count: 0, secrets: {}, ballast, bumps: 0, broken: false, log: [] };
+  }
+
+  protected parseCommand(raw: unknown): TickCommand {
+    return raw as TickCommand;
+  }
+
+  protected override shouldTick(): boolean {
+    return this.state.phase === "playing";
+  }
+
+  protected override onTick(): void {
+    if (this.state.broken) throw new TypeError("tick kaboom");
+    this.state.count += 1;
+    this.players.forEach((player, seat) => {
+      this.state.secrets[player.id] = this.state.count * (seat + 1);
+    });
+  }
+
+  protected onCommand(_player: Player, command: TickCommand): void {
+    switch (command.type) {
+      case "start":
+        this.state.phase = "playing";
+        return;
+      case "stop":
+        this.state.phase = "lobby";
+        return;
+      case "bump":
+        this.state.bumps += 1;
+        return;
+      case "half":
+        this.state.count += 1000;
+        reject("changed_my_mind");
+      case "break":
+        this.state.broken = true;
+        return;
+      case "fix":
+        this.state.broken = false;
+        return;
+      case "timer":
+        this.setTimer("bell", command.ms);
+        return;
+    }
+  }
+
+  protected override onTimer(name: string): void {
+    this.state.log.push(`timer:${name}`);
+  }
+
+  protected override view(player: Player): unknown {
+    const mine = this.state.secrets[player.id];
+    return { ...this.state, secrets: mine === undefined ? {} : { [player.id]: mine } };
+  }
+}
+
+function whoIs(request: Request): string | Response {
+  const player = new URL(request.url).searchParams.get("player");
+  return player ?? new Response("Who are you?", { status: 401 });
+}
+
 export default {
   async fetch(request, env): Promise<Response> {
-    const response = await routeToRoom(request, {
-      rooms: env.ROOMS,
-      authenticate(req) {
-        const player = new URL(req.url).searchParams.get("player");
-        return player ?? new Response("Who are you?", { status: 401 });
-      },
-    });
+    const response =
+      (await routeToRoom(request, { rooms: env.ROOMS, authenticate: whoIs })) ??
+      (await routeToRoom(request, { rooms: env.TICKS, prefix: "/ticks", authenticate: whoIs }));
     return response ?? new Response("Not found", { status: 404 });
   },
 } satisfies ExportedHandler<Cloudflare.Env>;
