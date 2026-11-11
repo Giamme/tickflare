@@ -72,6 +72,13 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
   protected maxMessageLength = 16 * 1024;
 
   /**
+   * How many frames a second one player may send, and also how many they may
+   * send in a single burst. Frames over the limit are refused with
+   * `rate_limited` and never reach `parseCommand`. `Infinity` turns it off.
+   */
+  protected maxCommandsPerSecond = 30;
+
+  /**
    * Where `finishMatch` announces a finished match. Set it to a Queue binding:
    * `protected override matchQueue = this.env.MATCHES;`
    */
@@ -120,6 +127,9 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
   #finished: { message: MatchResult; replay?: string }[] = [];
   /** There are finished matches in storage that still have to reach the queue. */
   #outboxPending = false;
+
+  /** Per player: how many frames they may still send, and when that was last topped up. */
+  #allowance = new Map<string, { left: number; at: number }>();
 
   /** Ticks run since the room was created. */
   #tick = 0;
@@ -495,16 +505,21 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     if (message.length > this.maxMessageLength) {
       return this.#send(ws, { t: "error", reason: "message_too_large" });
     }
+    const allowed = this.#spendAllowance(playerId);
 
     let parsed: unknown;
     try {
       parsed = JSON.parse(message);
     } catch {
-      return this.#send(ws, { t: "error", reason: "invalid_json" });
+      return this.#send(ws, { t: "error", reason: allowed ? "invalid_json" : "rate_limited" });
     }
     const frame = readFrame(parsed);
     if (!frame) {
-      return this.#send(ws, { t: "error", reason: "invalid_message" });
+      return this.#send(ws, { t: "error", reason: allowed ? "invalid_message" : "rate_limited" });
+    }
+    if (!allowed) {
+      // Answered by id, so the client's pending command settles instead of hanging.
+      return this.#send(ws, { t: "reject", id: frame.id, reason: "rate_limited" });
     }
 
     const player: Player = { id: playerId, connected: true };
@@ -539,8 +554,23 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     // A newer connection for the same player took over: nothing to announce.
     if (this.#isConnected(playerId, ws)) return;
 
+    this.#allowance.delete(playerId);
     this.#apply(() => this.onDisconnect({ id: playerId, connected: false }));
     this.#broadcastPresence(ws);
+  }
+
+  /** Token bucket: refills at `maxCommandsPerSecond`, holds at most one second's worth. */
+  #spendAllowance(playerId: string): boolean {
+    const rate = this.maxCommandsPerSecond;
+    if (!Number.isFinite(rate)) return true;
+    const now = Date.now();
+    const bucket = this.#allowance.get(playerId) ?? { left: rate, at: now };
+    bucket.left = Math.min(rate, bucket.left + ((now - bucket.at) / 1000) * rate);
+    bucket.at = now;
+    this.#allowance.set(playerId, bucket);
+    if (bucket.left < 1) return false;
+    bucket.left -= 1;
+    return true;
   }
 
   /**

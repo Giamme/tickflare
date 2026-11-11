@@ -2,7 +2,7 @@ import { evictDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it, vi } from "vitest";
 import { CloseCode } from "../src/protocol.js";
-import { connect, freshRoom, twoPlayers, upgrade } from "./helpers.js";
+import { connect, freshRoom, sleep, twoPlayers, upgrade } from "./helpers.js";
 
 describe("joining", () => {
   it("welcomes a new player with the state after onJoin", async () => {
@@ -95,6 +95,31 @@ describe("commands", () => {
 
     expect(await p1.next("reject")).toEqual({ t: "reject", id, reason: "internal_error" });
     error.mockRestore();
+  });
+
+  it("refuses frames beyond the per-player rate, then lets the player back in", async () => {
+    const { p1, p2 } = await twoPlayers();
+    const sent = 60;
+    for (let i = 0; i < sent; i++) p1.command({ type: "noop" });
+
+    let acks = 0;
+    const refusals = new Set<string>();
+    for (let i = 0; i < sent; i++) {
+      const frame = await p1.any();
+      if (frame.t === "ack") acks += 1;
+      else if (frame.t === "reject") refusals.add(frame.reason);
+    }
+    // The default allows 30 a second, and a burst of 30.
+    expect(acks).toBeGreaterThanOrEqual(30);
+    expect(acks).toBeLessThan(40);
+    expect([...refusals]).toEqual(["rate_limited"]);
+
+    // The limit is per player, and it refills.
+    p2.command({ type: "noop" });
+    await p2.next("ack");
+    await sleep(1100);
+    p1.command({ type: "noop" });
+    await p1.next("ack");
   });
 
   it("refuses what parseCommand does not accept", async () => {

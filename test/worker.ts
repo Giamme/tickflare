@@ -7,6 +7,7 @@ import {
   reject,
   routeToMatchmaker,
   routeToRoom,
+  tokenAuth,
   type Player,
 } from "../src/server/index.js";
 
@@ -270,6 +271,9 @@ export class TestMatchmaker extends Matchmaker {
   }
 }
 
+/** Signs the join tokens accepted under /secure. */
+export const TEST_SECRET = "test-secret-0123456789";
+
 function whoIs(request: Request): string | Response {
   const player = new URL(request.url).searchParams.get("player");
   return player ?? new Response("Who are you?", { status: 401 });
@@ -281,7 +285,12 @@ export default {
       (await routeToRoom(request, { rooms: env.ROOMS, authenticate: whoIs })) ??
       (await routeToRoom(request, { rooms: env.TICKS, prefix: "/ticks", authenticate: whoIs })) ??
       (await routeToRoom(request, { rooms: env.TURNS, prefix: "/turns", authenticate: whoIs })) ??
-      (await routeToMatchmaker(request, { matchmaker: env.MATCHMAKER, authenticate: whoIs }));
+      (await routeToMatchmaker(request, { matchmaker: env.MATCHMAKER, authenticate: whoIs })) ??
+      (await routeToRoom(request, {
+        rooms: env.ROOMS,
+        prefix: "/secure",
+        authenticate: tokenAuth({ secret: TEST_SECRET }),
+      }));
     if (response) return response;
     if (new URL(request.url).pathname === "/matches") {
       return Response.json(await recentMatches(env.DB, 100));

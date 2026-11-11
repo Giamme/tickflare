@@ -8,6 +8,8 @@ type Message = ServerMessage<TestState>;
 
 export interface Connection {
   ws: WebSocket;
+  /** The next frame from the room, whatever it is. */
+  any(): Promise<Message>;
   /** The next frame from the room, which must be of type `t`. */
   next<T extends Message["t"]>(t: T): Promise<Extract<Message, { t: T }>>;
   /** Send a command and return the id it was sent under. */
@@ -71,20 +73,23 @@ export async function connect(
   ws.accept();
   open.push(ws);
 
+  const any = async (): Promise<Message> =>
+    inbox.shift() ??
+    (await new Promise<Message>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("No frame within 2s")), 2000);
+      waiting.push((m) => {
+        clearTimeout(timer);
+        resolve(m);
+      });
+    }));
+
   let nextId = 1;
   return {
     ws,
     closed,
+    any,
     async next(t) {
-      const message =
-        inbox.shift() ??
-        (await new Promise<Message>((resolve, reject) => {
-          const timer = setTimeout(() => reject(new Error(`No "${t}" frame within 2s`)), 2000);
-          waiting.push((m) => {
-            clearTimeout(timer);
-            resolve(m);
-          });
-        }));
+      const message = await any();
       expect(message.t, JSON.stringify(message)).toBe(t);
       return message as Extract<Message, { t: typeof t }>;
     },

@@ -1,5 +1,7 @@
 # Tickflare
 
+[![CI](https://github.com/Giamme/tickflare/actions/workflows/ci.yml/badge.svg)](https://github.com/Giamme/tickflare/actions/workflows/ci.yml)
+
 A multiplayer game framework for Cloudflare Workers and Durable Objects.
 
 Each room is one Durable Object: a single-threaded, authoritative server with its own storage, placed on Cloudflare's network. Tickflare gives that object a game-shaped API, so you write the rules and it handles connections, persistence, reconnects and what each player is allowed to see.
@@ -109,6 +111,35 @@ await room.send({ type: "increment" }); // resolves once applied; rejects if ref
 await room.leave(); // gives up the seat; the room then closes the connection
 ```
 
+### Identity
+
+A room trusts the player id your `authenticate` function returns, so that function is where identity is decided. `tokenAuth` gives you one that accepts signed join tokens:
+
+```ts
+import { createJoinToken, routeToRoom, tokenAuth } from "tickflare";
+
+// 1. Your backend knows who the player is (a login, a session, a guest account) and signs a token.
+const token = await createJoinToken(env.JOIN_SECRET, { player: user.id, expiresIn: 3600 });
+
+// 2. The gateway only lets in connections that present a valid one.
+await routeToRoom(request, {
+  rooms: env.ROOMS,
+  authenticate: tokenAuth({ secret: env.JOIN_SECRET }),
+});
+```
+
+```ts
+// 3. The client connects with it.
+const room = new RoomClient(`wss://my-game.example/rooms/lobby?token=${token}`);
+```
+
+- A token is an HMAC-SHA256 signature over the player id and an expiry. It cannot be forged or changed without the secret, so a player cannot connect as someone else.
+- Pass `scope: roomId` to `createJoinToken` for a token that only opens one room or one matchmaking queue.
+- Keep the secret out of the repository: `wrangler secret put JOIN_SECRET`. It must be at least 16 characters.
+- The examples sign tokens for anonymous guests at `POST /api/guest` (see [`examples/shared`](examples/shared/src/guest.ts)). That is the place to plug in your own accounts.
+
+You can still write `authenticate` yourself, for example to read a session cookie. It receives the request and the room id, and returns the player id or a `Response` to refuse.
+
 ### Hooks
 
 | Hook | Called when | Notes |
@@ -126,7 +157,7 @@ await room.leave(); // gives up the seat; the room then closes the connection
 | `view(player)` | Before state is sent to a player | Return what that player may see. Defaults to everything |
 | `onHttp(request, player)` | A plain HTTP request to `{prefix}/{roomId}/...` | For reading from the room, e.g. a scoreboard. Already authenticated. Defaults to 404 |
 
-Options are plain fields you override: `maxPlayers` (default unlimited), `maxMessageLength` (default 16,384 characters), `tickRate` (default 0, which is event mode) and `saveIntervalMs` (default 5,000).
+Options are plain fields you override: `maxPlayers` (default unlimited), `maxMessageLength` (default 16,384 characters), `maxCommandsPerSecond` (default 30), `tickRate` (default 0, which is event mode) and `saveIntervalMs` (default 5,000).
 
 ### Inside a hook
 
@@ -380,12 +411,13 @@ export class Zone extends Room<State, Command, Env> {
 - **Seats and resume.** A player who drops keeps their seat until they leave or you remove them. When they reconnect they get the current state in the `welcome` frame; there is nothing to replay.
 - **One connection per player.** A newer connection for the same player closes the older one.
 - **Hidden information.** With `view()`, each player receives only their own projection of the state.
+- **Rate limiting.** Each player may send `maxCommandsPerSecond` frames a second, with a burst of the same size. Frames over the limit are refused with `rate_limited` before they reach your code.
 
 ### Rules for hooks
 
 - Hooks are **synchronous**. A hook that returns a promise is refused with `internal_error`, because the kernel cannot save or roll back work that finishes later.
 - `this.state` must be **JSON-serializable**. It is stored and sent as JSON.
-- Identity is **yours to establish**. Rooms trust the id your `authenticate` function returns. The example trusts a `?player=` query parameter so it can run without a login; do not ship that.
+- Identity is **established at the gateway**. Rooms trust the id your `authenticate` function returns; see [Identity](#identity).
 
 ## Protocol
 
@@ -415,7 +447,6 @@ Close codes: `4000` replaced by a newer connection, `4001` room full, `4002` ref
 - A ticking room keeps one tick per timer fire: if the object falls behind, the simulation slows down instead of catching up.
 - Lockstep clients load the whole recording on every (re)connect and simulate it from turn 1. There are no snapshots to shortcut a long match yet.
 - Lockstep hashes show that a desync happened and at which turn, not which player is wrong.
-- No rate limiting of commands.
 - Rooms of a split world do not see across their borders: a player near an edge does not see what is on the other side until they cross.
 - Handover is for rooms in event mode and state sync. A lockstep client does not follow a move.
 - The matchmaker only fills matches of a fixed size, first come first served: no skill ratings, no "start with fewer after a wait".
@@ -440,9 +471,26 @@ npm run dev:arena   # the arena example
 npm run dev:skirmish  # the skirmish example
 ```
 
+Every push runs the typecheck, the tests and the build in GitHub Actions ([`ci.yml`](.github/workflows/ci.yml)).
+
 The tests in [`test/`](test) drive a fixture Worker over real WebSockets, including eviction of the room while sockets are open and timers are pending.
 
 When you test your own rooms, `runDurableObjectAlarm(stub)` from `cloudflare:test` fires the room's earliest pending timer straight away, so you do not have to wait for the clock.
+
+## Deploying the examples
+
+[`deploy.yml`](.github/workflows/deploy.yml) deploys the examples to your Cloudflare account. Add two repository secrets under Settings → Secrets and variables → Actions:
+
+- `CLOUDFLARE_API_TOKEN`: an API token created from the "Edit Cloudflare Workers" template.
+- `CLOUDFLARE_ACCOUNT_ID`: the account to deploy to.
+
+Then run "Deploy examples" from the Actions tab. Each example becomes a Worker named `tickflare-<example>` on your `workers.dev` subdomain. The workflow replaces the development join-token secret from the config with one derived from your API token.
+
+To deploy by hand instead: `npx wrangler deploy --config examples/arena/wrangler.jsonc --var JOIN_SECRET:<a long random value>`.
+
+## Licence
+
+[MIT](LICENSE)
 
 ---
 

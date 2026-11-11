@@ -23,9 +23,10 @@ export interface RouteOptions {
   /**
    * Work out who is connecting. Return the player's id, or a `Response` to
    * refuse the connection. This is the only place identity is established:
-   * rooms trust whatever id this returns.
+   * rooms trust whatever id this returns. `roomId` is the room being opened.
+   * `tokenAuth` gives you one that checks signed join tokens.
    */
-  authenticate(request: Request): string | Response | Promise<string | Response>;
+  authenticate(request: Request, roomId: string): string | Response | Promise<string | Response>;
 }
 
 /**
@@ -52,7 +53,7 @@ export async function routeToRoom(
     return new Response("Expected a WebSocket upgrade", { status: 426 });
   }
 
-  const identity = await options.authenticate(request);
+  const identity = await options.authenticate(request, roomId);
   if (identity instanceof Response) return identity;
   if (!PLAYER_ID.test(identity)) {
     return new Response("Invalid player id", { status: 400 });
@@ -72,8 +73,8 @@ export interface MatchmakerRouteOptions {
   matchmaker: RoomNamespace;
   /** URL prefix queues live under. Defaults to `/matchmaking`. */
   prefix?: string;
-  /** Same contract as for rooms: the player's id, or a `Response` to refuse. */
-  authenticate(request: Request): string | Response | Promise<string | Response>;
+  /** Same contract as for rooms: the player's id, or a `Response` to refuse. `queue` is the queue name. */
+  authenticate(request: Request, queue: string): string | Response | Promise<string | Response>;
 }
 
 /**
@@ -96,7 +97,7 @@ export async function routeToMatchmaker(
   if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
     return new Response("Expected a WebSocket upgrade", { status: 426 });
   }
-  const identity = await options.authenticate(request);
+  const identity = await options.authenticate(request, queue);
   if (identity instanceof Response) return identity;
   if (!PLAYER_ID.test(identity)) {
     return new Response("Invalid player id", { status: 400 });

@@ -132,19 +132,19 @@
       const room = /^[A-Za-z0-9_-]{1,64}$/.test(location.hash.slice(1))
         ? location.hash.slice(1)
         : "lobby";
-      const player = playerId();
+      const { token } = await guest();
       const statusEl = document.getElementById("status");
       const canvas = document.getElementById("field");
       const ctx = canvas.getContext("2d");
       document.getElementById("room").textContent = room;
-      document.getElementById("replay").href = `/rooms/${room}/replay?player=${player}`;
+      document.getElementById("replay").href = `/rooms/${room}/replay?token=${token}`;
       addEventListener("hashchange", () => location.reload());
 
       let turnAt = performance.now();
       let desyncAt = null;
       let closedBecause = "";
       const scheme = location.protocol === "https:" ? "wss" : "ws";
-      const client = new LockstepClient(`${scheme}://${location.host}/rooms/${room}?player=${player}`, {
+      const client = new LockstepClient(`${scheme}://${location.host}/rooms/${room}?token=${token}`, {
         ...simulation,
         onTurn() {
           turnAt = performance.now();
@@ -196,17 +196,22 @@
       }
       requestAnimationFrame(draw);
 
-      function playerId() {
-        // Per tab, so every tab is a player. Survives a reload.
+      async function guest() {
+        // The server makes up a guest player and signs a token for it. Kept per tab, so every
+        // tab is its own player and a reload stays the same one.
         try {
-          const saved = sessionStorage.getItem("tickflare-player");
-          if (saved) return saved;
-          const fresh = crypto.randomUUID();
-          sessionStorage.setItem("tickflare-player", fresh);
-          return fresh;
+          const saved = JSON.parse(sessionStorage.getItem("tickflare-guest"));
+          if (saved?.token && saved.expiresAt > Date.now() + 60_000) return saved;
         } catch {
-          return crypto.randomUUID();
+          // No usable storage: ask again.
         }
+        const fresh = await (await fetch("/api/guest", { method: "POST" })).json();
+        try {
+          sessionStorage.setItem("tickflare-guest", JSON.stringify(fresh));
+        } catch {
+          // Works without it, as a new guest on every load.
+        }
+        return fresh;
       }
     </script>
   </body>

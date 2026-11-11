@@ -3,6 +3,12 @@
   "name": "tickflare-arena",
   "main": "src/index.ts",
   "compatibility_date": "2026-11-01",
+  // Signs join tokens. This value is for local development only. Before deploying, delete
+  // this block and run `wrangler secret put JOIN_SECRET` with a long random value, or pass
+  // `--var JOIN_SECRET:<value>` to `wrangler deploy` as the deploy workflow does.
+  "vars": {
+    "JOIN_SECRET": "local-development-only-secret"
+  },
   "assets": {
     "directory": "./public"
   },
