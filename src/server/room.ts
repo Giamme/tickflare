@@ -112,6 +112,10 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
   #roomId: string | null = null;
   /** If set, only these players may take a seat. Set by a matchmaker through `reserve`. */
   #invited: string[] | null = null;
+  /** Players the current hook is handing to another room, not yet committed. */
+  #moved: { player: string; to: string; carry: unknown }[] = [];
+  /** Seats changed in a way the remaining players have not been told about yet. */
+  #presenceStale = false;
   /** Finished matches announced by the current hook, not yet committed. */
   #finished: { message: MatchResult; replay?: string }[] = [];
   /** There are finished matches in storage that still have to reach the queue. */
@@ -247,6 +251,65 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
   }
 
   /**
+   * Hand a player over to another room, for worlds that are split across
+   * rooms. Their seat here is given up; once the other room has accepted
+   * them, their connection is closed with `CloseCode.Moved` and the client
+   * reconnects there by itself. `carry` (JSON) is delivered to the other
+   * room's `onArrive`: put in it whatever the player takes along. Remove
+   * their part of this room's state yourself. Call from inside a hook, and
+   * implement `handOver`.
+   */
+  protected movePlayer(playerId: string, toRoomId: string, carry?: unknown): void {
+    if (this.handOver === Room.prototype.handOver) {
+      throw new TypeError("movePlayer() needs handOver() to be implemented");
+    }
+    const seat = this.#roster.indexOf(playerId);
+    if (seat === -1) return;
+    this.#roster.splice(seat, 1);
+    this.#moved.push({ player: playerId, to: toRoomId, carry: carry ?? null });
+  }
+
+  /**
+   * Deliver a player to another room. Typically:
+   *
+   *     const rooms = this.env.ROOMS;
+   *     await rooms.get(rooms.idFromName(roomId)).arrive(roomId, playerId, carry);
+   *
+   * If it throws, the handover is tried again on this room's next event.
+   */
+  protected handOver(_roomId: string, _playerId: string, _carry: unknown): Promise<void> {
+    return Promise.reject(new TypeError("handOver() is not implemented"));
+  }
+
+  /**
+   * A player handed over by another room takes their seat. `carry` is what
+   * that room passed to `movePlayer`. Defaults to treating them as a new
+   * player.
+   */
+  protected onArrive(player: Player, _carry: unknown): void {
+    this.onJoin(player);
+  }
+
+  /**
+   * Called by another room, over RPC, to announce a player it is handing
+   * over. The player is admitted when they connect, even if the room is full
+   * or reserved.
+   */
+  async arrive(roomId: string, playerId: string, carry: unknown): Promise<void> {
+    this.#load();
+    const sql = this.ctx.storage.sql;
+    if (this.#roomId !== roomId) {
+      this.#roomId = roomId;
+      sql.exec("INSERT OR REPLACE INTO tickflare_meta (key, value) VALUES ('room', ?)", roomId);
+    }
+    sql.exec(
+      "INSERT OR REPLACE INTO tickflare_arrivals (player, carry) VALUES (?, ?)",
+      playerId,
+      JSON.stringify(carry ?? null),
+    );
+  }
+
+  /**
    * Called by a matchmaker, over RPC, before a match's players arrive. It
    * creates the room where the matchmaker asked for it and closes it to
    * everyone but `playerIds`.
@@ -364,19 +427,28 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     const player: Player = { id: playerId, connected: true };
 
     if (!this.#roster.includes(playerId)) {
-      if (this.#invited && !this.#invited.includes(playerId)) {
-        return refuse(client, server, CloseCode.JoinRejected, "not_invited");
-      }
-      if (this.#roster.length >= this.maxPlayers) {
-        return refuse(client, server, CloseCode.RoomFull, "room_full");
+      const sql = this.ctx.storage.sql;
+      const arrival = sql
+        .exec<{ carry: string }>("SELECT carry FROM tickflare_arrivals WHERE player = ?", playerId)
+        .toArray()[0];
+      // A player handed over by another room is always let in.
+      if (!arrival) {
+        if (this.#invited && !this.#invited.includes(playerId)) {
+          return refuse(client, server, CloseCode.JoinRejected, "not_invited");
+        }
+        if (this.#roster.length >= this.maxPlayers) {
+          return refuse(client, server, CloseCode.RoomFull, "room_full");
+        }
       }
       const joined = this.#apply(() => {
         this.#roster.push(playerId);
-        this.onJoin(player);
+        if (arrival) this.onArrive(player, JSON.parse(arrival.carry));
+        else this.onJoin(player);
       });
       if (!joined.ok) {
         return refuse(client, server, CloseCode.JoinRejected, joined.reason);
       }
+      if (arrival) sql.exec("DELETE FROM tickflare_arrivals WHERE player = ?", playerId);
     } else if (!this.#isConnected(playerId)) {
       this.#apply(() => this.onReconnect(player));
     }
@@ -476,7 +548,8 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
    * players, move the alarm, and start or stop the simulation.
    */
   async #finish(afterEvent = true): Promise<void> {
-    if (this.#removed.length > 0) {
+    if (this.#removed.length > 0 || this.#presenceStale) {
+      this.#presenceStale = false;
       for (const { id, reason } of this.#removed.splice(0)) {
         for (const ws of this.ctx.getWebSockets(id)) {
           try {
@@ -496,33 +569,52 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
       else await this.ctx.storage.setAlarm(next);
     }
 
-    if (this.#outboxPending) await this.#sendFinished();
+    if (this.#outboxPending) await this.#flushOutbox();
 
     if (afterEvent) this.#stalled = false;
     this.#syncLoop();
   }
 
-  /** Delivers finished matches that are waiting in storage: replay to R2, then the message to the queue. */
-  async #sendFinished(): Promise<void> {
+  /**
+   * Delivers what is waiting in storage. A finished match: replay to R2, then
+   * the message to the queue. A handover: the player to the other room, then
+   * their connection is closed so the client follows.
+   */
+  async #flushOutbox(): Promise<void> {
     const sql = this.ctx.storage.sql;
     const waiting = sql
       .exec<{ id: number; body: string }>("SELECT id, body FROM tickflare_outbox ORDER BY id")
       .toArray();
     try {
       for (const row of waiting) {
-        const { message, replay } = JSON.parse(row.body) as { message: MatchResult; replay?: string };
-        if (replay !== undefined && message.replayKey && this.matchBucket) {
-          await this.matchBucket.put(message.replayKey, replay, {
-            httpMetadata: { contentType: "application/json" },
-          });
+        const entry = JSON.parse(row.body) as
+          | { message: MatchResult; replay?: string; move?: undefined }
+          | { move: { player: string; to: string; carry: unknown } };
+        if (entry.move) {
+          const { player, to, carry } = entry.move;
+          await this.handOver(to, player, carry);
+          for (const ws of this.ctx.getWebSockets(player)) {
+            try {
+              ws.close(CloseCode.Moved, to);
+            } catch {
+              // Already closed.
+            }
+          }
+        } else {
+          const { message, replay } = entry;
+          if (replay !== undefined && message.replayKey && this.matchBucket) {
+            await this.matchBucket.put(message.replayKey, replay, {
+              httpMetadata: { contentType: "application/json" },
+            });
+          }
+          await this.matchQueue?.send(message);
         }
-        await this.matchQueue?.send(message);
         sql.exec("DELETE FROM tickflare_outbox WHERE id = ?", row.id);
       }
       this.#outboxPending = false;
     } catch (err) {
       // Left in storage; the next event tries again.
-      console.error("[tickflare] could not announce a finished match:", err);
+      console.error("[tickflare] could not deliver a finished match or a handover:", err);
     }
   }
 
@@ -587,6 +679,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     );
     sql.exec("CREATE TABLE IF NOT EXISTS tickflare_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
     sql.exec("CREATE TABLE IF NOT EXISTS tickflare_outbox (id INTEGER PRIMARY KEY AUTOINCREMENT, body TEXT NOT NULL)");
+    sql.exec("CREATE TABLE IF NOT EXISTS tickflare_arrivals (player TEXT PRIMARY KEY, carry TEXT NOT NULL)");
     const room = sql
       .exec<StoredRoom>("SELECT seq, state, players FROM tickflare_room WHERE id = 1")
       .toArray()[0];
@@ -654,6 +747,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
   #apply(hook: () => void): Outcome {
     const removedBefore = this.#removed.length;
     this.#finished.length = 0;
+    this.#moved.length = 0;
     try {
       const returned = hook() as unknown;
       if (isThenable(returned)) {
@@ -692,6 +786,11 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
         sql.exec("INSERT INTO tickflare_outbox (body) VALUES (?)", JSON.stringify(finished));
         this.#outboxPending = true;
       }
+      for (const move of this.#moved.splice(0)) {
+        sql.exec("INSERT INTO tickflare_outbox (body) VALUES (?)", JSON.stringify({ move }));
+        this.#outboxPending = true;
+        this.#presenceStale = true;
+      }
 
       this.#seq = seq;
       this.#committed = next;
@@ -701,6 +800,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
       this.#restore();
       this.#removed.length = removedBefore;
       this.#finished.length = 0;
+      this.#moved.length = 0;
       if (err instanceof Rejection) return { ok: false, reason: err.reason };
       console.error("[tickflare] room hook failed:", err);
       return { ok: false, reason: "internal_error" };

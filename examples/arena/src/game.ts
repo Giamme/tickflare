@@ -1,5 +1,5 @@
-// In your own project: import { Room, reject, type Player } from "tickflare";
-import { Room, reject, type Player } from "../../../src/server/index.js";
+// In your own project: import { Room, cellOf, reject, shardFor, type Player } from "tickflare";
+import { Room, cellOf, reject, shardFor, type Player } from "../../../src/server/index.js";
 
 /** The arena is a square this many units wide. */
 const SIZE = 480;
@@ -31,7 +31,25 @@ export interface ArenaState {
 
 export type ArenaCommand = { type: "move"; x: number; y: number };
 
-export class Arena extends Room<ArenaState, ArenaCommand> {
+/** What a dot takes along when it walks into the next arena. */
+interface Luggage {
+  score: number;
+  hue: number;
+  y: number;
+  /** The side of the new arena the dot comes in from. */
+  enters: "west" | "east";
+}
+
+interface Env {
+  ROOMS: DurableObjectNamespace<Arena>;
+}
+
+/**
+ * One arena of an endless row of them. Rooms are named like `lobby_3_0`:
+ * walk a dot into the east or west wall and it is handed to the arena next
+ * door, score and colour included.
+ */
+export class Arena extends Room<ArenaState, ArenaCommand, Env> {
   protected override tickRate = 20;
   protected override maxPlayers = 16;
 
@@ -44,8 +62,10 @@ export class Arena extends Room<ArenaState, ArenaCommand> {
     if (input?.type !== "move" || !Number.isFinite(input.x) || !Number.isFinite(input.y)) {
       return reject("invalid_command");
     }
-    const clamp = (n: number) => Math.min(SIZE, Math.max(0, n));
-    return { type: "move", x: clamp(input.x as number), y: clamp(input.y as number) };
+    const clamp = (n: number) => Math.round(Math.min(SIZE, Math.max(0, n)) * 10) / 10;
+    // A click close to the east or west wall means "go through it".
+    const x = clamp(input.x as number);
+    return { type: "move", x: x > SIZE - 8 ? SIZE : x < 8 ? 0 : x, y: clamp(input.y as number) };
   }
 
   protected override onJoin(player: Player): void {
@@ -91,6 +111,37 @@ export class Arena extends Room<ArenaState, ArenaCommand> {
     while (Object.keys(pellets).length < PELLETS) {
       pellets[`p${this.state.nextPellet++}`] = { x: spot(), y: spot() };
     }
+
+    // A dot standing against the east or west wall walks on into the next arena.
+    for (const [playerId, dot] of Object.entries(dots)) {
+      const step = dot.x >= SIZE ? 1 : dot.x <= 0 ? -1 : 0;
+      const next = step === 0 ? undefined : this.#neighbour(step);
+      if (!next) continue;
+      const luggage: Luggage = { score: dot.score, hue: dot.hue, y: dot.y, enters: step === 1 ? "west" : "east" };
+      delete dots[playerId];
+      this.clearTimer(`away:${playerId}`);
+      this.movePlayer(playerId, next, luggage);
+    }
+  }
+
+  protected override async handOver(roomId: string, playerId: string, carry: unknown): Promise<void> {
+    const rooms = this.env.ROOMS;
+    await rooms.get(rooms.idFromName(roomId)).arrive(roomId, playerId, carry);
+  }
+
+  protected override onArrive(player: Player, carry: unknown): void {
+    const { score, hue, y, enters } = carry as Luggage;
+    const x = enters === "west" ? 1 : SIZE - 1;
+    // Head a little way in, so the dot does not walk straight back out.
+    this.state.dots[player.id] = { x, y, tx: enters === "west" ? 60 : SIZE - 60, ty: y, score, hue };
+  }
+
+  /** The id of the arena `step` cells to the east, if this room is part of a row. */
+  #neighbour(step: number): string | undefined {
+    const world = this.roomId?.replace(/_-?\d+_-?\d+$/, "");
+    const cell = this.roomId && world ? cellOf(this.roomId, world) : undefined;
+    if (!cell || !world) return undefined;
+    return shardFor((cell.cx + step) * SIZE, cell.cy * SIZE, SIZE, world);
   }
 
   protected override onDisconnect(player: Player): void {

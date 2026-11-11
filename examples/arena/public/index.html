@@ -66,14 +66,15 @@
   </head>
   <body>
     <main>
-      <h1>Arena</h1>
+      <h1>Arena <span id="cell"></span></h1>
       <p id="status" role="status">Connecting…</p>
       <canvas id="arena" width="480" height="480" aria-label="Arena. Click to move your dot."></canvas>
       <ul id="scores"></ul>
       <p class="hint">
-        Click or tap to move and eat the pellets. Room <code id="room"></code>: open this page in
-        more tabs to add players. The room runs 20 ticks a second and sends each tab only what
-        changed.
+        Click or tap to move and eat the pellets. World <code id="room"></code>: open this page in
+        more tabs to add players. Each arena is its own room, running 20 ticks a second and
+        sending each tab only what changed. Walk into the left or right wall to cross into the
+        arena next door.
       </p>
     </main>
 
@@ -88,6 +89,7 @@
 
       const statusEl = document.getElementById("status");
       const scoresEl = document.getElementById("scores");
+      const cellEl = document.getElementById("cell");
       const canvas = document.getElementById("arena");
       const ctx = canvas.getContext("2d");
       document.getElementById("room").textContent = room;
@@ -98,7 +100,13 @@
       let closedBecause = "";
 
       const scheme = location.protocol === "https:" ? "wss" : "ws";
-      const client = new RoomClient(`${scheme}://${location.host}/rooms/${room}?player=${player}`, {
+      // The world is a row of arenas named <world>_<column>_0. Everyone starts in column 0.
+      showCell(`${room}_0_0`);
+      const client = new RoomClient(`${scheme}://${location.host}/rooms/${room}_0_0?player=${player}`, {
+        onMoved(roomId) {
+          shown.clear();
+          showCell(roomId);
+        },
         onState(state) {
           const now = performance.now();
           for (const [id, dot] of Object.entries(state.dots)) {
@@ -130,6 +138,12 @@
         const y = ((event.clientY - box.top) / box.height) * SIZE;
         client.send({ type: "move", x, y }).catch((error) => console.info(error.message));
       });
+
+      function showCell(roomId) {
+        cellEl.textContent = `(${roomId.slice(room.length + 1).split("_")[0]})`;
+      }
+      // For the console, and for the end-to-end test.
+      window.arena = { client };
 
       function position(id, now) {
         const dot = shown.get(id);

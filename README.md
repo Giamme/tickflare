@@ -6,7 +6,7 @@ Each room is one Durable Object: a single-threaded, authoritative server with it
 
 It is aimed at turn-based, card, co-op, .io-style and strategy games. Games that need UDP and rollback netcode (shooters, fighting games, sim racing) are out of scope.
 
-> **Status: early.** Steps 1 to 4 of the [roadmap](#roadmap) are in: the room kernel with event mode, state sync and lockstep, matchmaking, match results, and a minimal client. Expect the API to change. The package is not on npm yet.
+> **Status: early.** All five steps of the [roadmap](#roadmap) have a first version: the room kernel with event mode, state sync and lockstep, matchmaking, match results, handover between rooms, and a minimal client. Expect the API to change. The package is not on npm yet.
 
 ## Try the examples
 
@@ -19,7 +19,7 @@ npm run dev:skirmish  # skirmish: lockstep at 10 turns a second
 
 Open <http://localhost:8787> in two tabs and play tic-tac-toe against yourself. Reload a tab mid-game to see it resume. Each move is on a 30-second clock, and a tab that stays closed for 30 seconds loses its seat. The example lives in [`examples/tic-tac-toe`](examples/tic-tac-toe).
 
-The arena in [`examples/arena`](examples/arena) is a real-time room: click to move a dot and eat pellets, with every extra tab another player.
+The arena in [`examples/arena`](examples/arena) is a real-time room: click to move a dot and eat pellets, with every extra tab another player. It is also a row of rooms: walk into the left or right wall and the dot is handed to the arena next door.
 
 The skirmish in [`examples/skirmish`](examples/skirmish) is lockstep: each tab commands a squad and simulates the whole battle itself, and a fingerprint on screen shows the tabs agree.
 
@@ -333,6 +333,44 @@ export default {
 - `recordMatches` creates its table, `tickflare_matches`, on first use (the SQL is exported as `MATCHES_SCHEMA` if you prefer migrations), and stores a match once however often its message is delivered. `recentMatches(db, limit)` reads them back.
 - Do your own post-match work in the same consumer: ratings, achievements, notifications.
 
+### Worlds across rooms
+
+One room is one thread with a limited amount of memory, so a large world is cut into cells with a room each. A room hands a player to the next one when they cross a border.
+
+```ts
+import { Room, shardFor, type Player } from "tickflare";
+
+const CELL = 480;
+
+export class Zone extends Room<State, Command, Env> {
+  protected override onTick(dt: number): void {
+    // ...move things...
+    for (const [id, unit] of Object.entries(this.state.units)) {
+      const home = shardFor(unit.worldX, unit.worldY, CELL, "overworld");
+      if (home === this.roomId) continue;
+      delete this.state.units[id];
+      this.movePlayer(id, home, unit); // `unit` travels with the player
+    }
+  }
+
+  // How to reach another room. Runs after the hook has committed.
+  protected override async handOver(roomId: string, playerId: string, carry: unknown) {
+    const rooms = this.env.ZONES;
+    await rooms.get(rooms.idFromName(roomId)).arrive(roomId, playerId, carry);
+  }
+
+  // The other side: a player handed over by a neighbour takes their seat.
+  protected override onArrive(player: Player, carry: unknown): void {
+    this.state.units[player.id] = carry as Unit;
+  }
+}
+```
+
+- `shardFor(x, y, cellSize, world)` names the room for a position, e.g. `overworld_3_-2`. `cellOf(id, world)` reads the cell back.
+- `movePlayer` gives up the seat as part of the hook's commit. The handover itself is saved with the room and delivered afterwards; if the other room cannot be reached it is tried again on the next event. Only then is the connection closed, with `4004` and the new room's id.
+- The client follows by itself: it reconnects to the same URL with the new room id and calls `onMoved(roomId)`. From the game's point of view `onState` just starts delivering the new room's state.
+- A player who was handed over is always admitted, even if the room is full or reserved.
+
 ### What the kernel does for you
 
 - **Rollback.** If a hook calls `reject()` or throws, everything it did is undone: changes to `this.state`, timers it set or cleared, and players it removed.
@@ -368,7 +406,7 @@ JSON text frames over one WebSocket per player.
 
 A patch mirrors the shape of the state. For each key it holds a nested patch to go deeper, `[value]` to set the key, or `0` to delete it: `{ "units": { "u7": { "x": [12.5] }, "u3": 0 } }` moves one unit and removes another.
 
-Close codes: `4000` replaced by a newer connection, `4001` room full, `4002` refused by `onJoin`, `4003` the seat is gone (the close reason is `left`, or whatever was passed to `removePlayer`). The client does not reconnect after these.
+Close codes: `4000` replaced by a newer connection, `4001` room full, `4002` refused by `onJoin`, `4003` the seat is gone (the close reason is `left`, or whatever was passed to `removePlayer`). The client does not reconnect after these. `4004` means the player was handed to another room, named in the close reason; the client reconnects there.
 
 ## Not there yet
 
@@ -378,6 +416,8 @@ Close codes: `4000` replaced by a newer connection, `4001` room full, `4002` ref
 - Lockstep clients load the whole recording on every (re)connect and simulate it from turn 1. There are no snapshots to shortcut a long match yet.
 - Lockstep hashes show that a desync happened and at which turn, not which player is wrong.
 - No rate limiting of commands.
+- Rooms of a split world do not see across their borders: a player near an edge does not see what is on the other side until they cross.
+- Handover is for rooms in event mode and state sync. A lockstep client does not follow a move.
 - The matchmaker only fills matches of a fixed size, first come first served: no skill ratings, no "start with fewer after a wait".
 - Match history is one table keyed by match. There is no per-player index or leaderboard yet.
 
@@ -387,7 +427,7 @@ Close codes: `4000` replaced by a newer connection, `4001` room full, `4002` ref
 2. **State sync: a fixed-rate authoritative simulation with delta snapshots and visibility rules** (done)
 3. **Lockstep: the room orders inputs, clients simulate deterministically; replays from the input log** (done)
 4. **Matchmaking and the services around a room (D1, R2, Queues)** (done)
-5. World shards: large worlds split across rooms, with handoff between them
+5. **World shards: large worlds split across rooms, with handoff between them** (first version: handover and naming, no visibility across borders)
 
 ## Development
 

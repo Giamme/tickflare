@@ -1,5 +1,6 @@
 import { applyPatch } from "../patch.js";
 import {
+  CloseCode,
   PING,
   PONG,
   isFatalCloseCode,
@@ -33,6 +34,8 @@ export interface RoomClientOptions<View> {
   onPresence?(players: Player[]): void;
   /** `closed` carries the close code and reason, e.g. when the room was full or the seat was removed. */
   onStatus?(status: ConnectionStatus, detail?: { code: number; reason: string }): void;
+  /** The room handed this player to another room, and the client is now connecting there. */
+  onMoved?(roomId: string): void;
   /** Reconnect after an unexpected close. Defaults to true. */
   reconnect?: boolean;
   /** Keepalive interval in milliseconds. Defaults to 25 seconds; 0 disables it. */
@@ -69,7 +72,7 @@ export class RoomClient<View = unknown, Command = unknown> {
   players: Player[] = [];
   status: ConnectionStatus = "connecting";
 
-  readonly #url: string;
+  #url: string;
   readonly #options: RoomClientOptions<View>;
   #socket: WebSocket | undefined;
   #nextId = 1;
@@ -146,6 +149,16 @@ export class RoomClient<View = unknown, Command = unknown> {
         pending.reject(new CommandRejected("disconnected"));
       }
       this.#pending.clear();
+
+      if (event.code === CloseCode.Moved && event.reason && !this.#stopped) {
+        // Handed over to another room: same URL, with that room's id as the last path segment.
+        const next = new URL(this.#url);
+        next.pathname = next.pathname.replace(/[^/]+\/?$/, event.reason);
+        this.#url = next.toString();
+        this.#options.onMoved?.(event.reason);
+        this.#open();
+        return;
+      }
 
       const retry =
         !this.#stopped && this.#options.reconnect !== false && !isFatalCloseCode(event.code);

@@ -62,6 +62,11 @@ export const CloseCode = {
   JoinRejected: 4002,
   /** The player no longer has a seat: they left, or the room removed them. The close reason says which. */
   Removed: 4003,
+  /**
+   * The room handed the player over to another room; the close reason is that
+   * room's id. The client reconnects there by itself.
+   */
+  Moved: 4004,
 } as const;
 
 /** Sent by a matchmaker to every player of a match it has just put together. */

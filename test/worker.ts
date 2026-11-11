@@ -34,12 +34,14 @@ export type TestCommand =
   | { type: "kickThenReject"; id: string }
   | { type: "lock" }
   | { type: "finish" }
-  | { type: "finishThenReject" };
+  | { type: "finishThenReject" }
+  | { type: "move"; to: string; gold: number }
+  | { type: "moveThenReject"; to: string };
 
 const COMMANDS = [
   "add", "secret", "noop", "half", "boom", "async",
   "timer", "timerThenReject", "cancel", "kick", "kickThenReject", "lock",
-  "finish", "finishThenReject",
+  "finish", "finishThenReject", "move", "moveThenReject",
 ];
 
 /** A room that exercises every kernel feature; not a game. */
@@ -130,7 +132,22 @@ export class TestRoom extends Room<TestState, TestCommand> {
       case "finishThenReject":
         this.finishMatch({ winner: player.id });
         reject("changed_my_mind");
+      case "move":
+        this.movePlayer(player.id, command.to, { from: this.roomId, gold: command.gold });
+        return;
+      case "moveThenReject":
+        this.movePlayer(player.id, command.to);
+        reject("changed_my_mind");
     }
+  }
+
+  protected override async handOver(roomId: string, playerId: string, carry: unknown): Promise<void> {
+    const rooms = this.env.ROOMS;
+    await rooms.get(rooms.idFromName(roomId)).arrive(roomId, playerId, carry);
+  }
+
+  protected override onArrive(player: Player, carry: unknown): void {
+    this.state.log.push(`arrive:${player.id}:${JSON.stringify(carry)}`);
   }
 
   protected override view(player: Player): unknown {

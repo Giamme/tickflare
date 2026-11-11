@@ -9,6 +9,7 @@ export {
   type TurnEntry,
 } from "../lockstep.js";
 export { Matchmaker } from "./matchmaker.js";
+export { cellOf, shardFor } from "../world.js";
 export { MATCHES_SCHEMA, recentMatches, recordMatches, type MatchRecord } from "./matches.js";
 export {
   locationHintFor,
