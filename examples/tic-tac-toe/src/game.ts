@@ -5,13 +5,20 @@ export type Mark = "X" | "O";
 
 export interface TicTacToeState {
   board: (Mark | null)[];
-  /** Player id to mark. The first player to join is X. */
+  /** Player id to mark. */
   marks: Record<string, Mark>;
   turn: Mark;
   winner: Mark | "draw" | null;
+  /** When the player on turn runs out of time, in epoch milliseconds. Null while no clock runs. */
+  turnEndsAt: number | null;
 }
 
 export type TicTacToeCommand = { type: "place"; cell: number } | { type: "rematch" };
+
+/** Time to make a move before the other player wins. */
+const TURN_MS = 30_000;
+/** How long a disconnected player keeps their seat. */
+const AWAY_MS = 30_000;
 
 const LINES = [
   [0, 1, 2], [3, 4, 5], [6, 7, 8],
@@ -23,7 +30,13 @@ export class TicTacToe extends Room<TicTacToeState, TicTacToeCommand> {
   protected override maxPlayers = 2;
 
   protected initialState(): TicTacToeState {
-    return { board: Array<Mark | null>(9).fill(null), marks: {}, turn: "X", winner: null };
+    return {
+      board: Array<Mark | null>(9).fill(null),
+      marks: {},
+      turn: "X",
+      winner: null,
+      turnEndsAt: null,
+    };
   }
 
   protected parseCommand(raw: unknown): TicTacToeCommand {
@@ -37,23 +50,24 @@ export class TicTacToe extends Room<TicTacToeState, TicTacToeCommand> {
   }
 
   protected override onJoin(player: Player): void {
-    this.state.marks[player.id] = Object.keys(this.state.marks).length === 0 ? "X" : "O";
+    const state = this.state;
+    state.marks[player.id] = Object.values(state.marks).includes("X") ? "O" : "X";
+    if (Object.keys(state.marks).length === 2) this.#startClock();
   }
 
   protected onCommand(player: Player, command: TicTacToeCommand): void {
     const state = this.state;
     const mark = state.marks[player.id];
     if (!mark) reject("not_seated");
+    if (Object.keys(state.marks).length < 2) reject("waiting_for_opponent");
 
     if (command.type === "rematch") {
       if (!state.winner) reject("game_in_progress");
-      state.board.fill(null);
-      state.turn = "X";
-      state.winner = null;
+      this.#resetBoard();
+      this.#startClock();
       return;
     }
 
-    if (Object.keys(state.marks).length < 2) reject("waiting_for_opponent");
     if (state.winner) reject("game_over");
     if (state.turn !== mark) reject("not_your_turn");
     if (state.board[command.cell]) reject("cell_taken");
@@ -61,10 +75,61 @@ export class TicTacToe extends Room<TicTacToeState, TicTacToeCommand> {
     state.board[command.cell] = mark;
     if (LINES.some((line) => line.every((cell) => state.board[cell] === mark))) {
       state.winner = mark;
+      this.#stopClock();
     } else if (state.board.every(Boolean)) {
       state.winner = "draw";
+      this.#stopClock();
     } else {
       state.turn = mark === "X" ? "O" : "X";
+      this.#startClock();
     }
+  }
+
+  // A player who drops keeps their seat for a while, then loses it.
+  protected override onDisconnect(player: Player): void {
+    this.setTimer(`away:${player.id}`, AWAY_MS);
+  }
+
+  protected override onReconnect(player: Player): void {
+    this.clearTimer(`away:${player.id}`);
+  }
+
+  protected override onLeave(player: Player): void {
+    this.#vacate(player.id);
+  }
+
+  protected override onTimer(name: string): void {
+    if (name === "turn") {
+      // Whoever was on the clock ran out of time.
+      this.state.winner = this.state.turn === "X" ? "O" : "X";
+      this.state.turnEndsAt = null;
+    } else if (name.startsWith("away:")) {
+      const playerId = name.slice("away:".length);
+      this.#vacate(playerId);
+      this.removePlayer(playerId, "away");
+    }
+  }
+
+  /** Frees a player's mark and puts the table back to "waiting for an opponent". */
+  #vacate(playerId: string): void {
+    delete this.state.marks[playerId];
+    this.clearTimer(`away:${playerId}`);
+    this.#resetBoard();
+    this.#stopClock();
+  }
+
+  #resetBoard(): void {
+    this.state.board.fill(null);
+    this.state.turn = "X";
+    this.state.winner = null;
+  }
+
+  #startClock(): void {
+    this.state.turnEndsAt = this.setTimer("turn", TURN_MS);
+  }
+
+  #stopClock(): void {
+    this.clearTimer("turn");
+    this.state.turnEndsAt = null;
   }
 }

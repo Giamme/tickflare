@@ -16,12 +16,11 @@ export interface Player {
   connected: boolean;
 }
 
-export type ClientMessage<Command = unknown> = {
-  t: "cmd";
-  /** Chosen by the client; echoed back in the matching `ack` or `reject`. */
-  id: number;
-  data: Command;
-};
+/** `id` is chosen by the client and echoed back in the matching `ack` or `reject`. */
+export type ClientMessage<Command = unknown> =
+  | { t: "cmd"; id: number; data: Command }
+  /** Give up the seat. On `ack` the room closes the connection with `CloseCode.Removed`. */
+  | { t: "leave"; id: number };
 
 export type ServerMessage<View = unknown> =
   /** First frame on every connection, including reconnects. */
@@ -30,9 +29,9 @@ export type ServerMessage<View = unknown> =
   | { t: "state"; seq: number; state: View }
   /** Someone joined, dropped or came back. */
   | { t: "presence"; players: Player[] }
-  /** The command was applied. Sent after the `state` frame it caused. */
+  /** The command or leave was applied. Sent after the `state` frame it caused. */
   | { t: "ack"; id: number; seq: number }
-  /** The command was refused and the state is unchanged. */
+  /** The command or leave was refused and the state is unchanged. */
   | { t: "reject"; id: number; reason: string }
   /** The frame could not be understood at all. */
   | { t: "error"; reason: string };
@@ -45,6 +44,8 @@ export const CloseCode = {
   RoomFull: 4001,
   /** `onJoin` refused the player; the close reason carries why. */
   JoinRejected: 4002,
+  /** The player no longer has a seat: they left, or the room removed them. The close reason says which. */
+  Removed: 4003,
 } as const;
 
 export function isFatalCloseCode(code: number): boolean {

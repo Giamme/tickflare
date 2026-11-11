@@ -51,8 +51,14 @@
       #board button:not(:disabled):hover {
         border-color: var(--accent);
       }
-      #rematch {
+      .actions {
+        display: flex;
+        justify-content: center;
+        gap: 0.5rem;
         margin-top: 1rem;
+        min-height: 2.5rem;
+      }
+      .actions button {
         padding: 0.5rem 1rem;
         font: inherit;
         border: 1px solid var(--line);
@@ -73,10 +79,15 @@
       <h1>Tic-tac-toe</h1>
       <p id="status" role="status">Connecting…</p>
       <div id="board"></div>
-      <button id="rematch" hidden>Rematch</button>
+      <div class="actions">
+        <button id="rematch" hidden>Rematch</button>
+        <button id="leave" hidden>Leave</button>
+        <button id="again" hidden>Join again</button>
+      </div>
       <p class="hint">
         Room <code id="room"></code>. Open this page in a second tab to play against yourself, or
-        change the part after # for a new room.
+        change the part after # for a new room. You have 30 seconds per move, and a closed tab
+        loses its seat after 30 seconds.
       </p>
     </main>
 
@@ -91,6 +102,8 @@
       const statusEl = document.getElementById("status");
       const boardEl = document.getElementById("board");
       const rematchEl = document.getElementById("rematch");
+      const leaveEl = document.getElementById("leave");
+      const againEl = document.getElementById("again");
       document.getElementById("room").textContent = room;
 
       const cells = Array.from({ length: 9 }, (_, cell) => {
@@ -101,6 +114,8 @@
         return button;
       });
       rematchEl.addEventListener("click", () => send({ type: "rematch" }));
+      leaveEl.addEventListener("click", () => client.leave().catch((error) => console.info(error.message)));
+      againEl.addEventListener("click", () => location.reload());
       // A different room is a different connection: start over.
       addEventListener("hashchange", () => location.reload());
 
@@ -116,7 +131,11 @@
                 ? "This room is full."
                 : detail?.code === 4000
                   ? "You opened this game somewhere else."
-                  : "Disconnected.";
+                  : detail?.code === 4003
+                    ? detail.reason === "away"
+                      ? "You were away too long and lost your seat."
+                      : "You left the game."
+                    : "Disconnected.";
           }
           render();
         },
@@ -138,7 +157,14 @@
           button.textContent = mark;
           button.disabled = !myTurn || seated < 2 || mark !== "";
         });
-        rematchEl.hidden = !(client.status === "open" && state?.winner);
+        rematchEl.hidden = !(client.status === "open" && state?.winner && seated === 2);
+        leaveEl.hidden = client.status !== "open";
+        againEl.hidden = client.status !== "closed";
+
+        // The deadline is the room's clock and the countdown is this device's, so it can be a second off.
+        const secondsLeft = state?.turnEndsAt
+          ? ` ${Math.max(0, Math.ceil((state.turnEndsAt - Date.now()) / 1000))}s left.`
+          : "";
 
         if (client.status === "closed") statusEl.textContent = closedBecause;
         else if (client.status === "connecting" || !state) statusEl.textContent = "Connecting…";
@@ -146,8 +172,10 @@
         else if (state.winner === "draw") statusEl.textContent = "Draw.";
         else if (state.winner) statusEl.textContent = state.winner === mine ? "You won." : "You lost.";
         else if (client.players.some((p) => !p.connected)) statusEl.textContent = "Opponent disconnected. Waiting…";
-        else statusEl.textContent = myTurn ? `Your turn (${mine}).` : "Opponent's turn.";
+        else statusEl.textContent = (myTurn ? `Your turn (${mine}).` : "Opponent's turn.") + secondsLeft;
       }
+      // Keeps the countdown moving between state changes.
+      setInterval(render, 500);
 
       function playerId() {
         // Per tab, so two tabs are two players. Survives a reload, which is how you see resume work.

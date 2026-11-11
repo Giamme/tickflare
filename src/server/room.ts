@@ -9,7 +9,7 @@ import {
 } from "../protocol.js";
 import { PLAYER_HEADER } from "./gateway.js";
 
-/** Thrown by a hook to refuse a command or a join. The reason is sent to the client. */
+/** Thrown by a hook to refuse a command, a join or a leave. The reason is sent to the client. */
 export class Rejection extends Error {
   readonly reason: string;
 
@@ -20,14 +20,24 @@ export class Rejection extends Error {
   }
 }
 
-/** Refuse the current command or join. Any state changes made by the hook are rolled back. */
+/** Refuse what the current hook was asked to do. Everything the hook changed is rolled back. */
 export function reject(reason: string): never {
   throw new Rejection(reason);
 }
 
 type Outcome = { ok: true } | { ok: false; reason: string };
 
+type ClientFrame = { t: "cmd"; id: number; data: unknown } | { t: "leave"; id: number };
+
 type StoredRoom = { seq: number; state: string; players: string };
+type StoredTimer = { name: string; fire_at: number };
+
+/** Everything a hook may change, as JSON. A hook that fails is rolled back to this. */
+interface Committed {
+  state: string;
+  roster: string;
+  timers: string;
+}
 
 const SOCKET_OPEN = 1;
 /** Close reasons are limited to 123 bytes by the WebSocket protocol. */
@@ -37,15 +47,17 @@ const MAX_CLOSE_REASON = 120;
  * An authoritative game room in event mode: one Durable Object per room.
  *
  * There is no tick loop. The room wakes when a player connects, sends a
- * command or drops, runs the matching hook, saves the state and sends each
- * connected player their view of it. Between events it hibernates while the
- * WebSockets stay open, and rebuilds itself from storage on the next event.
+ * command, drops or leaves, or when a timer fires. It runs the matching hook,
+ * saves what changed and sends each connected player their view of the state.
+ * Between events it hibernates while the WebSockets stay open, and rebuilds
+ * itself from storage on the next event.
  *
  * Hooks are synchronous and change `this.state` in place. The state must be
- * JSON-serializable.
+ * JSON-serializable. A hook that calls `reject()` or throws leaves no trace:
+ * state, seats and timers go back to what they were.
  */
 export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> extends DurableObject<Env> {
-  /** How many distinct players may take a seat. */
+  /** How many distinct players may hold a seat at once. */
   protected maxPlayers = Number.POSITIVE_INFINITY;
 
   /** Longest client frame accepted, in characters. */
@@ -57,8 +69,13 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
   #loaded = false;
   #seq = 0;
   #roster: string[] = [];
-  /** JSON of the state as last committed; what a failed hook rolls back to. */
-  #committed = "";
+  /** Timer name to the time it fires, in epoch milliseconds. */
+  #timers = new Map<string, number>();
+  #committed: Committed = { state: "", roster: "[]", timers: "[]" };
+  /** Seats given up during this event. Their sockets are closed once the event is over. */
+  #removed: { id: string; reason: string }[] = [];
+  /** The timers changed, so the object's alarm has to be moved before the event ends. */
+  #alarmStale = false;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -87,6 +104,15 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
   /** A seated player connected again after being fully disconnected. */
   protected onReconnect(_player: Player): void {}
 
+  /**
+   * A player asked to give up their seat. Tidy up after them here; they are
+   * removed when this returns. Call `reject()` to make them stay.
+   */
+  protected onLeave(_player: Player): void {}
+
+  /** A timer set with `setTimer(name, ...)` ran out. */
+  protected onTimer(_name: string): void {}
+
   /** What `player` is allowed to see. Defaults to the whole state. */
   protected view(_player: Player): unknown {
     return this.state;
@@ -102,6 +128,40 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     return this.#seq;
   }
 
+  /**
+   * Run `onTimer(name)` once, `delayMs` from now. A timer with the same name
+   * is replaced. Returns the time it fires in epoch milliseconds, which you
+   * can put in the state to show a countdown. Call from inside a hook.
+   *
+   * Timers are saved with the room, so they survive hibernation and restarts.
+   */
+  protected setTimer(name: string, delayMs: number): number {
+    if (!name) throw new TypeError("A timer needs a name");
+    if (!Number.isFinite(delayMs) || delayMs < 0) {
+      throw new RangeError("delayMs must be a non-negative number");
+    }
+    const firesAt = Date.now() + Math.ceil(delayMs);
+    this.#timers.set(name, firesAt);
+    return firesAt;
+  }
+
+  /** Cancel a timer. Does nothing if it is not set. Call from inside a hook. */
+  protected clearTimer(name: string): void {
+    this.#timers.delete(name);
+  }
+
+  /**
+   * Take a player's seat away and close their connection with
+   * `CloseCode.Removed` and `reason`. `onLeave` is not called: clean up their
+   * part of the state yourself. Call from inside a hook.
+   */
+  protected removePlayer(playerId: string, reason = "removed"): void {
+    const seat = this.#roster.indexOf(playerId);
+    if (seat === -1) return;
+    this.#roster.splice(seat, 1);
+    this.#removed.push({ id: playerId, reason });
+  }
+
   override async fetch(request: Request): Promise<Response> {
     if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
       return new Response("Expected a WebSocket upgrade", { status: 426 });
@@ -111,7 +171,56 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
       return new Response("Missing player identity", { status: 401 });
     }
     this.#load();
+    const response = this.#connect(playerId);
+    await this.#finish();
+    return response;
+  }
 
+  override async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
+    this.#load();
+    this.#receive(ws, message);
+    await this.#finish();
+  }
+
+  override async webSocketClose(ws: WebSocket, code: number, reason: string): Promise<void> {
+    // Runtimes with a compatibility date before 2026-04-07 need the close echoed back.
+    try {
+      ws.close(code === 1005 || code === 1006 ? 1000 : code, reason);
+    } catch {
+      // Already closed.
+    }
+    this.#load();
+    this.#dropped(ws);
+    await this.#finish();
+  }
+
+  override async webSocketError(ws: WebSocket): Promise<void> {
+    this.#load();
+    this.#dropped(ws);
+    await this.#finish();
+  }
+
+  override async alarm(): Promise<void> {
+    this.#load();
+    // The alarm is always set for the earliest timer, so that one is due even
+    // if this clock reads a little early.
+    const now = Math.max(Date.now(), this.#nextTimer() ?? 0);
+    const due = [...this.#timers]
+      .filter(([, firesAt]) => firesAt <= now)
+      .sort((a, b) => a[1] - b[1]);
+
+    for (const [name, firesAt] of due) {
+      // A timer that fired earlier in this batch may have cleared or moved this one.
+      if (this.#timers.get(name) !== firesAt) continue;
+      // Spend the timer first, on its own, so a failing hook cannot bring it back.
+      this.#apply(() => this.clearTimer(name));
+      this.#apply(() => this.onTimer(name));
+    }
+    this.#alarmStale = true;
+    await this.#finish();
+  }
+
+  #connect(playerId: string): Response {
     const pair = new WebSocketPair();
     const client = pair[0];
     const server = pair[1];
@@ -121,14 +230,20 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
       if (this.#roster.length >= this.maxPlayers) {
         return refuse(client, server, CloseCode.RoomFull, "room_full");
       }
-      this.#roster.push(playerId);
-      const joined = this.#apply(() => this.onJoin(player), true);
+      const joined = this.#apply(() => {
+        this.#roster.push(playerId);
+        this.onJoin(player);
+      });
       if (!joined.ok) {
-        this.#roster.pop();
         return refuse(client, server, CloseCode.JoinRejected, joined.reason);
       }
     } else if (!this.#isConnected(playerId)) {
       this.#apply(() => this.onReconnect(player));
+    }
+    // A hook may have removed the very player who is connecting.
+    if (!this.#roster.includes(playerId)) {
+      const reason = this.#removed.find((seat) => seat.id === playerId)?.reason ?? "removed";
+      return refuse(client, server, CloseCode.Removed, reason);
     }
 
     // One connection per player: the newest wins.
@@ -150,10 +265,10 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     return new Response(null, { status: 101, webSocket: client });
   }
 
-  override webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): void {
-    this.#load();
+  #receive(ws: WebSocket, message: string | ArrayBuffer): void {
     const playerId = this.#playerOf(ws);
-    if (!playerId) return;
+    // A socket whose seat is gone is about to be closed; ignore what it still sends.
+    if (!playerId || !this.#roster.includes(playerId)) return;
 
     if (typeof message !== "string") {
       return this.#send(ws, { t: "error", reason: "binary_not_supported" });
@@ -162,55 +277,74 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
       return this.#send(ws, { t: "error", reason: "message_too_large" });
     }
 
-    let frame: unknown;
+    let parsed: unknown;
     try {
-      frame = JSON.parse(message);
+      parsed = JSON.parse(message);
     } catch {
       return this.#send(ws, { t: "error", reason: "invalid_json" });
     }
-    if (!isCommandFrame(frame)) {
+    const frame = readFrame(parsed);
+    if (!frame) {
       return this.#send(ws, { t: "error", reason: "invalid_message" });
     }
 
-    let command: Command;
-    try {
-      command = this.parseCommand(frame.data);
-    } catch (err) {
-      const reason = err instanceof Rejection ? err.reason : "invalid_command";
-      return this.#send(ws, { t: "reject", id: frame.id, reason });
+    const player: Player = { id: playerId, connected: true };
+    let outcome: Outcome;
+    if (frame.t === "leave") {
+      outcome = this.#apply(() => {
+        this.onLeave(player);
+        this.removePlayer(playerId, "left");
+      });
+    } else {
+      let command: Command;
+      try {
+        command = this.parseCommand(frame.data);
+      } catch (err) {
+        const reason = err instanceof Rejection ? err.reason : "invalid_command";
+        return this.#send(ws, { t: "reject", id: frame.id, reason });
+      }
+      outcome = this.#apply(() => this.onCommand(player, command));
     }
 
-    const applied = this.#apply(() => this.onCommand({ id: playerId, connected: true }, command));
-    if (!applied.ok) {
-      return this.#send(ws, { t: "reject", id: frame.id, reason: applied.reason });
+    if (!outcome.ok) {
+      return this.#send(ws, { t: "reject", id: frame.id, reason: outcome.reason });
     }
     // The state frame, if any, has already gone out: an ack means "you have seen the result".
     this.#send(ws, { t: "ack", id: frame.id, seq: this.#seq });
   }
 
-  override webSocketClose(ws: WebSocket, code: number, reason: string): void {
-    // Runtimes with a compatibility date before 2026-04-07 need the close echoed back.
-    try {
-      ws.close(code === 1005 || code === 1006 ? 1000 : code, reason);
-    } catch {
-      // Already closed.
-    }
-    this.#dropped(ws);
-  }
-
-  override webSocketError(ws: WebSocket): void {
-    this.#dropped(ws);
-  }
-
   #dropped(ws: WebSocket): void {
-    this.#load();
     const playerId = this.#playerOf(ws);
+    // Players who left or were removed are not "disconnected": their seat is gone.
     if (!playerId || !this.#roster.includes(playerId)) return;
     // A newer connection for the same player took over: nothing to announce.
     if (this.#isConnected(playerId, ws)) return;
 
     this.#apply(() => this.onDisconnect({ id: playerId, connected: false }));
     this.#broadcastPresence(ws);
+  }
+
+  /** The end of every event: close the sockets of removed players and move the alarm. */
+  async #finish(): Promise<void> {
+    if (this.#removed.length > 0) {
+      for (const { id, reason } of this.#removed.splice(0)) {
+        for (const ws of this.ctx.getWebSockets(id)) {
+          try {
+            ws.close(CloseCode.Removed, reason.slice(0, MAX_CLOSE_REASON));
+          } catch {
+            // Already closed.
+          }
+        }
+      }
+      this.#broadcastPresence();
+    }
+
+    if (this.#alarmStale) {
+      this.#alarmStale = false;
+      const next = this.#nextTimer();
+      if (next === undefined) await this.ctx.storage.deleteAlarm();
+      else await this.ctx.storage.setAlarm(next);
+    }
   }
 
   /** Reads the room from storage the first time an event arrives after a (re)start. */
@@ -225,61 +359,93 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
          players TEXT NOT NULL
        )`,
     );
-    const stored = sql
+    sql.exec(
+      `CREATE TABLE IF NOT EXISTS tickflare_timers (
+         name TEXT PRIMARY KEY,
+         fire_at INTEGER NOT NULL
+       )`,
+    );
+    const room = sql
       .exec<StoredRoom>("SELECT seq, state, players FROM tickflare_room WHERE id = 1")
       .toArray()[0];
+    const timers = sql
+      .exec<StoredTimer>("SELECT name, fire_at FROM tickflare_timers ORDER BY name")
+      .toArray()
+      .map((timer) => [timer.name, timer.fire_at]);
 
-    if (stored) {
-      this.#seq = stored.seq;
-      this.#committed = stored.state;
-      this.#roster = JSON.parse(stored.players) as string[];
+    let state: string;
+    if (room) {
+      state = room.state;
     } else {
-      const initial = JSON.stringify(this.initialState());
-      if (initial === undefined) {
+      state = JSON.stringify(this.initialState());
+      if (state === undefined) {
         throw new TypeError("initialState() must return a JSON-serializable value");
       }
-      this.#committed = initial;
     }
-    // Always start from the JSON round-trip, so new and resumed rooms behave the same.
-    this.state = JSON.parse(this.#committed) as State;
+    this.#seq = room?.seq ?? 0;
+    this.#committed = { state, roster: room?.players ?? "[]", timers: JSON.stringify(timers) };
+    // Start from the JSON round-trip, so new and resumed rooms behave the same.
+    this.#restore();
     this.#loaded = true;
   }
 
-  #save(): void {
-    this.ctx.storage.sql.exec(
-      "INSERT OR REPLACE INTO tickflare_room (id, seq, state, players) VALUES (1, ?, ?, ?)",
-      this.#seq,
-      this.#committed,
-      JSON.stringify(this.#roster),
-    );
+  /** Puts state, seats and timers back to what was last committed. */
+  #restore(): void {
+    this.state = JSON.parse(this.#committed.state) as State;
+    this.#roster = JSON.parse(this.#committed.roster) as string[];
+    this.#timers = new Map(JSON.parse(this.#committed.timers) as [string, number][]);
   }
 
   /**
-   * Runs a hook. If it changed the state, the change is saved and broadcast.
-   * If it threw, the state is put back as it was. `save` forces a write even
-   * when the state is unchanged, for callers that changed the roster.
+   * Runs a hook, then commits what it changed: saves it and, if the state
+   * changed, broadcasts the state. If the hook fails, everything it touched is
+   * put back and the reason is returned.
    */
-  #apply(hook: () => void, save = false): Outcome {
+  #apply(hook: () => void): Outcome {
+    const removedBefore = this.#removed.length;
     try {
       const returned = hook() as unknown;
       if (isThenable(returned)) {
         returned.then(undefined, () => {});
         throw new TypeError("Room hooks must be synchronous");
       }
-      const json = JSON.stringify(this.state);
-      if (json === undefined) {
+      const state = JSON.stringify(this.state);
+      if (state === undefined) {
         throw new TypeError("Room state must be JSON-serializable");
       }
-      const changed = json !== this.#committed;
-      if (changed) {
-        this.#committed = json;
-        this.#seq += 1;
+      const next: Committed = {
+        state,
+        roster: JSON.stringify(this.#roster),
+        timers: JSON.stringify([...this.#timers].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))),
+      };
+      const was = this.#committed;
+      const stateChanged = next.state !== was.state;
+      const seq = stateChanged ? this.#seq + 1 : this.#seq;
+
+      const sql = this.ctx.storage.sql;
+      if (stateChanged || next.roster !== was.roster) {
+        sql.exec(
+          "INSERT OR REPLACE INTO tickflare_room (id, seq, state, players) VALUES (1, ?, ?, ?)",
+          seq,
+          next.state,
+          next.roster,
+        );
       }
-      if (changed || save) this.#save();
-      if (changed) this.#broadcastState();
+      if (next.timers !== was.timers) {
+        sql.exec("DELETE FROM tickflare_timers");
+        for (const [name, firesAt] of this.#timers) {
+          sql.exec("INSERT INTO tickflare_timers (name, fire_at) VALUES (?, ?)", name, firesAt);
+        }
+        this.#alarmStale = true;
+      }
+
+      this.#seq = seq;
+      this.#committed = next;
+      if (stateChanged) this.#broadcastState();
       return { ok: true };
     } catch (err) {
-      this.state = JSON.parse(this.#committed) as State;
+      this.#restore();
+      this.#removed.length = removedBefore;
       if (err instanceof Rejection) return { ok: false, reason: err.reason };
       console.error("[tickflare] room hook failed:", err);
       return { ok: false, reason: "internal_error" };
@@ -293,9 +459,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
         ? JSON.stringify({ t: "state", seq: this.#seq, state: this.state })
         : undefined;
 
-    for (const ws of this.ctx.getWebSockets()) {
-      const id = this.#playerOf(ws);
-      if (!id) continue;
+    for (const { ws, id } of this.#seatedSockets()) {
       try {
         ws.send(
           shared ??
@@ -306,7 +470,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
             }),
         );
       } catch (err) {
-        // A closing socket, or a view() that threw: don't let it starve the others.
+        // A view() that threw must not starve the other players.
         console.error(`[tickflare] could not send state to ${id}:`, err);
       }
     }
@@ -314,7 +478,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
 
   #broadcastPresence(except?: WebSocket): void {
     const frame = JSON.stringify({ t: "presence", players: this.players });
-    for (const ws of this.ctx.getWebSockets()) {
+    for (const { ws } of this.#seatedSockets()) {
       if (ws === except) continue;
       try {
         ws.send(frame);
@@ -332,6 +496,18 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     }
   }
 
+  /** Open sockets of players who still hold a seat. */
+  #seatedSockets(): { ws: WebSocket; id: string }[] {
+    const sockets: { ws: WebSocket; id: string }[] = [];
+    for (const ws of this.ctx.getWebSockets()) {
+      const id = this.#playerOf(ws);
+      if (id && ws.readyState === SOCKET_OPEN && this.#roster.includes(id)) {
+        sockets.push({ ws, id });
+      }
+    }
+    return sockets;
+  }
+
   #playerOf(ws: WebSocket): string | undefined {
     return this.ctx.getTags(ws)[0];
   }
@@ -340,6 +516,14 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     return this.ctx
       .getWebSockets(playerId)
       .some((ws) => ws !== except && ws.readyState === SOCKET_OPEN);
+  }
+
+  #nextTimer(): number | undefined {
+    let next: number | undefined;
+    for (const firesAt of this.#timers.values()) {
+      if (next === undefined || firesAt < next) next = firesAt;
+    }
+    return next;
   }
 }
 
@@ -350,10 +534,14 @@ function refuse(client: WebSocket, server: WebSocket, code: number, reason: stri
   return new Response(null, { status: 101, webSocket: client });
 }
 
-function isCommandFrame(value: unknown): value is { t: "cmd"; id: number; data: unknown } {
-  if (typeof value !== "object" || value === null) return false;
-  const frame = value as { t?: unknown; id?: unknown };
-  return frame.t === "cmd" && Number.isSafeInteger(frame.id);
+function readFrame(value: unknown): ClientFrame | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const frame = value as { t?: unknown; id?: unknown; data?: unknown };
+  if (!Number.isSafeInteger(frame.id)) return undefined;
+  const id = frame.id as number;
+  if (frame.t === "cmd") return { t: "cmd", id, data: frame.data };
+  if (frame.t === "leave") return { t: "leave", id };
+  return undefined;
 }
 
 function isThenable(value: unknown): value is PromiseLike<unknown> {

@@ -11,6 +11,8 @@ export interface Connection {
   next<T extends Message["t"]>(t: T): Promise<Extract<Message, { t: T }>>;
   /** Send a command and return the id it was sent under. */
   command(command: TestCommand): number;
+  /** Ask to give up the seat and return the id the request was sent under. */
+  leave(): number;
   /** Send a raw frame, for the malformed cases. */
   raw(frame: string | ArrayBuffer): void;
   /** Resolves when the room closes the connection. */
@@ -33,6 +35,10 @@ afterEach(() => {
 /** A room name no other test uses. */
 export function freshRoom(): string {
   return `room-${Date.now()}-${rooms++}`;
+}
+
+export function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export function upgrade(path: string, headers: Record<string, string> = {}): Promise<Response> {
@@ -86,8 +92,24 @@ export async function connect(
       ws.send(JSON.stringify({ t: "cmd", id, data: command }));
       return id;
     },
+    leave() {
+      const id = nextId++;
+      ws.send(JSON.stringify({ t: "leave", id }));
+      return id;
+    },
     raw(frame) {
       ws.send(frame);
     },
   };
+}
+
+/** Two seated players with the join chatter already consumed. */
+export async function twoPlayers(room = freshRoom()) {
+  const p1 = await connect(room, "p1");
+  await p1.next("welcome");
+  const p2 = await connect(room, "p2");
+  await p2.next("welcome");
+  await p1.next("state");
+  await p1.next("presence");
+  return { room, p1, p2 };
 }

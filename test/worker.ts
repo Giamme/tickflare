@@ -6,6 +6,8 @@ export interface TestState {
   log: string[];
   /** One private value per player; `view` hides everyone else's. */
   secrets: Record<string, string>;
+  /** While true, `onLeave` refuses. */
+  locked: boolean;
 }
 
 export type TestCommand =
@@ -14,9 +16,18 @@ export type TestCommand =
   | { type: "noop" }
   | { type: "half" }
   | { type: "boom" }
-  | { type: "async" };
+  | { type: "async" }
+  | { type: "timer"; name: string; ms: number }
+  | { type: "timerThenReject"; name: string; ms: number }
+  | { type: "cancel"; name: string }
+  | { type: "kick"; id: string }
+  | { type: "kickThenReject"; id: string }
+  | { type: "lock" };
 
-const COMMANDS = ["add", "secret", "noop", "half", "boom", "async"];
+const COMMANDS = [
+  "add", "secret", "noop", "half", "boom", "async",
+  "timer", "timerThenReject", "cancel", "kick", "kickThenReject", "lock",
+];
 
 /** A room that exercises every kernel feature; not a game. */
 export class TestRoom extends Room<TestState, TestCommand> {
@@ -24,7 +35,7 @@ export class TestRoom extends Room<TestState, TestCommand> {
   protected override maxMessageLength = 256;
 
   protected initialState(): TestState {
-    return { total: 0, log: [], secrets: {} };
+    return { total: 0, log: [], secrets: {}, locked: false };
   }
 
   protected parseCommand(raw: unknown): TestCommand {
@@ -50,6 +61,17 @@ export class TestRoom extends Room<TestState, TestCommand> {
     this.state.log.push(`back:${player.id}`);
   }
 
+  protected override onLeave(player: Player): void {
+    if (this.state.locked) reject("locked");
+    this.state.log.push(`left:${player.id}`);
+  }
+
+  protected override onTimer(name: string): void {
+    this.state.log.push(`timer:${name}`);
+    if (name === "boom") throw new TypeError("kaboom");
+    if (name === "relay") this.setTimer("relayed", 20);
+  }
+
   protected onCommand(player: Player, command: TestCommand): void | Promise<void> {
     switch (command.type) {
       case "add":
@@ -70,6 +92,24 @@ export class TestRoom extends Room<TestState, TestCommand> {
         return Promise.resolve().then(() => {
           this.state.total += 1000;
         });
+      case "timer":
+        this.setTimer(command.name, command.ms);
+        return;
+      case "timerThenReject":
+        this.setTimer(command.name, command.ms);
+        reject("changed_my_mind");
+      case "cancel":
+        this.clearTimer(command.name);
+        return;
+      case "kick":
+        this.removePlayer(command.id, "kicked");
+        return;
+      case "kickThenReject":
+        this.removePlayer(command.id, "kicked");
+        reject("changed_my_mind");
+      case "lock":
+        this.state.locked = true;
+        return;
     }
   }
 

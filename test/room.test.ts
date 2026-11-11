@@ -2,18 +2,7 @@ import { evictDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it, vi } from "vitest";
 import { CloseCode } from "../src/protocol.js";
-import { connect, freshRoom, upgrade } from "./helpers.js";
-
-/** Two seated players with the join chatter already consumed. */
-async function twoPlayers(room = freshRoom()) {
-  const p1 = await connect(room, "p1");
-  await p1.next("welcome");
-  const p2 = await connect(room, "p2");
-  await p2.next("welcome");
-  await p1.next("state");
-  await p1.next("presence");
-  return { room, p1, p2 };
-}
+import { connect, freshRoom, twoPlayers, upgrade } from "./helpers.js";
 
 describe("joining", () => {
   it("welcomes a new player with the state after onJoin", async () => {
@@ -203,6 +192,13 @@ describe("connections", () => {
     expect(await p2.next("state")).toMatchObject({ seq: 4, state: { total: 5 } });
     expect(await p2.next("ack")).toEqual({ t: "ack", id, seq: 4 });
     expect(await p1.next("state")).toMatchObject({ seq: 4, state: { total: 5 } });
+
+    // Sockets that slept through the eviction still count as connected.
+    const again = await connect(room, "p1");
+    expect((await again.next("welcome")).players).toEqual([
+      { id: "p1", connected: true },
+      { id: "p2", connected: true },
+    ]);
   });
 
   it("only talks to callers the gateway identified", async () => {

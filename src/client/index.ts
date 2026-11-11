@@ -16,7 +16,7 @@ export interface RoomClientOptions<View> {
   onState?(state: View, seq: number): void;
   /** Someone joined, dropped or came back. */
   onPresence?(players: Player[]): void;
-  /** `closed` carries the close code and reason when the server refused or replaced us. */
+  /** `closed` carries the close code and reason, e.g. when the room was full or the seat was removed. */
   onStatus?(status: ConnectionStatus, detail?: { code: number; reason: string }): void;
   /** Reconnect after an unexpected close. Defaults to true. */
   reconnect?: boolean;
@@ -24,7 +24,7 @@ export interface RoomClientOptions<View> {
   pingIntervalMs?: number;
 }
 
-/** A command the room refused, or one that was in flight when the connection dropped. */
+/** A command or leave the room refused, or one that was in flight when the connection dropped. */
 export class CommandRejected extends Error {
   readonly reason: string;
 
@@ -72,19 +72,19 @@ export class RoomClient<View = unknown, Command = unknown> {
    * it or the connection dropped first.
    */
   send(command: Command): Promise<void> {
-    const socket = this.#socket;
-    if (!socket || this.status !== "open") {
-      return Promise.reject(new CommandRejected("not_connected"));
-    }
-    const id = this.#nextId++;
-    const frame: ClientMessage<Command> = { t: "cmd", id, data: command };
-    return new Promise<void>((resolve, reject) => {
-      this.#pending.set(id, { resolve, reject });
-      socket.send(JSON.stringify(frame));
-    });
+    return this.#request((id) => ({ t: "cmd", id, data: command }));
   }
 
-  /** Close for good. No reconnect follows. */
+  /**
+   * Give up the seat in this room. Resolves once the room let the player go,
+   * after which it closes the connection and `status` becomes `closed`.
+   * Rejects with `CommandRejected` if the room made the player stay.
+   */
+  leave(): Promise<void> {
+    return this.#request((id) => ({ t: "leave", id }));
+  }
+
+  /** Close the connection for good, keeping the seat. No reconnect follows. */
   close(): void {
     this.#stopped = true;
     if (this.#retryTimer !== undefined) clearTimeout(this.#retryTimer);
@@ -95,6 +95,18 @@ export class RoomClient<View = unknown, Command = unknown> {
       // Between reconnect attempts there is no socket left to report the close.
       this.#setStatus("closed", { code: 1000, reason: "client_closed" });
     }
+  }
+
+  #request(frame: (id: number) => ClientMessage<Command>): Promise<void> {
+    const socket = this.#socket;
+    if (!socket || this.status !== "open") {
+      return Promise.reject(new CommandRejected("not_connected"));
+    }
+    const id = this.#nextId++;
+    return new Promise<void>((resolve, reject) => {
+      this.#pending.set(id, { resolve, reject });
+      socket.send(JSON.stringify(frame(id)));
+    });
   }
 
   #open(): void {
