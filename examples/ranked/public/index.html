@@ -40,6 +40,10 @@
         grid-template-columns: repeat(3, 1fr);
         gap: 0.5rem;
       }
+      /* Without this, display: grid above would win over the hidden attribute. */
+      #board[hidden] {
+        display: none;
+      }
       #board button {
         aspect-ratio: 1;
         font: 600 2.5rem system-ui, sans-serif;
@@ -111,6 +115,8 @@
       /** Set while waiting in the matchmaking queue. */
       let searching = null;
       let closedBecause = "";
+      /** Both players have been seated in this game, so a missing opponent has left, not yet arrived. */
+      let started = false;
 
       const cells = Array.from({ length: 9 }, (_, cell) => {
         const button = document.createElement("button");
@@ -129,6 +135,7 @@
           const { room } = await findMatch(`${origin}/matchmaking/ranked?token=${token}`, {
             signal: searching.signal,
           });
+          started = false;
           client = new RoomClient(`${origin}/rooms/${room}?token=${token}`, {
             onState: render,
             onPresence: render,
@@ -159,6 +166,7 @@
         const seated = state ? Object.keys(state.marks).length : 0;
         const open = playing && client.status === "open";
         const myTurn = open && state && !state.winner && seated === 2 && state.turn === mine;
+        if (seated === 2) started = true;
 
         boardEl.hidden = !playing;
         cells.forEach((button, cell) => {
@@ -179,7 +187,7 @@
         else if (!open || !state) statusEl.textContent = "Connecting…";
         else if (state.winner === "draw") statusEl.textContent = "Draw.";
         else if (state.winner) statusEl.textContent = state.winner === mine ? "You won." : "You lost.";
-        else if (seated < 2) statusEl.textContent = "Your opponent left.";
+        else if (seated < 2) statusEl.textContent = started ? "Your opponent left." : "Waiting for your opponent to connect…";
         else statusEl.textContent = (myTurn ? `Your turn (${mine}).` : "Opponent's turn.") + secondsLeft;
       }
       render();

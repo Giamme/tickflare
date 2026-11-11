@@ -42,10 +42,15 @@ export class RankedTicTacToe extends TicTacToe<Env> {
     if (!wasOver && this.state.winner) this.#report("timeout");
   }
 
-  // Walking out of a game that has started, or staying away too long, gives it to the opponent.
   protected override onLeave(player: Player): void {
+    // A finished game stays on the board for whoever is still looking at it.
+    if (this.state.winner) {
+      delete this.state.marks[player.id];
+      return;
+    }
+    // Walking out of a game that has started, or staying away too long, gives it to the opponent.
     const opponent = Object.keys(this.state.marks).find((id) => id !== player.id);
-    if (opponent && !this.state.winner && this.state.board.some(Boolean)) {
+    if (opponent && this.state.board.some(Boolean)) {
       this.finishMatch({ winner: opponent, how: "forfeit" });
     }
     super.onLeave(player);
