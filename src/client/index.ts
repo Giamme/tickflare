@@ -33,13 +33,24 @@ export interface RoomClientOptions<View> {
   onState?(state: View, seq: number): void;
   /** Someone joined, dropped or came back. */
   onPresence?(players: Player[]): void;
-  /** `closed` carries the close code and reason, e.g. when the room was full or the seat was removed. */
+  /**
+   * `closed` carries the close code and reason, e.g. when the room was full
+   * or the seat was removed. So does `connecting` when it follows a
+   * connection that was lost or never opened: it is called again for every
+   * failed attempt. A client that keeps failing this way while the network is
+   * fine is being turned away before it reaches the room, most often because
+   * its join token has expired: get a new one and make a new client.
+   */
   onStatus?(status: ConnectionStatus, detail?: { code: number; reason: string }): void;
   /** The room handed this player to another room, and the client is now connecting there. */
   onMoved?(roomId: string): void;
   /** Reconnect after an unexpected close. Defaults to true. */
   reconnect?: boolean;
-  /** Keepalive interval in milliseconds. Defaults to 25 seconds; 0 disables it. */
+  /**
+   * Keepalive interval in milliseconds. Defaults to 25 seconds; 0 disables
+   * it. A connection that goes a whole interval without answering is taken
+   * for dead and replaced.
+   */
   pingIntervalMs?: number;
 }
 
@@ -82,6 +93,8 @@ export class RoomClient<View = unknown, Command = unknown> {
   #stopped = false;
   #retryTimer: ReturnType<typeof setTimeout> | undefined;
   #pingTimer: ReturnType<typeof setInterval> | undefined;
+  /** A keepalive was sent and nothing has come back since. */
+  #unanswered = false;
 
   constructor(url: string | URL, options: RoomClientOptions<View> = {}) {
     this.#url = String(url);
@@ -139,39 +152,45 @@ export class RoomClient<View = unknown, Command = unknown> {
 
     socket.addEventListener("message", (event) => {
       if (socket !== this.#socket || typeof event.data !== "string") return;
+      // Anything the server sends shows the connection is alive.
+      this.#unanswered = false;
       if (event.data === PONG) return;
       this.#handle(JSON.parse(event.data) as ServerMessage<View>);
     });
 
     socket.addEventListener("close", (event) => {
-      if (socket !== this.#socket) return;
-      this.#stopPing();
-      for (const pending of this.#pending.values()) {
-        pending.reject(new CommandRejected("disconnected"));
-      }
-      this.#pending.clear();
-
-      if (event.code === CloseCode.Moved && event.reason && !this.#stopped) {
-        // Handed over to another room: same URL, with that room's id as the last path segment.
-        const next = new URL(this.#url);
-        next.pathname = next.pathname.replace(/[^/]+\/?$/, event.reason);
-        this.#url = next.toString();
-        this.#options.onMoved?.(event.reason);
-        this.#open();
-        return;
-      }
-
-      const retry =
-        !this.#stopped && this.#options.reconnect !== false && !isFatalCloseCode(event.code);
-      if (!retry) {
-        this.#stopped = true;
-        this.#setStatus("closed", { code: event.code, reason: event.reason });
-        return;
-      }
-      this.#setStatus("connecting");
-      const backoff = Math.min(MAX_BACKOFF_MS, 250 * 2 ** this.#attempt++);
-      this.#retryTimer = setTimeout(() => this.#open(), backoff / 2 + Math.random() * (backoff / 2));
+      if (socket === this.#socket) this.#closed(event.code, event.reason);
     });
+  }
+
+  /** The current connection is over: settle what was in flight, then follow, retry or stop. */
+  #closed(code: number, reason: string): void {
+    this.#socket = undefined;
+    this.#stopPing();
+    for (const pending of this.#pending.values()) {
+      pending.reject(new CommandRejected("disconnected"));
+    }
+    this.#pending.clear();
+
+    if (code === CloseCode.Moved && reason && !this.#stopped) {
+      // Handed over to another room: same URL, with that room's id as the last path segment.
+      const next = new URL(this.#url);
+      next.pathname = next.pathname.replace(/[^/]+\/?$/, reason);
+      this.#url = next.toString();
+      this.#options.onMoved?.(reason);
+      this.#open();
+      return;
+    }
+
+    const retry = !this.#stopped && this.#options.reconnect !== false && !isFatalCloseCode(code);
+    if (!retry) {
+      this.#stopped = true;
+      this.#setStatus("closed", { code, reason });
+      return;
+    }
+    this.#setStatus("connecting", { code, reason });
+    const backoff = Math.min(MAX_BACKOFF_MS, 250 * 2 ** this.#attempt++);
+    this.#retryTimer = setTimeout(() => this.#open(), backoff / 2 + Math.random() * (backoff / 2));
   }
 
   #handle(message: ServerMessage<View>): void {
@@ -228,8 +247,22 @@ export class RoomClient<View = unknown, Command = unknown> {
     const interval = this.#options.pingIntervalMs ?? 25_000;
     this.#stopPing();
     if (interval <= 0) return;
+    this.#unanswered = false;
     this.#pingTimer = setInterval(() => {
-      if (this.#socket?.readyState === 1) this.#socket.send(PING);
+      const socket = this.#socket;
+      if (socket?.readyState !== 1) return;
+      if (this.#unanswered) {
+        // A dead connection can stay "open" for minutes. Do not wait for the browser to notice.
+        this.#closed(1006, "keepalive_timeout");
+        try {
+          socket.close();
+        } catch {
+          // Already closed.
+        }
+        return;
+      }
+      this.#unanswered = true;
+      socket.send(PING);
     }, interval);
   }
 

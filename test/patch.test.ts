@@ -33,6 +33,24 @@ describe("diff", () => {
     expect(diff([1], [2])).toBeNull();
     expect(diff({ a: 1 }, 5)).toBeNull();
   });
+
+  it("deletes keys that share a name with something every object inherits", () => {
+    const prev = { units: { toString: { x: 1 }, constructor: { x: 2 }, alice: { x: 3 } } };
+    const next = { units: {} };
+    const patch = diff(prev, next);
+    expect(patch).toEqual({ units: { toString: 0, constructor: 0, alice: 0 } });
+    expect(applyPatch(prev, patch!)).toEqual(next);
+  });
+
+  it("adds such keys too, and patches into them", () => {
+    const prev: Record<string, unknown> = { units: {} };
+    const next: Record<string, unknown> = { units: { toString: { x: 1 }, valueOf: 2 } };
+    const patch = diff(prev, next);
+    expect(patch).toEqual({ units: { toString: [{ x: 1 }], valueOf: [2] } });
+    expect(applyPatch(prev, patch!)).toEqual(next);
+    const into = JSON.parse('{"units":{"toString":{"x":[5]}}}') as Patch;
+    expect(applyPatch(prev, into)).toEqual(JSON.parse('{"units":{"toString":{"x":5}}}'));
+  });
 });
 
 describe("applyPatch", () => {

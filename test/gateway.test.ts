@@ -1,5 +1,6 @@
-import { exports } from "cloudflare:workers";
+import { env, exports } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
+import { routeToRoom } from "../src/server/gateway.js";
 import { connect, freshRoom, upgrade } from "./helpers.js";
 
 describe("routeToRoom", () => {
@@ -23,6 +24,21 @@ describe("routeToRoom", () => {
     const response = await upgrade("/rooms/abc");
     expect(response.status).toBe(401);
     expect(await response.text()).toBe("Who are you?");
+  });
+
+  it("refuses the caller when authenticate returns nothing at all", async () => {
+    const request = new Request(`https://tickflare.test/rooms/${freshRoom()}`, { headers: { Upgrade: "websocket" } });
+    for (const nothing of [undefined, null, 7]) {
+      const response = await routeToRoom(request, {
+        rooms: env.ROOMS,
+        authenticate: () => nothing as unknown as string,
+      });
+      expect(response!.status).toBe(401);
+    }
+  });
+
+  it("refuses a player id that would damage a game's state as a key", async () => {
+    expect((await upgrade(`/rooms/${freshRoom()}?player=__proto__`)).status).toBe(400);
   });
 
   it("refuses player ids that cannot travel in a header", async () => {

@@ -13,7 +13,7 @@ import { MAX_CLOSE_REASON, readFrame, refuse } from "./frames.js";
 import { PLAYER_HEADER, ROOM_HEADER } from "./gateway.js";
 import { RateLimiter } from "./limiter.js";
 import { SignalSender, type Signal } from "./signals.js";
-import { RoomStorage } from "./storage.js";
+import { RoomStorage, type OutboxEntry } from "./storage.js";
 
 /** Thrown by a hook to refuse a command, a join or a leave. The reason is sent to the client. */
 export class Rejection extends Error {
@@ -33,7 +33,6 @@ export function reject(reason: string): never {
 
 type Outcome = { ok: true } | { ok: false; reason: string };
 
-
 /** Everything a hook may change, as JSON. A hook that fails is rolled back to this. */
 interface Committed {
   state: string;
@@ -42,8 +41,16 @@ interface Committed {
 }
 
 const SOCKET_OPEN = 1;
+/** Prefix of every timer name the kernel keeps for itself. */
+const KERNEL_TIMER = "tickflare:";
 /** Prefix of the kernel's own timers, which give up the seats of players who stay away. */
 const AWAY_TIMER = "tickflare:away:";
+/**
+ * How long a room keeps sending a player on to the room it handed them to,
+ * counted from the moment it first told them. Long enough for a client whose
+ * connection dropped just then to come back and be told again.
+ */
+const FORWARD_GRACE_MS = 30_000;
 /** Consecutive failed ticks after which the simulation pauses until the next event. */
 const MAX_FAILED_TICKS = 5;
 
@@ -142,8 +149,16 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
   #presenceStale = false;
   /** Finished matches announced by the current hook, not yet committed. */
   #finished: { message: MatchResult; replay?: string }[] = [];
-  /** There are finished matches in storage that still have to reach the queue. */
+  /** There are finished matches or handovers in storage that still have to be delivered. */
   #outboxPending = false;
+  /** The current hook asked for its changes to be written at once. */
+  #saveAsked = false;
+  /** The player whose join or reconnect hook is running. Their socket is not accepted yet. */
+  #connecting: string | null = null;
+  /** A hook has returned a promise, so the state may be changed behind the kernel's back. */
+  #suspect = false;
+  /** `onHttp` calls that have not returned yet. They may not change the state either. */
+  #reading = 0;
 
   /** Holds each player to `maxCommandsPerSecond`. */
   #limiter = new RateLimiter();
@@ -231,7 +246,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
 
   /** Everyone with a seat, in join order. */
   protected get players(): Player[] {
-    return this.#roster.map((id) => ({ id, connected: this.#isConnected(id) }));
+    return this.#roster.map((id) => ({ id, connected: id === this.#connecting || this.#isConnected(id) }));
   }
 
   /** Number of state changes so far. */
@@ -247,6 +262,17 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
   /** The id this room is reached under, once someone has connected through the gateway. */
   protected get roomId(): string | null {
     return this.#roomId;
+  }
+
+  /**
+   * Have what the current hook changes written to storage as soon as the hook
+   * returns, instead of at the next save interval. Only matters while the
+   * room is ticking; outside the simulation every change is written at once.
+   * Use it when the hook also writes to the room's database itself, so the
+   * two cannot come apart. Call from inside a hook.
+   */
+  protected saveNow(): void {
+    this.#saveAsked = true;
   }
 
   /**
@@ -284,6 +310,9 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
    * room's `onArrive`: put in it whatever the player takes along. Remove
    * their part of this room's state yourself. Call from inside a hook, and
    * implement `handOver`.
+   *
+   * A player who is not connected at that moment is sent on when they next
+   * connect here.
    */
   protected movePlayer(playerId: string, toRoomId: string, carry?: unknown): void {
     if (this.handOver === Room.prototype.handOver) {
@@ -325,7 +354,12 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
   async arrive(roomId: string, playerId: string, carry: unknown): Promise<void> {
     this.#load();
     this.#learnRoomId(roomId);
-    this.#store.putArrival(playerId, carry);
+    this.#store.atomically(() => {
+      this.#store.putArrival(playerId, carry);
+      // They are coming back, so stop sending them to where they went.
+      this.#store.removeForward(playerId);
+    });
+    await this.#finish();
   }
 
   /**
@@ -380,6 +414,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     this.#learnRoomId(roomId);
     this.#invited = [...playerIds];
     this.#store.setMeta("invited", JSON.stringify(playerIds));
+    await this.#finish();
   }
 
   /**
@@ -391,7 +426,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
    */
   protected setTimer(name: string, delayMs: number): number {
     if (!name) throw new TypeError("A timer needs a name");
-    if (name.startsWith(AWAY_TIMER)) throw new TypeError(`Timer names starting with "${AWAY_TIMER}" are reserved`);
+    if (name.startsWith(KERNEL_TIMER)) throw new TypeError(`Timer names starting with "${KERNEL_TIMER}" are reserved`);
     if (!Number.isFinite(delayMs) || delayMs < 0) {
       throw new RangeError("delayMs must be a non-negative number");
     }
@@ -427,7 +462,15 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     const roomId = request.headers.get(ROOM_HEADER);
     if (roomId) this.#learnRoomId(roomId);
     if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
-      return this.onHttp(request, { id: playerId, connected: this.#isConnected(playerId) });
+      this.#reading += 1;
+      try {
+        return await this.onHttp(request, { id: playerId, connected: this.#isConnected(playerId) });
+      } finally {
+        // onHttp is for reading. Whatever it changed is not kept.
+        this.#reading -= 1;
+        this.#undoDrift();
+        await this.#finish();
+      }
     }
     const response = this.#connect(playerId);
     await this.#finish();
@@ -473,7 +516,8 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
       // Spend the timer first, on its own, so a failing hook cannot bring it back.
       this.#apply(() => this.#timers.delete(name));
       if (name.startsWith(AWAY_TIMER)) this.#giveUpSeat(name.slice(AWAY_TIMER.length));
-      else this.#apply(() => this.onTimer(name));
+      // Saved at once, even while ticking: the timer is spent, so its effect must not be lost.
+      else this.#apply(() => this.onTimer(name), true);
     }
     this.#alarmStale = true;
     await this.#finish();
@@ -489,6 +533,20 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
       const arrival = this.#store.arrival(playerId);
       // A player handed over by another room is always let in.
       if (arrival === undefined) {
+        const forward = this.#store.forward(playerId);
+        if (forward && !forward.delivered) {
+          // This room is still handing them over. Hold the connection without a seat:
+          // it is closed with `Moved` as soon as the other room has them.
+          this.#replaceSockets(playerId);
+          this.ctx.acceptWebSocket(server, [playerId]);
+          return new Response(null, { status: 101, webSocket: client });
+        }
+        if (forward && (forward.expires === null || forward.expires > Date.now())) {
+          // They were handed over while away, or the news did not reach them. Send them on.
+          if (forward.expires === null) this.#store.expireForward(playerId, Date.now() + FORWARD_GRACE_MS);
+          return refuse(client, server, CloseCode.Moved, forward.room);
+        }
+        if (forward) this.#store.removeForward(playerId);
         if (this.#invited && !this.#invited.includes(playerId)) {
           return refuse(client, server, CloseCode.JoinRejected, "not_invited");
         }
@@ -498,16 +556,21 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
       }
       const joined = this.#apply(() => {
         this.#roster.push(playerId);
-        if (arrival !== undefined) this.onArrive(player, JSON.parse(arrival));
-        else this.onJoin(player);
+        this.#connecting = playerId;
+        if (arrival !== undefined) {
+          this.onArrive(player, JSON.parse(arrival));
+          this.#store.removeArrival(playerId);
+        } else {
+          this.onJoin(player);
+        }
       });
       if (!joined.ok) {
         return refuse(client, server, CloseCode.JoinRejected, joined.reason);
       }
-      if (arrival !== undefined) this.#store.removeArrival(playerId);
     } else if (!this.#isConnected(playerId)) {
       this.#apply(() => {
         this.#timers.delete(AWAY_TIMER + playerId);
+        this.#connecting = playerId;
         this.onReconnect(player);
       });
     }
@@ -518,9 +581,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     }
 
     // One connection per player: the newest wins.
-    for (const old of this.ctx.getWebSockets(playerId)) {
-      old.close(CloseCode.Replaced, "replaced");
-    }
+    this.#replaceSockets(playerId);
     this.ctx.acceptWebSocket(server, [playerId]);
 
     const welcome = JSON.stringify({
@@ -543,18 +604,32 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     return new Response(null, { status: 101, webSocket: client });
   }
 
+  /** Closes a player's open connections because a newer one is taking over. */
+  #replaceSockets(playerId: string): void {
+    for (const old of this.ctx.getWebSockets(playerId)) {
+      try {
+        // Marked, so that its close is not taken for the player dropping.
+        old.serializeAttachment({ replaced: true });
+        old.close(CloseCode.Replaced, "replaced");
+      } catch {
+        // Already closed.
+      }
+    }
+  }
+
   #receive(ws: WebSocket, message: string | ArrayBuffer): void {
     const playerId = this.#playerOf(ws);
     // A socket whose seat is gone is about to be closed; ignore what it still sends.
     if (!playerId || !this.#roster.includes(playerId)) return;
 
+    // Every frame counts against the limit, including the ones refused below.
+    const allowed = this.#limiter.spend(playerId, this.maxCommandsPerSecond);
     if (typeof message !== "string") {
-      return this.#send(ws, { t: "error", reason: "binary_not_supported" });
+      return this.#send(ws, { t: "error", reason: allowed ? "binary_not_supported" : "rate_limited" });
     }
     if (message.length > this.maxMessageLength) {
-      return this.#send(ws, { t: "error", reason: "message_too_large" });
+      return this.#send(ws, { t: "error", reason: allowed ? "message_too_large" : "rate_limited" });
     }
-    const allowed = this.#limiter.spend(playerId, this.maxCommandsPerSecond);
 
     let parsed: unknown;
     try {
@@ -600,10 +675,11 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     const playerId = this.#playerOf(ws);
     // Players who left or were removed are not "disconnected": their seat is gone.
     if (!playerId || !this.#roster.includes(playerId)) return;
-    // A newer connection for the same player took over: nothing to announce.
+    // A newer connection for the same player took over: nothing to announce, now or
+    // when this close arrives after the newer connection has itself gone.
+    if ((ws.deserializeAttachment() as { replaced?: boolean } | null)?.replaced) return;
     if (this.#isConnected(playerId, ws)) return;
 
-    this.#limiter.forget(playerId);
     this.#apply(() => this.onDisconnect({ id: playerId, connected: false }));
     this.#apply(() => this.#startSeatTimeout(playerId));
     this.#broadcastPresence(ws);
@@ -653,6 +729,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     if (this.#outgoing.pending) await this.#outgoing.send((to, data) => this.relay(to, data));
     if (this.#outboxPending && !this.#flushing) {
       // One at a time: an event that arrives while a delivery is under way must not repeat it.
+      // What that event adds to the outbox is picked up by the delivery already running.
       this.#flushing = true;
       try {
         await this.#flushOutbox();
@@ -671,34 +748,48 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
    * their connection is closed so the client follows.
    */
   async #flushOutbox(): Promise<void> {
-    try {
-      for (const { id, entry } of this.#store.outbox()) {
-        if (entry.move) {
-          const { player, to, carry } = entry.move;
-          await this.handOver(to, player, carry);
-          for (const ws of this.ctx.getWebSockets(player)) {
-            try {
-              ws.close(CloseCode.Moved, to);
-            } catch {
-              // Already closed.
-            }
-          }
-        } else {
-          const { message, replay } = entry;
-          if (replay !== undefined && message.replayKey && this.matchBucket) {
-            await this.matchBucket.put(message.replayKey, replay, {
-              httpMetadata: { contentType: "application/json" },
-            });
-          }
-          await this.matchQueue?.send(message);
-        }
-        this.#store.removeFromOutbox(id);
+    let failed = false;
+    let last = 0;
+    // Read one entry at a time: hooks that commit while a delivery is awaited add to the outbox.
+    for (let next = this.#store.nextInOutbox(last); next; next = this.#store.nextInOutbox(last)) {
+      last = next.id;
+      try {
+        await this.#deliver(next.entry);
+        this.#store.removeFromOutbox(next.id);
+      } catch (err) {
+        // Left in storage; the next event tries again. The entries after it still go out.
+        failed = true;
+        console.error("[tickflare] could not deliver a finished match or a handover:", err);
       }
-      this.#outboxPending = false;
-    } catch (err) {
-      // Left in storage; the next event tries again.
-      console.error("[tickflare] could not deliver a finished match or a handover:", err);
     }
+    // Nothing has been awaited since the last read came back empty, so this cannot hide an entry.
+    this.#outboxPending = failed;
+  }
+
+  async #deliver(entry: OutboxEntry): Promise<void> {
+    if (entry.move) {
+      const { player, to, carry } = entry.move;
+      await this.handOver(to, player, carry);
+      let told = false;
+      for (const ws of this.ctx.getWebSockets(player)) {
+        if (ws.readyState === SOCKET_OPEN) told = true;
+        try {
+          ws.close(CloseCode.Moved, to);
+        } catch {
+          // Already closed.
+        }
+      }
+      // If they were away, they are told when they next connect here.
+      this.#store.deliverForward(player, to, told ? Date.now() + FORWARD_GRACE_MS : null);
+      return;
+    }
+    const { message, replay } = entry;
+    if (replay !== undefined && message.replayKey && this.matchBucket) {
+      await this.matchBucket.put(message.replayKey, replay, {
+        httpMetadata: { contentType: "application/json" },
+      });
+    }
+    await this.matchQueue?.send(message);
   }
 
   /** Starts the simulation if it should be running and stops it if it should not. */
@@ -744,8 +835,12 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
 
   /** Reads the room from storage the first time an event arrives after a (re)start. */
   #load(): void {
-    if (this.#loaded) return;
-    this.#store = new RoomStorage(this.ctx.storage.sql);
+    if (this.#loaded) {
+      if (this.#suspect || this.#reading > 0) this.#undoDrift();
+      return;
+    }
+    this.#store = new RoomStorage(this.ctx.storage);
+    this.#store.purgeForwards(Date.now());
     const room = this.#store.room();
 
     let state: string;
@@ -787,10 +882,35 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     this.#timers = new Map(JSON.parse(this.#committed.timers) as [string, number][]);
   }
 
+  /**
+   * Puts the state back if something changed it outside a hook: `onHttp`, or
+   * a hook that returned a promise and carried on after it was refused. Such
+   * a change was never checked, saved or sent, and must not ride along with
+   * the next commit. Comparing costs a pass over the state, so this is only
+   * called where one of the two can have happened.
+   */
+  #undoDrift(): void {
+    let live: string | undefined;
+    try {
+      live = JSON.stringify(this.state);
+    } catch {
+      // Not even serializable: certainly not what was committed.
+    }
+    if (live === this.#committed.state) return;
+    console.error(
+      "[tickflare] the state was changed outside a hook (in onHttp, or by a hook that returned a promise); the change was discarded",
+    );
+    this.#restore();
+  }
+
   #writeRoom(seq: number, committed: Committed): void {
+    this.#store.atomically(() => this.#persist(seq, committed));
+    this.#unsaved = false;
+  }
+
+  #persist(seq: number, committed: Committed): void {
     this.#store.writeRoom({ seq, state: committed.state, roster: committed.roster });
     if (this.tickRate > 0) this.#store.setMeta("tick", String(this.#tick));
-    this.#unsaved = false;
   }
 
   /** Remembers the id this room is reached under, the first time it hears it. */
@@ -802,58 +922,70 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
 
   /**
    * Runs a hook, then commits what it changed. If the hook fails, everything
-   * it touched is put back and the reason is returned.
+   * it touched is put back and the reason is returned. That includes what it
+   * wrote to the room's database: hook and commit run in one transaction.
    *
    * Outside the simulation a commit is saved and broadcast at once. While the
    * room is ticking, state changes are only kept in memory here: the next tick
-   * sends them and the save interval writes them. Seats and timers are always
-   * saved at once.
+   * sends them and the save interval writes them. The exception is a commit
+   * that also changes something which is always saved at once (seats, timers,
+   * the outbox) or that asks for it (`durable`, `saveNow()`): the state is
+   * written with it, so storage never holds one without the other.
    */
-  #apply(hook: () => void): Outcome {
+  #apply(hook: () => void, durable = false): Outcome {
+    if (this.#suspect || this.#reading > 0) this.#undoDrift();
     const removedBefore = this.#removed.length;
     this.#finished.length = 0;
     this.#moved.length = 0;
     this.#signals.length = 0;
+    this.#saveAsked = false;
+    const was = this.#committed;
+    const ticking = this.#loop !== undefined;
     try {
-      const returned = hook() as unknown;
-      if (isThenable(returned)) {
-        returned.then(undefined, () => {});
-        throw new TypeError("Room hooks must be synchronous");
-      }
-      const state = JSON.stringify(this.state);
-      if (state === undefined) {
-        throw new TypeError("Room state must be JSON-serializable");
-      }
-      const next: Committed = {
-        state,
-        roster: JSON.stringify(this.#roster),
-        timers: JSON.stringify([...this.#timers].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))),
-      };
-      const was = this.#committed;
-      const ticking = this.#loop !== undefined;
-      const stateChanged = next.state !== was.state;
-      const seq = stateChanged ? this.#seq + 1 : this.#seq;
+      const { next, seq, stateChanged, saved } = this.#store.atomically(() => {
+        const returned = hook() as unknown;
+        if (isThenable(returned)) {
+          returned.then(undefined, () => {});
+          this.#suspect = true;
+          throw new TypeError("Room hooks must be synchronous");
+        }
+        const state = JSON.stringify(this.state);
+        if (state === undefined) {
+          throw new TypeError("Room state must be JSON-serializable");
+        }
+        const next: Committed = {
+          state,
+          roster: JSON.stringify(this.#roster),
+          timers: JSON.stringify([...this.#timers].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))),
+        };
+        // Serialized before anything is written, so a value that cannot be is caught here.
+        const owed = [
+          ...this.#finished.map((finished) => JSON.stringify(finished satisfies OutboxEntry)),
+          ...this.#moved.map((move) => JSON.stringify({ move } satisfies OutboxEntry)),
+        ];
 
-      if (next.roster !== was.roster || (stateChanged && !ticking)) {
-        this.#writeRoom(seq, next);
-      } else if (stateChanged) {
-        this.#unsaved = true;
-      }
-      if (next.timers !== was.timers) {
-        this.#store.replaceTimers(this.#timers);
-        this.#alarmStale = true;
-      }
+        const stateChanged = next.state !== was.state;
+        const seq = stateChanged ? this.#seq + 1 : this.#seq;
+        const rosterChanged = next.roster !== was.roster;
+        const timersChanged = next.timers !== was.timers;
+        // What must never be in storage without the state it belongs to.
+        const anchored = rosterChanged || timersChanged || owed.length > 0 || durable || this.#saveAsked;
+        const saved = rosterChanged || ((stateChanged || this.#unsaved) && (!ticking || anchored));
 
-      for (const finished of this.#finished.splice(0)) {
-        this.#store.addToOutbox(finished);
-        this.#outboxPending = true;
-      }
-      for (const move of this.#moved.splice(0)) {
-        this.#store.addToOutbox({ move });
-        this.#outboxPending = true;
-        this.#presenceStale = true;
-      }
+        if (saved) this.#persist(seq, next);
+        if (timersChanged) this.#store.replaceTimers(this.#timers);
+        for (const body of owed) this.#store.addToOutbox(body);
+        for (const move of this.#moved) this.#store.putForward(move.player, move.to);
+        return { next, seq, stateChanged, saved };
+      });
 
+      if (saved) this.#unsaved = false;
+      else if (stateChanged) this.#unsaved = true;
+      if (next.timers !== was.timers) this.#alarmStale = true;
+      if (this.#finished.length > 0 || this.#moved.length > 0) this.#outboxPending = true;
+      if (this.#moved.length > 0) this.#presenceStale = true;
+      this.#finished.length = 0;
+      this.#moved.length = 0;
       this.#outgoing.add(this.#signals.splice(0));
 
       this.#seq = seq;
@@ -869,6 +1001,8 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
       if (err instanceof Rejection) return { ok: false, reason: err.reason };
       console.error("[tickflare] room hook failed:", err);
       return { ok: false, reason: "internal_error" };
+    } finally {
+      this.#connecting = null;
     }
   }
 

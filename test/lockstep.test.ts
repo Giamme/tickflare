@@ -125,17 +125,36 @@ describe("lockstep", () => {
     const room = freshRoom();
     const p1 = await join(room, "p1");
     const p2 = await join(room, "p2");
-    p1.send({ k: "h", n: 20, h: "same" });
-    p2.send({ k: "h", n: 20, h: "same" });
+    await until(() => p1.state!.turn >= 6 && p2.state!.turn >= 6, "six turns");
+    p1.send({ k: "h", n: 3, h: "same" });
+    p2.send({ k: "h", n: 3, h: "same" });
     await until(() => p2.of("ack").length === 1);
     const before = p1.tick;
     await until(() => p1.tick >= before + 3);
     expect(p1.state!.desync).toBeNull();
 
-    p1.send({ k: "h", n: 40, h: "one" });
-    p2.send({ k: "h", n: 40, h: "other" });
+    p1.send({ k: "h", n: 6, h: "one" });
+    p2.send({ k: "h", n: 6, h: "other" });
     await until(() => p1.state!.desync !== null && p2.state!.desync !== null, "the desync flag");
-    expect(p1.state!.desync).toEqual({ turn: 40 });
+    expect(p1.state!.desync).toEqual({ turn: 6 });
+  });
+
+  it("needs two players to disagree, about a turn that has happened", async () => {
+    const room = freshRoom();
+    const p1 = await join(room, "p1");
+    const p2 = await join(room, "p2");
+    await until(() => p1.state!.turn >= 4 && p2.state!.turn >= 4, "four turns");
+
+    // One player changing their mind proves nothing.
+    p1.send({ k: "h", n: 2, h: "one" });
+    p1.send({ k: "h", n: 2, h: "other" });
+    // Nor does a claim about a turn nobody has seen yet.
+    p1.send({ k: "h", n: 1_000_000, h: "one" });
+    p2.send({ k: "h", n: 1_000_000, h: "other" });
+    await until(() => p1.of("ack").length === 3 && p2.of("ack").length === 1);
+    const before = p1.tick;
+    await until(() => p1.tick >= before + 3);
+    expect(p1.state!.desync).toBeNull();
   });
 
   it("refuses malformed inputs and more inputs than a turn allows", async () => {

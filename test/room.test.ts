@@ -1,5 +1,5 @@
 import { evictDurableObject } from "cloudflare:test";
-import { env } from "cloudflare:workers";
+import { env, exports } from "cloudflare:workers";
 import { describe, expect, it, vi } from "vitest";
 import { CloseCode } from "../src/protocol.js";
 import { connect, freshRoom, sleep, twoPlayers, upgrade } from "./helpers.js";
@@ -47,6 +47,38 @@ describe("joining", () => {
     const { p2 } = await twoPlayers(room);
     p2.command({ type: "noop" });
     await p2.next("ack");
+  });
+});
+
+describe("hooks", () => {
+  it("count the player who is connecting as connected while their join hook runs", async () => {
+    const p1 = await connect(freshRoom(), "p1", {}, "/edge");
+    expect((await p1.next("welcome")).state.log).toEqual(["join:p1:true"]);
+  });
+
+  it("do not get to keep what they change after being refused for returning a promise", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { p1 } = await twoPlayers();
+    p1.command({ type: "async" });
+    await p1.next("reject");
+    await sleep(20); // the promise has run on and added 1000 to the total
+
+    const id = p1.command({ type: "noop" });
+    expect(await p1.any()).toEqual({ t: "ack", id, seq: 2 });
+    p1.command({ type: "add", n: 1 });
+    expect((await p1.next("state")).state.total).toBe(1);
+    error.mockRestore();
+  });
+
+  it("do not get to keep what onHttp changes", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { room, p1 } = await twoPlayers(freshRoom(), "/edge");
+    const response = await exports.default.fetch(`https://tickflare.test/edge/${room}/poke?player=p1`);
+    expect(await response.text()).toBe("poked");
+
+    p1.command({ type: "add", n: 1 });
+    expect((await p1.next("state")).state.total).toBe(1);
+    error.mockRestore();
   });
 });
 
@@ -120,6 +152,43 @@ describe("commands", () => {
     await sleep(1100);
     p1.command({ type: "noop" });
     await p1.next("ack");
+  });
+
+  it("does not refill a player's allowance when they reconnect", async () => {
+    const room = freshRoom();
+    let p1 = await connect(room, "p1");
+    await p1.next("welcome");
+    let acks = 0;
+    for (let round = 0; round < 4; round++) {
+      for (let i = 0; i < 30; i++) p1.command({ type: "noop" });
+      for (let i = 0; i < 30; i++) if ((await p1.any()).t === "ack") acks += 1;
+      p1.ws.close(1000, "bye");
+      await sleep(20);
+      p1 = await connect(room, "p1");
+      await p1.next("welcome");
+    }
+    // 30 a second with a burst of 30: four rounds in well under a second cannot all pass.
+    expect(acks).toBeLessThan(70);
+  });
+
+  it("counts the frames it refuses unread against the limit as well", async () => {
+    const { p1 } = await twoPlayers();
+    const tooLarge = JSON.stringify({ t: "cmd", id: 1, data: { type: "secret", value: "x".repeat(300) } });
+    for (let i = 0; i < 40; i++) p1.raw(tooLarge);
+
+    const reasons: string[] = [];
+    for (let i = 0; i < 40; i++) reasons.push((await p1.next("error")).reason);
+    expect(reasons.slice(0, 30)).toEqual(Array(30).fill("message_too_large"));
+    expect(reasons.at(-1)).toBe("rate_limited");
+  });
+
+  it("lets single frames through at a rate below one a second", async () => {
+    const p1 = await connect(freshRoom(), "p1", {}, "/half");
+    await p1.next("welcome");
+    p1.command({ type: "noop" });
+    expect((await p1.any()).t).toBe("ack");
+    const id = p1.command({ type: "noop" });
+    expect(await p1.any()).toEqual({ t: "reject", id, reason: "rate_limited" });
   });
 
   it("refuses what parseCommand does not accept", async () => {
@@ -202,6 +271,27 @@ describe("connections", () => {
     again.command({ type: "add", n: 1 });
     expect((await again.next("state")).state.log).toEqual(["join:p1", "join:p2"]);
     expect((await p2.next("presence")).players[0]).toEqual({ id: "p1", connected: true });
+  });
+
+  it("reports a player dropping once, even when an older connection of theirs closes later", async () => {
+    const room = freshRoom();
+    const watcher = await connect(room, "w");
+    await watcher.next("welcome");
+    const first = await connect(room, "p1");
+    await first.next("welcome");
+    // Replace the connection and drop the replacement in the same breath.
+    const second = await connect(room, "p1");
+    second.ws.close(1000, "bye");
+    await sleep(300);
+
+    watcher.command({ type: "noop" });
+    let log: string[] = [];
+    for (;;) {
+      const frame = await watcher.any();
+      if (frame.t === "state") log = frame.state.log;
+      if (frame.t === "ack") break;
+    }
+    expect(log.filter((line) => line === "leave:p1")).toHaveLength(1);
   });
 
   it("picks up from storage after the room is evicted, with sockets still open", async () => {

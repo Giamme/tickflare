@@ -1,3 +1,5 @@
+import { runInDurableObject } from "cloudflare:test";
+import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { CloseCode } from "../src/protocol.js";
 import { cellOf, shardFor } from "../src/world.js";
@@ -67,6 +69,95 @@ describe("movePlayer", () => {
     const stranger = await connect(full.room, "p8");
     expect(await stranger.closed).toEqual({ code: CloseCode.RoomFull, reason: "room_full" });
     p1.ws.close();
+  });
+});
+
+describe("handing over a player who is away", () => {
+  /** p1 stays; p2 has a seat but no connection. */
+  async function oneAway(room: string) {
+    const p1 = await connect(room, "p1", {}, "/edge");
+    await p1.next("welcome");
+    const p2 = await connect(room, "p2", {}, "/edge");
+    await p2.next("welcome");
+    p2.ws.close(1000, "tab reloading");
+    await sleep(50);
+    return p1;
+  }
+
+  const seatsIn = (room: string) =>
+    runInDurableObject(env.EDGE.get(env.EDGE.idFromName(room)), (_instance, state) =>
+      JSON.parse(state.storage.sql.exec<{ players: string }>("SELECT players FROM tickflare_room").one().players),
+    );
+
+  it("sends them on to the new room when they come back", async () => {
+    const room = freshRoom();
+    const next = freshRoom();
+    const p1 = await oneAway(room);
+    p1.command({ type: "edge:moveOther", id: "p2", to: next } as never);
+    await sleep(300); // the handover has been delivered
+
+    const back = await connect(room, "p2", {}, "/edge");
+    expect(await back.closed).toEqual({ code: CloseCode.Moved, reason: next });
+    expect(await seatsIn(room)).toEqual(["p1"]);
+
+    const arrived = await connect(next, "p2", {}, "/edge");
+    expect((await arrived.next("welcome")).state.log).toEqual([`arrive:p2:${JSON.stringify({ gold: 7 })}`]);
+  });
+
+  it("holds them without a seat if they come back while the handover is under way", async () => {
+    const room = freshRoom();
+    const next = freshRoom();
+    const p1 = await oneAway(room);
+    p1.command({ type: "edge:moveOther", id: "p2", to: next } as never);
+    await sleep(30); // the handover takes 100 ms
+
+    const back = await connect(room, "p2", {}, "/edge");
+    const first = await Promise.race([
+      back.closed.then((closed) => ({ closed })),
+      back.any().then((frame) => ({ frame: frame.t })),
+    ]);
+    expect(first).toEqual({ closed: { code: CloseCode.Moved, reason: next } });
+    expect(await seatsIn(room)).toEqual(["p1"]);
+  });
+
+  it("tells a player again who comes straight back, in case the news did not reach them", async () => {
+    const { room, p1 } = await twoPlayers();
+    const next = freshRoom();
+    p1.command({ type: "move", to: next, gold: 1 });
+    expect(await p1.closed).toEqual({ code: CloseCode.Moved, reason: next });
+
+    const again = await connect(room, "p1");
+    expect(await again.closed).toEqual({ code: CloseCode.Moved, reason: next });
+  });
+
+  it("lets them join afresh once that has been a while", async () => {
+    const { room, p1 } = await twoPlayers();
+    const next = freshRoom();
+    p1.command({ type: "move", to: next, gold: 1 });
+    expect(await p1.closed).toEqual({ code: CloseCode.Moved, reason: next });
+
+    // Half a minute later, as far as the room can tell.
+    await runInDurableObject(env.ROOMS.get(env.ROOMS.idFromName(room)), (_instance, state) => {
+      state.storage.sql.exec("UPDATE tickflare_forwards SET expires = 1");
+    });
+    const fresh = await connect(room, "p1");
+    expect((await fresh.next("welcome")).state.log).toEqual(["join:p1", "join:p2", "join:p1"]);
+  });
+
+  it("seats a player normally when another room hands them back", async () => {
+    const { room, p1 } = await twoPlayers();
+    const next = freshRoom();
+    p1.command({ type: "move", to: next, gold: 1 });
+    expect(await p1.closed).toEqual({ code: CloseCode.Moved, reason: next });
+
+    const there = await connect(next, "p1");
+    await there.next("welcome");
+    there.command({ type: "move", to: room, gold: 2 });
+    expect(await there.closed).toEqual({ code: CloseCode.Moved, reason: room });
+
+    const home = await connect(room, "p1");
+    const welcome = await home.next("welcome");
+    expect(welcome.state.log.at(-1)).toBe(`arrive:p1:${JSON.stringify({ from: next, gold: 2 })}`);
   });
 });
 

@@ -111,10 +111,10 @@ export async function connect(
 }
 
 /** Two seated players with the join chatter already consumed. */
-export async function twoPlayers(room = freshRoom()) {
-  const p1 = await connect(room, "p1");
+export async function twoPlayers(room = freshRoom(), prefix = "/rooms") {
+  const p1 = await connect(room, "p1", {}, prefix);
   await p1.next("welcome");
-  const p2 = await connect(room, "p2");
+  const p2 = await connect(room, "p2", {}, prefix);
   await p2.next("welcome");
   await p1.next("state");
   await p1.next("presence");

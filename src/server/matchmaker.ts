@@ -37,6 +37,13 @@ export abstract class Matchmaker<Env = Cloudflare.Env> extends DurableObject<Env
    */
   protected maxWaitMs = 0;
 
+  /** A pass over the queue is under way. */
+  #matching = false;
+  /** Someone arrived or the wait ran out during that pass, so the queue needs another look. */
+  #again = false;
+  /** Reservations that failed in a row. Spaces out the next try. */
+  #failures = 0;
+
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair(PING, PONG));
@@ -100,45 +107,89 @@ export abstract class Matchmaker<Env = Cloudflare.Env> extends DurableObject<Env
     await this.#match();
   }
 
-  /** Forms as many matches as the waiting players allow, longest wait first. */
+  /**
+   * Forms as many matches as the waiting players allow, longest wait first.
+   *
+   * Reserving a room takes a moment, and players come and go meanwhile. So
+   * only one pass runs at a time: whoever calls during a pass asks for the
+   * queue to be looked at again when that pass is done, with whoever is
+   * waiting by then.
+   */
   async #match(): Promise<void> {
+    if (this.#matching) {
+      this.#again = true;
+      return;
+    }
+    this.#matching = true;
+    try {
+      do {
+        this.#again = false;
+        if ((await this.#pass()) === "changed") this.#again = true;
+      } while (this.#again);
+    } finally {
+      this.#matching = false;
+    }
+  }
+
+  /** One look at the queue. "changed" means it has to be looked at again from the start. */
+  async #pass(): Promise<"done" | "changed"> {
     const queue = this.ctx
       .getWebSockets()
       .filter((ws) => ws.readyState === 1)
       .map((ws) => ({ ws, ...(ws.deserializeAttachment() as Waiting) }))
       .sort((a, b) => a.order - b.order);
 
-    while (queue.length >= this.matchSize) {
-      if (!(await this.#start(queue.splice(0, this.matchSize)))) return;
+    if (queue.length >= this.matchSize) {
+      const started = await this.#start(queue.splice(0, this.matchSize));
+      if (started === "failed") {
+        // They keep waiting. Try again soon, sooner still if someone else arrives.
+        await this.ctx.storage.setAlarm(Date.now() + Math.min(30_000, 500 * 2 ** this.#failures++));
+        return "done";
+      }
+      this.#failures = 0;
+      // Matched or not, the queue is no longer what was read above.
+      return "changed";
     }
 
     const fewest = this.minPlayers ?? this.matchSize;
-    if (this.maxWaitMs <= 0 || fewest >= this.matchSize) return;
+    if (this.maxWaitMs <= 0 || fewest >= this.matchSize) return "done";
     const longest = queue[0];
     if (!longest || queue.length < fewest) {
       await this.ctx.storage.deleteAlarm();
-      return;
+      return "done";
     }
     const due = longest.since + this.maxWaitMs;
     if (Date.now() < due) {
       await this.ctx.storage.setAlarm(due);
-    } else {
-      await this.ctx.storage.deleteAlarm();
-      await this.#start(queue.splice(0));
+      return "done";
     }
+    await this.ctx.storage.deleteAlarm();
+    const started = await this.#start(queue.splice(0));
+    if (started === "failed") {
+      await this.ctx.storage.setAlarm(Date.now() + Math.min(30_000, 500 * 2 ** this.#failures++));
+      return "done";
+    }
+    this.#failures = 0;
+    return "changed";
   }
 
-  /** Reserves a room for the group and sends them there. False if the room could not be reserved. */
-  async #start(group: (Waiting & { ws: WebSocket })[]): Promise<boolean> {
+  /**
+   * Reserves a room for the group and sends them there. "failed" if the room
+   * could not be reserved, "gone" if one of them stopped waiting meanwhile:
+   * the others go back in the queue and the room is left unused.
+   */
+  async #start(group: (Waiting & { ws: WebSocket })[]): Promise<"matched" | "gone" | "failed"> {
     const players = group.map((waiting) => waiting.player);
     const room = crypto.randomUUID();
     try {
       await this.reserveRoom(room, players, mostCommonHint(group));
     } catch (err) {
-      // They keep waiting; the next arrival tries again.
       console.error("[tickflare] could not reserve a room:", err);
-      return false;
+      return "failed";
     }
+    // Someone who left during the reservation would leave the others in a room that never fills.
+    if (group.some(({ ws }) => ws.readyState !== 1)) return "gone";
+
     const found = JSON.stringify({ t: "match", room, players } satisfies MatchFound);
     for (const { ws } of group) {
       try {
@@ -148,7 +199,7 @@ export abstract class Matchmaker<Env = Cloudflare.Env> extends DurableObject<Env
         // The player gave up at the last moment. Their seat stays reserved.
       }
     }
-    return true;
+    return "matched";
   }
 }
 

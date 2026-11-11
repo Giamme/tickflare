@@ -158,7 +158,7 @@ You can still write `authenticate` yourself, for example to read a session cooki
 | `onTick(dt)` | `tickRate` times a second while the room is ticking | `dt` is always `1 / tickRate` seconds |
 | `shouldTick()` | After every event and every tick | Return false to pause the simulation. Defaults to true |
 | `view(player)` | Before state is sent to a player | Return what that player may see. Defaults to everything |
-| `onHttp(request, player)` | A plain HTTP request to `{prefix}/{roomId}/...` | For reading from the room, e.g. a scoreboard. Already authenticated. Defaults to 404 |
+| `onHttp(request, player)` | A plain HTTP request to `{prefix}/{roomId}/...` | For reading from the room, e.g. a scoreboard. Already authenticated. Defaults to 404. Anything it changes in `this.state` is discarded |
 
 Options are plain fields you override: `maxPlayers` (default unlimited), `maxMessageLength` (default 16,384 characters), `maxCommandsPerSecond` (default 30), `seatTimeoutMs` (default never), `tickRate` (default 0, which is event mode) and `saveIntervalMs` (default 5,000).
 
@@ -168,9 +168,10 @@ Options are plain fields you override: `maxPlayers` (default unlimited), `maxMes
 | --- | --- |
 | `this.state` | The authoritative state. Change it in place |
 | `this.players` | Everyone with a seat, in join order, each with a `connected` flag |
-| `this.setTimer(name, delayMs)` | Runs `onTimer(name)` once, `delayMs` from now. Setting the same name again replaces it. Returns the time it fires, in epoch milliseconds |
+| `this.setTimer(name, delayMs)` | Runs `onTimer(name)` once, `delayMs` from now. Setting the same name again replaces it. Returns the time it fires, in epoch milliseconds. Names starting with `tickflare:` are the kernel's |
 | `this.clearTimer(name)` | Cancels a timer |
 | `this.removePlayer(playerId, reason?)` | Takes a seat away and closes that player's connection. `onLeave` is not called |
+| `this.saveNow()` | While ticking, writes what this hook changes to storage as soon as it returns instead of at the next save interval. For hooks that also write to the room's database themselves |
 
 Timers and seats cover the usual table manners. A turn clock, with the deadline in the state so clients can show a countdown:
 
@@ -217,7 +218,7 @@ What changes while a room is ticking:
 
 - **Deltas.** After each tick every player gets a `patch` frame with only what changed in their own `view()`. The client applies it for you; `onState` and `client.state` work as before. In the arena example a tick is about 110 bytes on the wire against 740 for the whole state.
 - **Commands** are applied when they arrive and acknowledged at once. Their effect reaches clients with the next tick, so `send()` resolving no longer means the client already shows the result.
-- **Saving.** The state is written to storage every `saveIntervalMs` (5 seconds by default) and when the simulation stops, not on every change. A room that is torn down mid-simulation by a deploy or a crash resumes from the last write. Seats and timers are still saved the moment they change.
+- **Saving.** The state is written to storage every `saveIntervalMs` (5 seconds by default) and when the simulation stops, not on every change. A room that is torn down mid-simulation by a deploy or a crash resumes from the last write. Seats, timers, finished matches and handovers are still saved the moment they change, and the state is written with them, so storage never holds one without the other. The same goes for what `onTimer` does, and for any hook that calls `this.saveNow()`.
 - **Stopping.** The simulation stops when the last player disconnects or `shouldTick()` returns false, and starts again when a player is connected and it returns true.
 
 On the client, `Interpolator` smooths what arrives once per tick for drawing at screen rate. It always glides from what is on screen, so a late or bunched update bends the motion instead of making it jump:
@@ -287,7 +288,7 @@ How it works:
 - **Even pacing.** A real network delivers turns in fits. The client holds one turn in reserve (`bufferTurns`) and advances the simulation at the room's pace, so movement does not stutter. An order is therefore visible one to two turns after it reaches the room; show the player their click straight away, as the skirmish does.
 - **Recording.** Every turn in which something happened is stored in the room. The recording is served at `{prefix}/{roomId}/replay`, behind the same `authenticate` as the WebSocket. `runReplay(replay, { create, step })` plays one back.
 - **Catching up.** On every (re)connect the client rebuilds its simulation from the recording and then follows the live turns. A reload mid-match ends in the same state as everyone else.
-- **Desync detection.** If you pass `hash`, clients report it every 20 turns. When two players disagree about a turn the room sets `desync` and every client's `onDesync` fires.
+- **Desync detection.** If you pass `hash`, clients report it every 20 turns. When two players disagree about a turn that has happened, the room sets `desync` and every client's `onDesync` fires. One player alone cannot set it.
 
 Your simulation must be deterministic. In practice:
 
@@ -332,6 +333,7 @@ const client = new RoomClient(`wss://my-game.example/rooms/${room}`);
 ```
 
 - **Reserved seats.** Only the matched players can take a seat in the room; anyone else is closed with `4002` and `not_invited`.
+- **One match at a time.** Reserving a room takes a moment. Players who arrive meanwhile wait for the next match, and if one of the group gives up meanwhile the others go back in the queue instead of into a room that will never fill. A reservation that fails is tried again by itself, a little later each time.
 - **Placement.** The gateway works out roughly where each player is from `request.cf`, and the matchmaker passes the most common region as `locationHint`, so the room is created near the players. Locally there is no `request.cf` and the hint is undefined.
 - **Cost.** The queue is the set of open WebSockets, so a matchmaker hibernates while people wait.
 
@@ -373,7 +375,7 @@ export default {
 ```
 
 - The message is `{ id, room, endedAt, players, result, replayKey? }`. `result` is whatever you passed.
-- The announcement is saved with the room in the same step as the hook's other changes, and sent afterwards. If the queue or bucket is unavailable it is sent on the room's next event. A hook that rejects announces nothing.
+- The announcement is saved with the room in the same step as the hook's other changes, and sent afterwards. If the queue or bucket is unavailable it is sent on the room's next event, and meanwhile does not hold up anything else the room has to deliver. A hook that rejects announces nothing.
 - `recordMatches` creates its table, `tickflare_matches`, on first use (the SQL is exported as `MATCHES_SCHEMA` if you prefer migrations), and stores a match once however often its message is delivered. `recentMatches(db, limit)` reads them back.
 - Do your own post-match work in the same consumer: ratings, achievements, notifications.
 
@@ -414,6 +416,7 @@ export class Zone extends Room<State, Command, Env> {
 - `movePlayer` gives up the seat as part of the hook's commit. The handover itself is saved with the room and delivered afterwards; if the other room cannot be reached it is tried again on the next event. Only then is the connection closed, with `4004` and the new room's id.
 - The client follows by itself: it reconnects to the same URL with the new room id and calls `onMoved(roomId)`. From the game's point of view `onState` just starts delivering the new room's state.
 - A player who was handed over is always admitted, even if the room is full or reserved.
+- A player who is not connected when they are handed over is sent on, with the same `4004`, when they next connect to the room they left. So is one who comes back within half a minute of being told, in case the news never reached them. After that, connecting there is an ordinary join again.
 
 #### Seeing across a border
 
@@ -441,20 +444,21 @@ protected override onSignal(fromRoomId: string, data: unknown): void {
 
 ### What the kernel does for you
 
-- **Rollback.** If a hook calls `reject()` or throws, everything it did is undone: changes to `this.state`, timers it set or cleared, and players it removed.
+- **Rollback.** If a hook calls `reject()` or throws, everything it did is undone: changes to `this.state`, timers it set or cleared, players it removed, and anything it wrote to the room's database itself. The same happens if the result cannot be saved, for instance a match result that is not JSON.
 - **Persistence.** Every accepted change is written to the room's SQLite storage before anyone hears about it. A room that hibernates, restarts or is redeployed picks up where it left off, timers included.
 - **Timers.** Any number of named timers share the object's single alarm. Each fires once; one whose hook throws is spent, not retried.
 - **Ordering.** Each change gets the next `seq`. In event mode the sender's `ack` arrives after the `state` frame it caused, so when `send()` resolves the client already shows the result.
 - **Seats and resume.** A player who drops keeps their seat until they leave, you remove them, or `seatTimeoutMs` runs out. When they reconnect they get the current state in the `welcome` frame; there is nothing to replay.
 - **One connection per player.** A newer connection for the same player closes the older one.
 - **Hidden information.** With `view()`, each player receives only their own projection of the state.
-- **Rate limiting.** Each player may send `maxCommandsPerSecond` frames a second, with a burst of the same size. Frames over the limit are refused with `rate_limited` before they reach your code.
+- **Rate limiting.** Each player may send `maxCommandsPerSecond` frames a second, with a burst of the same size. Frames over the limit are refused with `rate_limited` before they reach your code. The allowance belongs to the player, not the connection, so reconnecting does not refill it, and every frame counts, including the ones that cannot be read.
 
 ### Rules for hooks
 
 - Hooks are **synchronous**. A hook that returns a promise is refused with `internal_error`, because the kernel cannot save or roll back work that finishes later.
-- `this.state` must be **JSON-serializable**. It is stored and sent as JSON.
-- Identity is **established at the gateway**. Rooms trust the id your `authenticate` function returns; see [Identity](#identity).
+- `this.state` must be **JSON-serializable**. It is stored and sent as JSON, in one database row, which Cloudflare limits to 2 MB.
+- Change the state **only inside hooks**. What `onHttp` changes, or what a refused hook's promise changes later, is discarded.
+- Identity is **established at the gateway**. Rooms trust the id your `authenticate` function returns; see [Identity](#identity). An `authenticate` that returns nothing is answered with 401.
 
 ## Protocol
 
@@ -488,6 +492,13 @@ Close codes: `4000` replaced by a newer connection, `4001` room full, `4002` ref
 - Handover is for rooms in event mode and state sync. A lockstep client does not follow a move.
 - The matchmaker is first come, first served: no skill ratings.
 - Match history is one table keyed by match. There is no per-player index or leaderboard yet.
+- A `RoomClient` keeps the URL it was given, join token included. Once the token has expired, or a handover leads to a room the token is not valid for, it cannot reconnect. `onStatus` reports each failed attempt with its close code; the way out today is a new client with a new token.
+- What a room owes (a finished match, a handover) and could not deliver is tried again on the room's next event, not on a timer of its own. Delivery is at least once: after a crash at the wrong moment a handover or a match message can arrive twice.
+- A replay passes through a row of the room's database on its way to R2, so it is limited to 2 MB as well.
+- Rooms are never deleted. A room's storage, a lockstep recording included, stays until you remove it.
+- A lockstep recording can be read by anyone the gateway lets through, seated or not.
+- Players dropped by a deploy are not reported: `onDisconnect` is not called for them, though their seat timeout still starts.
+- Join tokens scoped to a name are valid for the room and for the queue of that name.
 
 ## Roadmap
 

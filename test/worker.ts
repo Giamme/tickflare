@@ -308,6 +308,118 @@ function whoIs(request: Request): string | Response {
   return player ?? new Response("Who are you?", { status: 401 });
 }
 
+// ---------------------------------------------------------------------------
+// Fixtures for the awkward cases: slow deliveries, restarts mid-simulation, values that cannot be saved.
+// ---------------------------------------------------------------------------
+
+/**
+ * TestRoom with a handover that takes 100 ms, as an RPC to a cold room might,
+ * that fails for rooms called "nowhere-...", and a few extra commands.
+ */
+export class EdgeRoom extends TestRoom {
+  protected override maxPlayers = 4;
+  protected override matchBucket = this.env.REPLAYS;
+
+  protected override parseCommand(raw: unknown): TestCommand {
+    const type = (raw as { type?: unknown } | null)?.type;
+    if (typeof type === "string" && type.startsWith("edge:")) return raw as TestCommand;
+    return super.parseCommand(raw);
+  }
+
+  protected override onJoin(player: Player): void {
+    const me = this.players.find((p) => p.id === player.id);
+    this.state.log.push(`join:${player.id}:${me?.connected}`);
+  }
+
+  protected override onCommand(player: Player, command: TestCommand): void | Promise<void> {
+    const c = command as unknown as { type: string; id?: string; to?: string };
+    switch (c.type) {
+      case "edge:finishBig":
+        this.state.total += 5;
+        this.finishMatch({ n: BigInt(1) as unknown as number });
+        return;
+      case "edge:moveOther":
+        this.movePlayer(c.id!, c.to!, { gold: 7 });
+        return;
+      case "edge:carryBad":
+        this.state.total += 5;
+        this.movePlayer(player.id, c.to!, { n: BigInt(1) });
+        return;
+      case "edge:scribble": {
+        // A hook that keeps something in the room's database itself, then changes its mind.
+        const sql = this.ctx.storage.sql;
+        sql.exec("CREATE TABLE IF NOT EXISTS notes (text TEXT NOT NULL)");
+        sql.exec("INSERT INTO notes (text) VALUES ('written by a hook that failed')");
+        return reject("changed_my_mind");
+      }
+    }
+    return super.onCommand(player, command);
+  }
+
+  /** Reading is all onHttp is for. This one changes the state anyway. */
+  protected override onHttp(): Response {
+    this.state.total += 1000;
+    return new Response("poked");
+  }
+
+  protected override async handOver(roomId: string, playerId: string, carry: unknown): Promise<void> {
+    await scheduler.wait(100);
+    if (roomId.startsWith("nowhere-")) throw new Error("that room cannot be reached");
+    const rooms = this.env.EDGE;
+    await rooms.get(rooms.idFromName(roomId)).arrive(roomId, playerId, carry);
+  }
+}
+
+/** TickRoom that never reaches its save interval during a test, and can finish a match. */
+export class LazyTickRoom extends TickRoom {
+  protected override saveIntervalMs = 60_000;
+  protected override matchQueue = this.env.MATCHES;
+
+  protected override onCommand(player: Player, command: TickCommand): void {
+    if ((command as { type: string }).type === "win") {
+      this.state.bumps = 99;
+      this.finishMatch({ winner: player.id });
+      return;
+    }
+    super.onCommand(player, command);
+  }
+}
+
+/** One command every two seconds. */
+export class HalfRate extends TestRoom {
+  protected override maxCommandsPerSecond = 0.5;
+}
+
+/** A matchmaker whose reservation takes 100 ms and is written down. */
+export class SlowLobby extends TestMatchmaker {
+  protected override async reserveRoom(
+    roomId: string,
+    players: string[],
+    locationHint: DurableObjectLocationHint | undefined,
+  ): Promise<void> {
+    await scheduler.wait(100);
+    await this.ctx.storage.put(`reserved:${roomId}`, players);
+    await super.reserveRoom(roomId, players, locationHint);
+  }
+}
+
+/** A matchmaker whose first reservation fails. */
+export class FlakyLobby extends TestMatchmaker {
+  #failed = false;
+
+  protected override async reserveRoom(
+    roomId: string,
+    players: string[],
+    locationHint: DurableObjectLocationHint | undefined,
+  ): Promise<void> {
+    if (!this.#failed) {
+      this.#failed = true;
+      throw new Error("no room to be had");
+    }
+    await super.reserveRoom(roomId, players, locationHint);
+  }
+}
+
 export default {
   async fetch(request, env): Promise<Response> {
     const response =
@@ -317,6 +429,11 @@ export default {
       (await routeToMatchmaker(request, { matchmaker: env.MATCHMAKER, authenticate: whoIs })) ??
       (await routeToRoom(request, { rooms: env.AWAY, prefix: "/away", authenticate: whoIs })) ??
       (await routeToMatchmaker(request, { matchmaker: env.PATIENT, prefix: "/patient", authenticate: whoIs })) ??
+      (await routeToRoom(request, { rooms: env.EDGE, prefix: "/edge", authenticate: whoIs })) ??
+      (await routeToRoom(request, { rooms: env.LAZY, prefix: "/lazy", authenticate: whoIs })) ??
+      (await routeToRoom(request, { rooms: env.HALF, prefix: "/half", authenticate: whoIs })) ??
+      (await routeToMatchmaker(request, { matchmaker: env.SLOW, prefix: "/slow", authenticate: whoIs })) ??
+      (await routeToMatchmaker(request, { matchmaker: env.FLAKY, prefix: "/flaky", authenticate: whoIs })) ??
       (await routeToRoom(request, {
         rooms: env.ROOMS,
         prefix: "/secure",

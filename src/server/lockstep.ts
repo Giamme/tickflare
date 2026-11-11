@@ -41,10 +41,15 @@ export abstract class LockstepRoom<Input, Env = Cloudflare.Env> extends Room<
   /** Inputs one player may send within a single turn. More are refused. */
   protected maxInputsPerTurn = 32;
 
-  #tableReady = false;
   #caughtUp = false;
-  /** First hash reported for each recent turn. */
-  #hashes = new Map<number, string>();
+  /** The first hash reported for each recent turn, and who reported it. */
+  #hashes = new Map<number, { hash: string; by: string }>();
+
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
+    // Here, not in a hook: a hook that fails takes back everything it wrote, tables included.
+    ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS tickflare_turns (n INTEGER PRIMARY KEY, entries TEXT NOT NULL)");
+  }
 
   /**
    * Turn an untrusted client payload into an input. Every client will feed
@@ -82,13 +87,19 @@ export abstract class LockstepRoom<Input, Env = Cloudflare.Env> extends Room<
       return;
     }
 
+    // Only turns that have happened, and recently enough to still be compared.
+    const turn = this.state.turn;
+    if (command.n > turn || command.n <= turn - HASHES_KEPT) return;
     const first = this.#hashes.get(command.n);
     if (first === undefined) {
-      this.#hashes.set(command.n, command.h);
+      this.#hashes.set(command.n, { hash: command.h, by: player.id });
       if (this.#hashes.size > HASHES_KEPT) {
-        this.#hashes.delete(this.#hashes.keys().next().value!);
+        for (const n of this.#hashes.keys()) {
+          if (n <= turn - HASHES_KEPT) this.#hashes.delete(n);
+        }
       }
-    } else if (first !== command.h && !this.state.desync) {
+    } else if (first.by !== player.id && first.hash !== command.h && !this.state.desync) {
+      // It takes two players to disagree: one changing their mind proves nothing.
       this.state.desync = { turn: command.n };
       this.onDesync(command.n);
     }
@@ -132,6 +143,8 @@ export abstract class LockstepRoom<Input, Env = Cloudflare.Env> extends Room<
         state.turn,
         JSON.stringify(state.entries),
       );
+      // The recording and the room go to storage together, or a restart would record these entries twice.
+      this.saveNow();
     }
   }
 
@@ -169,11 +182,6 @@ export abstract class LockstepRoom<Input, Env = Cloudflare.Env> extends Room<
   }
 
   #turns(): SqlStorage {
-    const sql = this.ctx.storage.sql;
-    if (!this.#tableReady) {
-      sql.exec("CREATE TABLE IF NOT EXISTS tickflare_turns (n INTEGER PRIMARY KEY, entries TEXT NOT NULL)");
-      this.#tableReady = true;
-    }
-    return sql;
+    return this.ctx.storage.sql;
   }
 }

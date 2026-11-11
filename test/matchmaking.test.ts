@@ -1,5 +1,6 @@
-import { exports } from "cloudflare:workers";
-import { afterEach, describe, expect, it } from "vitest";
+import { listDurableObjectIds, runInDurableObject } from "cloudflare:test";
+import { env, exports } from "cloudflare:workers";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { CloseCode, type MatchFound } from "../src/protocol.js";
 import { connect, sleep, upgrade } from "./helpers.js";
 
@@ -125,5 +126,67 @@ describe("matchmaker", () => {
     expect((await upgrade("/matchmaking/ranked")).status).toBe(401);
     expect((await upgrade("/matchmaking/not%20ok?player=a")).status).toBe(400);
     expect((await exports.default.fetch("https://tickflare.test/matchmaking/ranked?player=a")).status).toBe(426);
+  });
+});
+
+describe("matchmaker while a room is being reserved", () => {
+  /** The rooms the slow lobby has reserved, as "a+b". */
+  const reservations = (queue: string) =>
+    runInDurableObject(env.SLOW.get(env.SLOW.idFromName(queue)), async (_instance, state) =>
+      [...(await state.storage.list<string[]>({ prefix: "reserved:" })).values()].map((players) => players.join("+")),
+    );
+
+  it("reserves one room per match when more players arrive meanwhile", async () => {
+    const queue = freshQueue();
+    const a = await enqueue(queue, "a", "/slow");
+    const [b, c] = await Promise.all([enqueue(queue, "b", "/slow"), enqueue(queue, "c", "/slow")]);
+    await sleep(500);
+
+    const sentTo = [a, b, c].map((waiting) => waiting.found()?.players.join("+") ?? "waiting");
+    expect(sentTo).toEqual(["a+b", "a+b", "waiting"]);
+    expect(await reservations(queue)).toEqual(["a+b"]);
+  });
+
+  it("makes two rooms for five players who arrive almost at once", async () => {
+    const queue = freshQueue();
+    const before = (await listDurableObjectIds(env.ROOMS)).length;
+    const a = await enqueue(queue, "a");
+    const rest = await Promise.all(["b", "c", "d", "e"].map((player) => enqueue(queue, player)));
+    await sleep(300);
+
+    const found = [a, ...rest].map((waiting) => waiting.found());
+    expect(found.filter((match) => match === undefined)).toHaveLength(1);
+    expect(new Set(found.map((match) => match?.room).filter(Boolean)).size).toBe(2);
+    expect((await listDurableObjectIds(env.ROOMS)).length - before).toBe(2);
+  });
+
+  it("puts the others back in the queue when one of the group gives up meanwhile", async () => {
+    const queue = freshQueue();
+    const a = await enqueue(queue, "a", "/slow");
+    const bJoining = enqueue(queue, "b", "/slow"); // starts reserving a room for a and b, which takes 100 ms
+    await sleep(30);
+    a.ws.close(1000, "gave_up");
+    await sleep(20);
+    const c = await enqueue(queue, "c", "/slow");
+    const b = await bJoining;
+
+    const [forB, forC] = await Promise.all([b.closed, c.closed]);
+    expect(forB.match?.players).toEqual(["b", "c"]);
+    expect(forC.match).toEqual(forB.match);
+  });
+
+  it("tries again by itself after a reservation fails", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const queue = freshQueue();
+    const a = await enqueue(queue, "a", "/flaky");
+    const b = await enqueue(queue, "b", "/flaky");
+    await sleep(100);
+    expect([a.found(), b.found()]).toEqual([undefined, undefined]);
+
+    // Nobody else arrives. The retry is the matchmaker's own.
+    const [forA, forB] = await Promise.all([a.closed, b.closed]);
+    error.mockRestore();
+    expect(forA.match?.players).toEqual(["a", "b"]);
+    expect(forB.match).toEqual(forA.match);
   });
 });

@@ -55,9 +55,8 @@ export async function routeToRoom(
 
   const identity = await options.authenticate(request, roomId);
   if (identity instanceof Response) return identity;
-  if (!PLAYER_ID.test(identity)) {
-    return new Response("Invalid player id", { status: 400 });
-  }
+  const refused = refuseIdentity(identity);
+  if (refused) return refused;
 
   // Overwrites anything the client sent under the same names.
   const headers = new Headers(request.headers);
@@ -66,6 +65,19 @@ export async function routeToRoom(
 
   const stub = options.rooms.get(options.rooms.idFromName(roomId));
   return stub.fetch(new Request(request, { headers }));
+}
+
+/** The answer for something `authenticate` returned that cannot be a player id, or undefined if it can. */
+function refuseIdentity(identity: unknown): Response | undefined {
+  // An `authenticate` that falls off its end returns undefined. That is nobody, not a player.
+  if (typeof identity !== "string") {
+    return new Response("Not authenticated", { status: 401 });
+  }
+  // "__proto__" would do damage as a key in a game's state.
+  if (!PLAYER_ID.test(identity) || identity === "__proto__") {
+    return new Response("Invalid player id", { status: 400 });
+  }
+  return undefined;
 }
 
 export interface MatchmakerRouteOptions {
@@ -99,9 +111,8 @@ export async function routeToMatchmaker(
   }
   const identity = await options.authenticate(request, queue);
   if (identity instanceof Response) return identity;
-  if (!PLAYER_ID.test(identity)) {
-    return new Response("Invalid player id", { status: 400 });
-  }
+  const refused = refuseIdentity(identity);
+  if (refused) return refused;
 
   const headers = new Headers(request.headers);
   headers.set(PLAYER_HEADER, identity);

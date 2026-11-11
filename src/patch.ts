@@ -32,7 +32,7 @@ export function applyPatch<T>(base: T, patch: Patch): T {
     const change = patch[key];
     if (change === 0) delete out[key];
     else if (Array.isArray(change)) out[key] = change[0];
-    else if (change) out[key] = applyPatch(out[key], change);
+    else if (change) out[key] = applyPatch(own(out, key), change);
   }
   return out as T;
 }
@@ -45,7 +45,7 @@ function diffObjects(
   for (const key of Object.keys(next)) {
     const to = next[key];
     if (to === undefined) continue;
-    const from = prev[key];
+    const from = own(prev, key);
     if (isPlainObject(from) && isPlainObject(to)) {
       const inner = diffObjects(from, to);
       if (inner) (patch ??= {})[key] = inner;
@@ -54,9 +54,17 @@ function diffObjects(
     }
   }
   for (const key of Object.keys(prev)) {
-    if (prev[key] !== undefined && next[key] === undefined) (patch ??= {})[key] = 0;
+    if (prev[key] !== undefined && own(next, key) === undefined) (patch ??= {})[key] = 0;
   }
   return patch;
+}
+
+/**
+ * `object[key]`, but only if the object itself has the key. A unit called
+ * "toString" or "constructor" must not be mistaken for what every object inherits.
+ */
+function own(object: Record<string, unknown>, key: string): unknown {
+  return Object.prototype.hasOwnProperty.call(object, key) ? object[key] : undefined;
 }
 
 function jsonEqual(a: unknown, b: unknown): boolean {
