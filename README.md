@@ -150,14 +150,14 @@ You can still write `authenticate` yourself, for example to read a session cooki
 | `onJoin(player)` | A player takes a seat for the first time | `reject(reason)` turns them away |
 | `onDisconnect(player)` | A seated player's connection closes | They keep their seat |
 | `onReconnect(player)` | A seated player comes back | |
-| `onLeave(player)` | A player asks to give up their seat | Tidy up after them; they are removed when it returns. `reject(reason)` makes them stay |
+| `onLeave(player)` | A player asks to give up their seat, or stayed away longer than `seatTimeoutMs` | Tidy up after them; they are removed when it returns. `reject(reason)` makes them stay |
 | `onTimer(name)` | A timer set with `setTimer` runs out | |
 | `onTick(dt)` | `tickRate` times a second while the room is ticking | `dt` is always `1 / tickRate` seconds |
 | `shouldTick()` | After every event and every tick | Return false to pause the simulation. Defaults to true |
 | `view(player)` | Before state is sent to a player | Return what that player may see. Defaults to everything |
 | `onHttp(request, player)` | A plain HTTP request to `{prefix}/{roomId}/...` | For reading from the room, e.g. a scoreboard. Already authenticated. Defaults to 404 |
 
-Options are plain fields you override: `maxPlayers` (default unlimited), `maxMessageLength` (default 16,384 characters), `maxCommandsPerSecond` (default 30), `tickRate` (default 0, which is event mode) and `saveIntervalMs` (default 5,000).
+Options are plain fields you override: `maxPlayers` (default unlimited), `maxMessageLength` (default 16,384 characters), `maxCommandsPerSecond` (default 30), `seatTimeoutMs` (default never), `tickRate` (default 0, which is event mode) and `saveIntervalMs` (default 5,000).
 
 ### Inside a hook
 
@@ -178,18 +178,15 @@ this.state.turnEndsAt = this.setTimer("turn", 30_000);
 A player who drops keeps their seat for a minute, then loses it:
 
 ```ts
-protected override onDisconnect(player: Player): void {
-  this.setTimer(`away:${player.id}`, 60_000);
-}
+protected override seatTimeoutMs = 60_000;
 
-protected override onReconnect(player: Player): void {
-  this.clearTimer(`away:${player.id}`);
-}
-
-protected override onTimer(name: string): void {
-  if (name.startsWith("away:")) this.removePlayer(name.slice(5), "away");
+// Runs when they leave and when their minute is up.
+protected override onLeave(player: Player): void {
+  delete this.state.units[player.id];
 }
 ```
+
+Set `seatTimeoutMs` in any real-time room. Without it a seat is kept until the player leaves, which suits a game played over days but lets closed tabs fill a room for good.
 
 ### State sync
 
@@ -273,7 +270,8 @@ client.input({ type: "move", x: 120, y: 80 });
 How it works:
 
 - **Turns.** `tickRate` times a second the room closes a turn: whatever inputs arrived since the last one, in arrival order. All players get the same turn. An input takes effect in the turn the room puts it in, for everyone at once, so there is nothing to predict or roll back.
-- **Players are part of the stream.** Joining, leaving, dropping and reconnecting arrive as entries with `e` set, so every simulation sees them at the same turn.
+- **Players are part of the stream.** Joining, leaving, dropping and reconnecting arrive as entries with `e` set, so every simulation sees them at the same turn. Every way of losing a seat (leaving, `seatTimeoutMs`, `removePlayer`) arrives as `leave`.
+- **Even pacing.** A real network delivers turns in fits. The client holds one turn in reserve (`bufferTurns`) and advances the simulation at the room's pace, so movement does not stutter. An order is therefore visible one to two turns after it reaches the room; show the player their click straight away, as the skirmish does.
 - **Recording.** Every turn in which something happened is stored in the room. The recording is served at `{prefix}/{roomId}/replay`, behind the same `authenticate` as the WebSocket. `runReplay(replay, { create, step })` plays one back.
 - **Catching up.** On every (re)connect the client rebuilds its simulation from the recording and then follows the live turns. A reload mid-match ends in the same state as everyone else.
 - **Desync detection.** If you pass `hash`, clients report it every 20 turns. When two players disagree about a turn the room sets `desync` and every client's `onDesync` fires.
@@ -408,7 +406,7 @@ export class Zone extends Room<State, Command, Env> {
 - **Persistence.** Every accepted change is written to the room's SQLite storage before anyone hears about it. A room that hibernates, restarts or is redeployed picks up where it left off, timers included.
 - **Timers.** Any number of named timers share the object's single alarm. Each fires once; one whose hook throws is spent, not retried.
 - **Ordering.** Each change gets the next `seq`. In event mode the sender's `ack` arrives after the `state` frame it caused, so when `send()` resolves the client already shows the result.
-- **Seats and resume.** A player who drops keeps their seat until they leave or you remove them. When they reconnect they get the current state in the `welcome` frame; there is nothing to replay.
+- **Seats and resume.** A player who drops keeps their seat until they leave, you remove them, or `seatTimeoutMs` runs out. When they reconnect they get the current state in the `welcome` frame; there is nothing to replay.
 - **One connection per player.** A newer connection for the same player closes the older one.
 - **Hidden information.** With `view()`, each player receives only their own projection of the state.
 - **Rate limiting.** Each player may send `maxCommandsPerSecond` frames a second, with a burst of the same size. Frames over the limit are refused with `rate_limited` before they reach your code.

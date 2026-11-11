@@ -9,6 +9,8 @@ export type Order = { type: "move"; x: number; y: number };
 export class Skirmish extends LockstepRoom<Order> {
   protected override tickRate = 10;
   protected override maxPlayers = 4;
+  // A squad whose player stays away this long leaves the battle, for every client at the same turn.
+  protected override seatTimeoutMs = 15_000;
 
   protected parseInput(raw: unknown): Order {
     const input = raw as { type?: unknown; x?: unknown; y?: unknown } | null;

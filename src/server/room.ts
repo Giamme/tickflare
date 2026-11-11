@@ -42,6 +42,8 @@ interface Committed {
 }
 
 const SOCKET_OPEN = 1;
+/** Prefix of the kernel's own timers, which give up the seats of players who stay away. */
+const AWAY_TIMER = "tickflare:away:";
 /** Consecutive failed ticks after which the simulation pauses until the next event. */
 const MAX_FAILED_TICKS = 5;
 /** Close reasons are limited to 123 bytes by the WebSocket protocol. */
@@ -70,6 +72,16 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
 
   /** Longest client frame accepted, in characters. */
   protected maxMessageLength = 16 * 1024;
+
+  /**
+   * How long a disconnected player keeps their seat, in milliseconds. When it
+   * runs out, `onLeave` is called and the seat is given up, as if the player
+   * had left; a later connection from them is a new join. The default,
+   * `Infinity`, keeps seats until the player leaves or is removed, which is
+   * what a game played over days wants. A real-time room should set it, or
+   * closed tabs fill the room for good.
+   */
+  protected seatTimeoutMs = Number.POSITIVE_INFINITY;
 
   /**
    * How many frames a second one player may send, and also how many they may
@@ -174,8 +186,9 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
   protected onReconnect(_player: Player): void {}
 
   /**
-   * A player asked to give up their seat. Tidy up after them here; they are
-   * removed when this returns. Call `reject()` to make them stay.
+   * A player is giving up their seat: they asked to leave, or they stayed
+   * disconnected for longer than `seatTimeoutMs`. Tidy up after them here;
+   * they are removed when this returns. Call `reject()` to make them stay.
    */
   protected onLeave(_player: Player): void {}
 
@@ -276,6 +289,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     const seat = this.#roster.indexOf(playerId);
     if (seat === -1) return;
     this.#roster.splice(seat, 1);
+    this.#timers.delete(AWAY_TIMER + playerId);
     this.#moved.push({ player: playerId, to: toRoomId, carry: carry ?? null });
   }
 
@@ -342,6 +356,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
    */
   protected setTimer(name: string, delayMs: number): number {
     if (!name) throw new TypeError("A timer needs a name");
+    if (name.startsWith(AWAY_TIMER)) throw new TypeError(`Timer names starting with "${AWAY_TIMER}" are reserved`);
     if (!Number.isFinite(delayMs) || delayMs < 0) {
       throw new RangeError("delayMs must be a non-negative number");
     }
@@ -364,6 +379,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     const seat = this.#roster.indexOf(playerId);
     if (seat === -1) return;
     this.#roster.splice(seat, 1);
+    this.#timers.delete(AWAY_TIMER + playerId);
     this.#removed.push({ id: playerId, reason });
   }
 
@@ -423,8 +439,9 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
       // A timer that fired earlier in this batch may have cleared or moved this one.
       if (this.#timers.get(name) !== firesAt) continue;
       // Spend the timer first, on its own, so a failing hook cannot bring it back.
-      this.#apply(() => this.clearTimer(name));
-      this.#apply(() => this.onTimer(name));
+      this.#apply(() => this.#timers.delete(name));
+      if (name.startsWith(AWAY_TIMER)) this.#giveUpSeat(name.slice(AWAY_TIMER.length));
+      else this.#apply(() => this.onTimer(name));
     }
     this.#alarmStale = true;
     await this.#finish();
@@ -460,7 +477,10 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
       }
       if (arrival) sql.exec("DELETE FROM tickflare_arrivals WHERE player = ?", playerId);
     } else if (!this.#isConnected(playerId)) {
-      this.#apply(() => this.onReconnect(player));
+      this.#apply(() => {
+        this.#timers.delete(AWAY_TIMER + playerId);
+        this.onReconnect(player);
+      });
     }
     // A hook may have removed the very player who is connecting.
     if (!this.#roster.includes(playerId)) {
@@ -556,7 +576,23 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
 
     this.#allowance.delete(playerId);
     this.#apply(() => this.onDisconnect({ id: playerId, connected: false }));
+    this.#apply(() => this.#startSeatTimeout(playerId));
     this.#broadcastPresence(ws);
+  }
+
+  #startSeatTimeout(playerId: string): void {
+    if (Number.isFinite(this.seatTimeoutMs) && this.#roster.includes(playerId)) {
+      this.#timers.set(AWAY_TIMER + playerId, Date.now() + Math.max(0, this.seatTimeoutMs));
+    }
+  }
+
+  /** A player stayed away for `seatTimeoutMs`: let the game tidy up, then take the seat back. */
+  #giveUpSeat(playerId: string): void {
+    if (!this.#roster.includes(playerId) || this.#isConnected(playerId)) return;
+    this.#apply(() => {
+      this.onLeave({ id: playerId, connected: false });
+      this.removePlayer(playerId, "away");
+    });
   }
 
   /** Token bucket: refills at `maxCommandsPerSecond`, holds at most one second's worth. */
@@ -742,6 +778,13 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     // Start from the JSON round-trip, so new and resumed rooms behave the same.
     this.#restore();
     this.#loaded = true;
+
+    // Seats left by players who dropped while no timeout was running for them (the option was
+    // added or shortened since, or the room was torn down mid-event) get one now.
+    const adrift = this.#roster.filter((id) => !this.#timers.has(AWAY_TIMER + id) && !this.#isConnected(id));
+    if (adrift.length > 0 && Number.isFinite(this.seatTimeoutMs)) {
+      this.#apply(() => adrift.forEach((id) => this.#startSeatTimeout(id)));
+    }
   }
 
   /** Puts state, seats and timers back to what was last committed. */

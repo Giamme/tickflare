@@ -157,6 +157,11 @@ export class TestRoom extends Room<TestState, TestCommand> {
   }
 }
 
+/** TestRoom, except that a player who stays away for 150 ms loses their seat. */
+export class AwayRoom extends TestRoom {
+  protected override seatTimeoutMs = 150;
+}
+
 export interface TickState {
   phase: "lobby" | "playing";
   /** Goes up by one per tick. */
@@ -243,12 +248,12 @@ export type TurnInput = { type: "add"; n: number };
 export class TurnRoom extends LockstepRoom<TurnInput> {
   protected override tickRate = 50;
   protected override maxInputsPerTurn = 3;
+  protected override seatTimeoutMs = 400;
   protected override matchQueue = this.env.MATCHES;
   protected override matchBucket = this.env.REPLAYS;
 
   // The match is over when the last player gives up their seat.
   protected override onLeave(player: Player): void {
-    super.onLeave(player);
     if (this.players.length === 1) this.finishMatch({ reason: "everyone_left" });
   }
 
@@ -286,6 +291,7 @@ export default {
       (await routeToRoom(request, { rooms: env.TICKS, prefix: "/ticks", authenticate: whoIs })) ??
       (await routeToRoom(request, { rooms: env.TURNS, prefix: "/turns", authenticate: whoIs })) ??
       (await routeToMatchmaker(request, { matchmaker: env.MATCHMAKER, authenticate: whoIs })) ??
+      (await routeToRoom(request, { rooms: env.AWAY, prefix: "/away", authenticate: whoIs })) ??
       (await routeToRoom(request, {
         rooms: env.ROOMS,
         prefix: "/secure",

@@ -193,6 +193,10 @@
       }
 
       async function guest() {
+        // Do not join from a page the browser is only preparing in the background.
+        if (document.prerendering) {
+          await new Promise((resolve) => document.addEventListener("prerenderingchange", resolve, { once: true }));
+        }
         // The server makes up a guest player and signs a token for it. Kept per tab, so every
         // tab is its own player and a reload stays the same one.
         try {

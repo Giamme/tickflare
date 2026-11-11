@@ -25,8 +25,10 @@ const HASHES_KEPT = 128;
  * The recording is served at `{prefix}/{roomId}/replay`. Clients read it when
  * they (re)connect, to catch up, and it doubles as the match replay.
  *
- * If you override `onJoin`, `onLeave`, `onDisconnect` or `onReconnect`, call
- * `super` so the event still reaches the turn stream.
+ * If you override `onJoin`, `onDisconnect` or `onReconnect`, call `super` so
+ * the event still reaches the turn stream. A seat that is given up, whether
+ * the player left, timed out or was removed with `removePlayer`, is
+ * announced to the stream for you.
  */
 export abstract class LockstepRoom<Input, Env = Cloudflare.Env> extends Room<
   LockstepState<Input>,
@@ -96,8 +98,12 @@ export abstract class LockstepRoom<Input, Env = Cloudflare.Env> extends Room<
     this.state.pending.push({ p: player.id, e: "join" });
   }
 
-  protected override onLeave(player: Player): void {
-    this.state.pending.push({ p: player.id, e: "leave" });
+  /** Every way of losing a seat ends here, so every simulation hears about it. */
+  protected override removePlayer(playerId: string, reason?: string): void {
+    if (this.players.some((player) => player.id === playerId)) {
+      this.state.pending.push({ p: playerId, e: "leave" });
+    }
+    super.removePlayer(playerId, reason);
   }
 
   protected override onDisconnect(player: Player): void {

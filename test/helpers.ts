@@ -54,8 +54,9 @@ export async function connect(
   room: string,
   player: string,
   headers: Record<string, string> = {},
+  prefix = "/rooms",
 ): Promise<Connection> {
-  const response = await upgrade(`/rooms/${room}?player=${player}`, headers);
+  const response = await upgrade(`${prefix}/${room}?player=${player}`, headers);
   expect(response.status).toBe(101);
   const ws = response.webSocket!;
 

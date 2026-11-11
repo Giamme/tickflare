@@ -28,6 +28,8 @@ const LINES = [
 
 export class TicTacToe extends Room<TicTacToeState, TicTacToeCommand> {
   protected override maxPlayers = 2;
+  // A player who drops keeps their seat for a while; then onLeave runs and it is free again.
+  protected override seatTimeoutMs = AWAY_MS;
 
   protected initialState(): TicTacToeState {
     return {
@@ -85,17 +87,11 @@ export class TicTacToe extends Room<TicTacToeState, TicTacToeCommand> {
     }
   }
 
-  // A player who drops keeps their seat for a while, then loses it.
-  protected override onDisconnect(player: Player): void {
-    this.setTimer(`away:${player.id}`, AWAY_MS);
-  }
-
-  protected override onReconnect(player: Player): void {
-    this.clearTimer(`away:${player.id}`);
-  }
-
+  /** The player left, or stayed away too long: free their mark and wait for a new opponent. */
   protected override onLeave(player: Player): void {
-    this.#vacate(player.id);
+    delete this.state.marks[player.id];
+    this.#resetBoard();
+    this.#stopClock();
   }
 
   protected override onTimer(name: string): void {
@@ -103,19 +99,7 @@ export class TicTacToe extends Room<TicTacToeState, TicTacToeCommand> {
       // Whoever was on the clock ran out of time.
       this.state.winner = this.state.turn === "X" ? "O" : "X";
       this.state.turnEndsAt = null;
-    } else if (name.startsWith("away:")) {
-      const playerId = name.slice("away:".length);
-      this.#vacate(playerId);
-      this.removePlayer(playerId, "away");
     }
-  }
-
-  /** Frees a player's mark and puts the table back to "waiting for an opponent". */
-  #vacate(playerId: string): void {
-    delete this.state.marks[playerId];
-    this.clearTimer(`away:${playerId}`);
-    this.#resetBoard();
-    this.#stopClock();
   }
 
   #resetBoard(): void {

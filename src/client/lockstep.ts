@@ -6,6 +6,7 @@ import {
   type TurnEntry,
 } from "../lockstep.js";
 import { RoomClient, type ConnectionStatus } from "./index.js";
+import { TurnPacer } from "./pacer.js";
 
 export interface LockstepClientOptions<Input, Sim> extends Simulation<Input, Sim> {
   /**
@@ -15,6 +16,13 @@ export interface LockstepClientOptions<Input, Sim> extends Simulation<Input, Sim
   hash?(sim: Sim): string | number;
   /** How often to report the hash, in turns. Defaults to 20. */
   hashEvery?: number;
+  /**
+   * How many turns to hold back so that the simulation advances at an even
+   * pace when the network delivers turns unevenly. Defaults to 1, which adds
+   * one turn of delay and absorbs up to one turn of jitter. 0 applies every
+   * turn the moment it arrives.
+   */
+  bufferTurns?: number;
   /** The simulation advanced to `turn`. Not called while catching up after (re)connecting. */
   onTurn?(sim: Sim, turn: number): void;
   /** The simulation has caught up with the room and is live. */
@@ -47,6 +55,10 @@ export class LockstepClient<Input = unknown, Sim = unknown> {
   readonly #replayUrl: string;
   /** Live turns that arrived while the recording was loading. */
   #buffer = new Map<number, TurnEntry<Input>[]>();
+  /** Plays live turns out evenly. Created once the turn rate is known. */
+  #pacer: TurnPacer<{ turn: number; entries: TurnEntry<Input>[] }> | undefined;
+  /** The latest turn received, which can be ahead of the one the simulation is at. */
+  #received = 0;
   #needsSync = true;
   /** Guards against an older catch-up finishing after a newer one started. */
   #syncId = 0;
@@ -61,7 +73,10 @@ export class LockstepClient<Input = unknown, Sim = unknown> {
 
     this.#room = new RoomClient<LockstepView<Input>, unknown>(url, {
       onStatus: (status, detail) => {
-        if (status !== "open") this.ready = false;
+        if (status !== "open") {
+          this.ready = false;
+          this.#pacer?.clear();
+        }
         if (status === "open") this.#needsSync = true;
         options.onStatus?.(status, detail);
       },
@@ -87,6 +102,7 @@ export class LockstepClient<Input = unknown, Sim = unknown> {
   }
 
   close(): void {
+    this.#pacer?.clear();
     this.#room.close();
   }
 
@@ -102,11 +118,13 @@ export class LockstepClient<Input = unknown, Sim = unknown> {
     }
     if (!this.ready) {
       this.#buffer.set(view.turn, view.entries);
-    } else if (view.turn === this.turn + 1) {
-      this.#advance(view.entries, view.turn, true);
-    } else if (view.turn > this.turn + 1) {
+    } else if (view.turn === this.#received + 1) {
+      this.#received = view.turn;
+      this.#pacer?.push({ turn: view.turn, entries: view.entries });
+    } else if (view.turn > this.#received + 1) {
       // A turn went missing. Start over from the recording.
       this.ready = false;
+      this.#pacer?.clear();
       this.#buffer.clear();
       void this.#catchUp();
     }
@@ -131,6 +149,13 @@ export class LockstepClient<Input = unknown, Sim = unknown> {
       this.#advance(this.#buffer.get(turn)!, turn, false);
     }
     this.#buffer.clear();
+    this.#received = this.turn;
+    this.#pacer?.clear();
+    this.#pacer = new TurnPacer(
+      1000 / (this.#room.tickRate || 10),
+      this.#options.bufferTurns ?? 1,
+      ({ turn, entries }) => this.#advance(entries, turn, true),
+    );
     this.ready = true;
     this.#options.onReady?.(this.sim, this.turn);
   }

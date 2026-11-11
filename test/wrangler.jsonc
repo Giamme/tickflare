@@ -8,11 +8,12 @@
       { "name": "ROOMS", "class_name": "TestRoom" },
       { "name": "TICKS", "class_name": "TickRoom" },
       { "name": "TURNS", "class_name": "TurnRoom" },
-      { "name": "MATCHMAKER", "class_name": "TestMatchmaker" }
+      { "name": "MATCHMAKER", "class_name": "TestMatchmaker" },
+      { "name": "AWAY", "class_name": "AwayRoom" }
     ]
   },
   "migrations": [
-    { "tag": "v1", "new_sqlite_classes": ["TestRoom", "TickRoom", "TurnRoom", "TestMatchmaker"] }
+    { "tag": "v1", "new_sqlite_classes": ["TestRoom", "TickRoom", "TurnRoom", "TestMatchmaker", "AwayRoom"] }
   ],
   "queues": {
     "producers": [{ "binding": "MATCHES", "queue": "tickflare-test-matches" }],

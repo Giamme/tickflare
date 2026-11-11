@@ -80,9 +80,11 @@
               const cx = 60 + Math.floor(sim.random() * (SIZE - 120));
               const cy = 60 + Math.floor(sim.random() * (SIZE - 120));
               const hue = Math.floor(sim.random() * 360);
-              sim.squads[entry.p] = { hue, units: formation(cx, cy).map((at) => ({ ...at, px: at.x, py: at.y, tx: at.x, ty: at.y })) };
+              sim.squads[entry.p] = { hue, away: false, units: formation(cx, cy).map((at) => ({ ...at, px: at.x, py: at.y, tx: at.x, ty: at.y })) };
             } else if (entry.e === "leave") {
               delete sim.squads[entry.p];
+            } else if (entry.e === "disconnect" || entry.e === "reconnect") {
+              if (sim.squads[entry.p]) sim.squads[entry.p].away = entry.e === "disconnect";
             } else if (entry.i && sim.squads[entry.p]) {
               const targets = formation(entry.i.x, entry.i.y);
               sim.squads[entry.p].units.forEach((unit, n) => {
@@ -141,6 +143,8 @@
       addEventListener("hashchange", () => location.reload());
 
       let turnAt = performance.now();
+      /** Where the player last clicked. An order takes a turn or two to come back from the room. */
+      let marker = null;
       let desyncAt = null;
       let closedBecause = "";
       const scheme = location.protocol === "https:" ? "wss" : "ws";
@@ -154,7 +158,12 @@
         },
         onStatus(status, detail) {
           if (status === "closed") {
-            closedBecause = detail?.code === 4001 ? "This skirmish is full." : "Disconnected.";
+            closedBecause =
+              detail?.code === 4001
+                ? "This skirmish is full."
+                : detail?.code === 4003
+                  ? "You were away too long. Reload to join again."
+                  : "Disconnected.";
           }
         },
       });
@@ -165,6 +174,7 @@
         const box = canvas.getBoundingClientRect();
         const x = ((event.clientX - box.left) / box.width) * SIZE;
         const y = ((event.clientY - box.top) / box.height) * SIZE;
+        marker = { x, y, at: performance.now() };
         client.input({ type: "move", x, y }).catch((error) => console.info(error.message));
       });
 
@@ -179,6 +189,8 @@
           // Glide from where each unit was last turn to where it is now.
           const t = Math.min(1, (now - turnAt) / 100);
           for (const [id, squad] of Object.entries(client.sim.squads)) {
+            // A squad whose player dropped is faded until they return or their seat runs out.
+            ctx.globalAlpha = squad.away ? 0.35 : 1;
             ctx.fillStyle = `hsl(${squad.hue} 70% 50%)`;
             for (const unit of squad.units) {
               ctx.beginPath();
@@ -192,11 +204,26 @@
             }
           }
         }
+        ctx.globalAlpha = 1;
+        if (marker && now - marker.at < 500) {
+          const age = (now - marker.at) / 500;
+          ctx.globalAlpha = 1 - age;
+          ctx.lineWidth = 2;
+          ctx.strokeStyle = getComputedStyle(document.body).color;
+          ctx.beginPath();
+          ctx.arc(marker.x, marker.y, 6 + age * 14, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.globalAlpha = 1;
+        }
         requestAnimationFrame(draw);
       }
       requestAnimationFrame(draw);
 
       async function guest() {
+        // Do not join from a page the browser is only preparing in the background.
+        if (document.prerendering) {
+          await new Promise((resolve) => document.addEventListener("prerenderingchange", resolve, { once: true }));
+        }
         // The server makes up a guest player and signs a token for it. Kept per tab, so every
         // tab is its own player and a reload stays the same one.
         try {

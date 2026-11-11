@@ -52,6 +52,8 @@ interface Env {
 export class Arena extends Room<ArenaState, ArenaCommand, Env> {
   protected override tickRate = 20;
   protected override maxPlayers = 16;
+  // A dot whose player stays away this long is taken out, through onLeave.
+  protected override seatTimeoutMs = AWAY_MS;
 
   protected initialState(): ArenaState {
     return { dots: {}, pellets: {}, nextPellet: 0 };
@@ -119,7 +121,6 @@ export class Arena extends Room<ArenaState, ArenaCommand, Env> {
       if (!next) continue;
       const luggage: Luggage = { score: dot.score, hue: dot.hue, y: dot.y, enters: step === 1 ? "west" : "east" };
       delete dots[playerId];
-      this.clearTimer(`away:${playerId}`);
       this.movePlayer(playerId, next, luggage);
     }
   }
@@ -144,23 +145,8 @@ export class Arena extends Room<ArenaState, ArenaCommand, Env> {
     return shardFor((cell.cx + step) * SIZE, cell.cy * SIZE, SIZE, world);
   }
 
-  protected override onDisconnect(player: Player): void {
-    this.setTimer(`away:${player.id}`, AWAY_MS);
-  }
-
-  protected override onReconnect(player: Player): void {
-    this.clearTimer(`away:${player.id}`);
-  }
-
   protected override onLeave(player: Player): void {
     delete this.state.dots[player.id];
-  }
-
-  protected override onTimer(name: string): void {
-    if (!name.startsWith("away:")) return;
-    const playerId = name.slice("away:".length);
-    delete this.state.dots[playerId];
-    this.removePlayer(playerId, "away");
   }
 }
 
