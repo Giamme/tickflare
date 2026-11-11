@@ -1,7 +1,8 @@
 name: Deploy examples
 
 # Run by hand from the Actions tab. Needs two repository secrets:
-#   CLOUDFLARE_API_TOKEN   an API token made from the "Edit Cloudflare Workers" template
+#   CLOUDFLARE_API_TOKEN   an API token made from the "Edit Cloudflare Workers" template.
+#                          The ranked example also needs "D1: Edit" and "Queues: Edit" on it.
 #   CLOUDFLARE_ACCOUNT_ID  the account to deploy to
 on:
   workflow_dispatch:
@@ -10,7 +11,7 @@ on:
         description: Which example to deploy
         type: choice
         default: all
-        options: [all, tic-tac-toe, arena, skirmish]
+        options: [all, tic-tac-toe, arena, skirmish, ranked]
 
 permissions:
   contents: read
@@ -42,12 +43,25 @@ jobs:
           JOIN_SECRET=$(printf 'tickflare-join:%s' "$CLOUDFLARE_API_TOKEN" | sha256sum | cut -d' ' -f1)
           echo "::add-mask::$JOIN_SECRET"
           if [ "${{ inputs.example }}" = "all" ]; then
-            examples="tic-tac-toe arena skirmish"
+            examples="tic-tac-toe arena skirmish ranked"
           else
             examples="${{ inputs.example }}"
           fi
+          failed=""
           for example in $examples; do
             echo "::group::$example"
-            npx wrangler deploy --config "examples/$example/wrangler.jsonc" --var "JOIN_SECRET:$JOIN_SECRET"
+            if [ "$example" = "ranked" ]; then
+              # Its queue has to exist before the Worker that uses it. The D1 database is
+              # created by the deploy itself. Fails harmlessly when the queue is already there.
+              npx wrangler queues create tickflare-ranked-matches || true
+            fi
+            # One example failing (a missing permission, say) should not hold back the others.
+            if ! npx wrangler deploy --config "examples/$example/wrangler.jsonc" --var "JOIN_SECRET:$JOIN_SECRET"; then
+              failed="$failed $example"
+            fi
             echo "::endgroup::"
           done
+          if [ -n "$failed" ]; then
+            echo "::error::Could not deploy:$failed"
+            exit 1
+          fi

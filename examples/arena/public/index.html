@@ -20,7 +20,7 @@
         font: 16px/1.5 system-ui, sans-serif;
       }
       main {
-        width: min(30rem, 100vw - 2rem);
+        width: min(36rem, 100vw - 2rem);
       }
       h1 {
         font-size: 1.5rem;
@@ -33,8 +33,9 @@
       canvas {
         display: block;
         width: 100%;
-        aspect-ratio: 1;
-        background: var(--floor);
+        aspect-ratio: 600 / 480;
+        /* The arena's floor, with a strip left clear on each side for the arena next door. */
+        background: linear-gradient(to right, transparent 10%, var(--floor) 10% 90%, transparent 90%);
         border: 1px solid var(--line);
         border-radius: 0.5rem;
         touch-action: none;
@@ -68,20 +69,23 @@
     <main>
       <h1>Arena <span id="cell"></span></h1>
       <p id="status" role="status">Connecting…</p>
-      <canvas id="arena" width="480" height="480" aria-label="Arena. Click to move your dot."></canvas>
+      <canvas id="arena" width="600" height="480" aria-label="Arena. Click to move your dot."></canvas>
       <ul id="scores"></ul>
       <p class="hint">
         Click or tap to move and eat the pellets. World <code id="room"></code>: open this page in
         more tabs to add players. Each arena is its own room, running 20 ticks a second and
-        sending each tab only what changed. Walk into the left or right wall to cross into the
-        arena next door.
+        sending each tab only what changed. Click in a strip at the side to walk through that wall
+        into the arena next door; dots over there show up faded in the strip when they come close.
       </p>
     </main>
 
     <script type="module">
-      import { RoomClient } from "./tickflare-client.js";
+      import { Interpolator, RoomClient } from "./tickflare-client.js";
 
       const SIZE = 480;
+      /** The strip on either side of the arena in which the arena next door shows. */
+      const MARGIN = 60;
+      const WIDTH = SIZE + 2 * MARGIN;
       const room = /^[A-Za-z0-9_-]{1,64}$/.test(location.hash.slice(1))
         ? location.hash.slice(1)
         : "lobby";
@@ -95,8 +99,15 @@
       document.getElementById("room").textContent = room;
       addEventListener("hashchange", () => location.reload());
 
-      // Where each dot is drawn: it glides from where it was shown to where the room last put it.
-      const shown = new Map();
+      // Positions arrive 20 times a second (10 for the arena next door); these smooth them for drawing.
+      const glide = new Interpolator(1000 / 20, ["x", "y"]);
+      const ghostGlide = new Interpolator(1000 / 10, ["x", "y"]);
+      const ghostsOf = (state) =>
+        Object.fromEntries(
+          Object.entries(state.ghosts ?? {}).flatMap(([from, seen]) =>
+            Object.entries(seen.dots).map(([id, ghost]) => [`${from}/${id}`, ghost]),
+          ),
+        );
       let closedBecause = "";
 
       const scheme = location.protocol === "https:" ? "wss" : "ws";
@@ -104,16 +115,13 @@
       showCell(`${room}_0_0`);
       const client = new RoomClient(`${scheme}://${location.host}/rooms/${room}_0_0?token=${token}`, {
         onMoved(roomId) {
-          shown.clear();
+          glide.clear();
+          ghostGlide.clear();
           showCell(roomId);
         },
         onState(state) {
-          const now = performance.now();
-          for (const [id, dot] of Object.entries(state.dots)) {
-            const at = position(id, now) ?? { x: dot.x, y: dot.y };
-            shown.set(id, { fromX: at.x, fromY: at.y, toX: dot.x, toY: dot.y, since: now });
-          }
-          for (const id of shown.keys()) if (!state.dots[id]) shown.delete(id);
+          glide.update(state.dots);
+          ghostGlide.update(ghostsOf(state));
           renderScores(state);
         },
         onStatus(status, detail) {
@@ -134,7 +142,8 @@
 
       canvas.addEventListener("pointerdown", (event) => {
         const box = canvas.getBoundingClientRect();
-        const x = ((event.clientX - box.left) / box.width) * SIZE;
+        // A click in a side strip lands beyond the wall; the room reads that as "go through it".
+        const x = ((event.clientX - box.left) / box.width) * WIDTH - MARGIN;
         const y = ((event.clientY - box.top) / box.height) * SIZE;
         client.send({ type: "move", x, y }).catch((error) => console.info(error.message));
       });
@@ -145,37 +154,46 @@
       // For the console, and for the end-to-end test.
       window.arena = { client };
 
-      function position(id, now) {
-        const dot = shown.get(id);
-        if (!dot) return undefined;
-        const tickMs = 1000 / (client.tickRate || 20);
-        const t = Math.min(1, (now - dot.since) / tickMs);
-        return { x: dot.fromX + (dot.toX - dot.fromX) * t, y: dot.fromY + (dot.toY - dot.fromY) * t };
+      function circle(x, y, radius) {
+        ctx.beginPath();
+        ctx.arc(x, y, radius, 0, Math.PI * 2);
       }
 
-      function draw(now) {
+      function draw() {
         const state = client.state;
-        ctx.clearRect(0, 0, SIZE, SIZE);
+        const ink = getComputedStyle(document.body).color;
+        ctx.clearRect(0, 0, WIDTH, SIZE);
+        ctx.save();
+        ctx.translate(MARGIN, 0);
+
         if (state) {
-          ctx.fillStyle = getComputedStyle(document.body).color;
+          ctx.fillStyle = ink;
           for (const pellet of Object.values(state.pellets)) {
-            ctx.beginPath();
-            ctx.arc(pellet.x, pellet.y, 3, 0, Math.PI * 2);
+            circle(pellet.x, pellet.y, 3);
             ctx.fill();
           }
+          // What the arenas next door report near the shared walls: drawn outside this one, faded.
+          ctx.globalAlpha = 0.45;
+          for (const [key, ghost] of Object.entries(ghostsOf(state))) {
+            const at = ghostGlide.at(key) ?? ghost;
+            ctx.fillStyle = `hsl(${ghost.hue} 70% 50%)`;
+            circle(at.x, at.y, 10);
+            ctx.fill();
+          }
+          ctx.globalAlpha = 1;
           for (const [id, dot] of Object.entries(state.dots)) {
-            const at = position(id, now) ?? dot;
+            const at = glide.at(id) ?? dot;
             ctx.fillStyle = `hsl(${dot.hue} 70% 50%)`;
-            ctx.beginPath();
-            ctx.arc(at.x, at.y, 10, 0, Math.PI * 2);
+            circle(at.x, at.y, 10);
             ctx.fill();
             if (id === client.you) {
               ctx.lineWidth = 2;
-              ctx.strokeStyle = getComputedStyle(document.body).color;
+              ctx.strokeStyle = ink;
               ctx.stroke();
             }
           }
         }
+        ctx.restore();
         requestAnimationFrame(draw);
       }
       requestAnimationFrame(draw);

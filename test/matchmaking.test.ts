@@ -18,8 +18,8 @@ let queues = 0;
 const freshQueue = () => `queue-${Date.now()}-${queues++}`;
 
 /** Start waiting in a queue. */
-async function enqueue(queue: string, player: string) {
-  const response = await upgrade(`/matchmaking/${queue}?player=${player}`);
+async function enqueue(queue: string, player: string, prefix = "/matchmaking") {
+  const response = await upgrade(`${prefix}/${queue}?player=${player}`);
   expect(response.status).toBe(101);
   const ws = response.webSocket!;
   let match: MatchFound | undefined;
@@ -86,6 +86,39 @@ describe("matchmaker", () => {
     expect(await first.closed).toMatchObject({ code: CloseCode.Replaced, reason: "replaced" });
     await sleep(50);
     expect(second.found()).toBeUndefined();
+  });
+
+  it("starts with fewer players once the longest wait is over, if there are enough", async () => {
+    const queue = freshQueue();
+    const started = Date.now();
+    const a = await enqueue(queue, "a", "/patient");
+    await sleep(60);
+    const b = await enqueue(queue, "b", "/patient");
+    expect(a.found()).toBeUndefined();
+
+    const forA = await a.closed;
+    // Counted from when the first player started waiting, not from when the second arrived.
+    expect(Date.now() - started).toBeGreaterThanOrEqual(140);
+    expect(Date.now() - started).toBeLessThan(600);
+    expect(forA.match!.players).toEqual(["a", "b"]);
+    expect((await b.closed).match).toEqual(forA.match);
+  });
+
+  it("keeps a lone player waiting past the limit, and fills a full match at once", async () => {
+    const queue = freshQueue();
+    const a = await enqueue(queue, "a", "/patient");
+    await sleep(300);
+    expect(a.found()).toBeUndefined();
+
+    // Already overdue, so the second player completes a match straight away.
+    const b = await enqueue(queue, "b", "/patient");
+    expect((await b.closed).match!.players).toEqual(["a", "b"]);
+
+    const four = await Promise.all(["c", "d", "e", "f"].map((p) => enqueue(queue, p, "/patient")));
+    const matches = await Promise.all(four.map((waiting) => waiting.closed));
+    // They arrived together, so their order within the match is not defined.
+    expect([...matches[0]!.match!.players].sort()).toEqual(["c", "d", "e", "f"]);
+    expect(new Set(matches.map((m) => m.match!.room)).size).toBe(1);
   });
 
   it("only accepts identified WebSocket upgrades on a valid queue name", async () => {

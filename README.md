@@ -17,13 +17,16 @@ npm install
 npm run dev         # tic-tac-toe: event mode
 npm run dev:arena   # arena: state sync at 20 ticks a second
 npm run dev:skirmish  # skirmish: lockstep at 10 turns a second
+npm run dev:ranked    # ranked tic-tac-toe: matchmaking, a queue and a database
 ```
 
 Open <http://localhost:8787> in two tabs and play tic-tac-toe against yourself. Reload a tab mid-game to see it resume. Each move is on a 30-second clock, and a tab that stays closed for 30 seconds loses its seat. The example lives in [`examples/tic-tac-toe`](examples/tic-tac-toe).
 
-The arena in [`examples/arena`](examples/arena) is a real-time room: click to move a dot and eat pellets, with every extra tab another player. It is also a row of rooms: walk into the left or right wall and the dot is handed to the arena next door.
+The arena in [`examples/arena`](examples/arena) is a real-time room: click to move a dot and eat pellets, with every extra tab another player. It is also a row of rooms: walk into the left or right wall and the dot is handed to the arena next door, and dots near a wall are visible from the other side.
 
 The skirmish in [`examples/skirmish`](examples/skirmish) is lockstep: each tab commands a squad and simulates the whole battle itself, and a fingerprint on screen shows the tabs agree.
+
+The ranked tic-tac-toe in [`examples/ranked`](examples/ranked) adds what surrounds a room: a matchmaker pairs players and reserves their room, and every finished game travels through a Queue into D1 and shows up in the lobby.
 
 ## How it fits together
 
@@ -217,6 +220,16 @@ What changes while a room is ticking:
 - **Saving.** The state is written to storage every `saveIntervalMs` (5 seconds by default) and when the simulation stops, not on every change. A room that is torn down mid-simulation by a deploy or a crash resumes from the last write. Seats and timers are still saved the moment they change.
 - **Stopping.** The simulation stops when the last player disconnects or `shouldTick()` returns false, and starts again when a player is connected and it returns true.
 
+On the client, `Interpolator` smooths what arrives once per tick for drawing at screen rate. It always glides from what is on screen, so a late or bunched update bends the motion instead of making it jump:
+
+```ts
+import { Interpolator } from "tickflare/client";
+
+const glide = new Interpolator(1000 / 20, ["x", "y"]); // one tick at 20 ticks a second
+// onState: (state) => glide.update(state.units)
+// in the render loop: const { x, y } = glide.at(id) ?? state.units[id];
+```
+
 Two things keep ticks cheap:
 
 - Keep things that change one at a time (units, players, projectiles) in objects keyed by id. Objects are patched key by key; arrays are sent whole when anything in them changes.
@@ -322,6 +335,8 @@ const client = new RoomClient(`wss://my-game.example/rooms/${room}`);
 - **Placement.** The gateway works out roughly where each player is from `request.cf`, and the matchmaker passes the most common region as `locationHint`, so the room is created near the players. Locally there is no `request.cf` and the hint is undefined.
 - **Cost.** The queue is the set of open WebSockets, so a matchmaker hibernates while people wait.
 
+- **Starting short.** Set `minPlayers` and `maxWaitMs` to start a match with fewer than `matchSize` players once the longest-waiting one has waited that long: `matchSize = 8`, `minPlayers = 2`, `maxWaitMs = 20_000` fills a lobby of eight but never keeps two players waiting more than twenty seconds.
+
 Add the matchmaker class to `durable_objects.bindings` and `migrations` in your Wrangler config like a room. `findMatch` takes an `AbortSignal` to stop waiting.
 
 ### Match results
@@ -400,6 +415,30 @@ export class Zone extends Room<State, Command, Env> {
 - The client follows by itself: it reconnects to the same URL with the new room id and calls `onMoved(roomId)`. From the game's point of view `onState` just starts delivering the new room's state.
 - A player who was handed over is always admitted, even if the room is full or reserved.
 
+#### Seeing across a border
+
+Rooms can send each other messages, which is how a player near an edge sees what is on the other side:
+
+```ts
+protected override onTick(): void {
+  // ...a few times a second, tell the room to the east what is near the shared border.
+  this.signal(eastRoomId, { units: unitsNearEastBorder }, { onlyIfWatched: true });
+}
+
+protected override async relay(roomId: string, data: unknown) {
+  const rooms = this.env.ZONES;
+  return rooms.get(rooms.idFromName(roomId)).hear(this.roomId!, data);
+}
+
+protected override onSignal(fromRoomId: string, data: unknown): void {
+  this.state.beyond[fromRoomId] = data; // part of the state, so players get it like anything else
+}
+```
+
+- `signal` goes out once after the hook commits. It is not saved and not retried, which suits snapshots that the next one replaces.
+- With `onlyIfWatched`, a room that reports nobody connected is left alone for two seconds at a time, so an empty neighbour is not kept awake.
+- The arena example does exactly this for dots within 60 units of a wall.
+
 ### What the kernel does for you
 
 - **Rollback.** If a hook calls `reject()` or throws, everything it did is undone: changes to `this.state`, timers it set or cleared, and players it removed.
@@ -441,13 +480,13 @@ Close codes: `4000` replaced by a newer connection, `4001` room full, `4002` ref
 ## Not there yet
 
 - In event mode the state is sent whole on every change.
-- The client applies patches but has no interpolation or prediction helpers yet. The arena example interpolates by hand.
+- The client has no prediction helpers: in state sync a player sees their own input one round trip later.
 - A ticking room keeps one tick per timer fire: if the object falls behind, the simulation slows down instead of catching up.
 - Lockstep clients load the whole recording on every (re)connect and simulate it from turn 1. There are no snapshots to shortcut a long match yet.
 - Lockstep hashes show that a desync happened and at which turn, not which player is wrong.
-- Rooms of a split world do not see across their borders: a player near an edge does not see what is on the other side until they cross.
+- Seeing across a border is a recipe built on `signal`, not something a room does by itself, and what arrives that way is a picture: a room cannot act on a neighbour's units.
 - Handover is for rooms in event mode and state sync. A lockstep client does not follow a move.
-- The matchmaker only fills matches of a fixed size, first come first served: no skill ratings, no "start with fewer after a wait".
+- The matchmaker is first come, first served: no skill ratings.
 - Match history is one table keyed by match. There is no per-player index or leaderboard yet.
 
 ## Roadmap
@@ -456,7 +495,7 @@ Close codes: `4000` replaced by a newer connection, `4001` room full, `4002` ref
 2. **State sync: a fixed-rate authoritative simulation with delta snapshots and visibility rules** (done)
 3. **Lockstep: the room orders inputs, clients simulate deterministically; replays from the input log** (done)
 4. **Matchmaking and the services around a room (D1, R2, Queues)** (done)
-5. **World shards: large worlds split across rooms, with handoff between them** (first version: handover and naming, no visibility across borders)
+5. **World shards: large worlds split across rooms, with handoff between them** (first version: handover, naming and seeing across a border)
 
 ## Development
 
@@ -467,6 +506,7 @@ npm run build       # emits dist/ for the tickflare and tickflare/client entry p
 npm run dev         # the tic-tac-toe example on http://localhost:8787
 npm run dev:arena   # the arena example
 npm run dev:skirmish  # the skirmish example
+npm run dev:ranked    # the ranked example
 ```
 
 Every push runs the typecheck, the tests and the build in GitHub Actions ([`ci.yml`](.github/workflows/ci.yml)).
@@ -482,7 +522,9 @@ When you test your own rooms, `runDurableObjectAlarm(stub)` from `cloudflare:tes
 - `CLOUDFLARE_API_TOKEN`: an API token created from the "Edit Cloudflare Workers" template.
 - `CLOUDFLARE_ACCOUNT_ID`: the account to deploy to.
 
-Then run "Deploy examples" from the Actions tab. Each example becomes a Worker named `tickflare-<example>` on your `workers.dev` subdomain. The workflow replaces the development join-token secret from the config with one derived from your API token.
+Then run "Deploy examples" from the Actions tab. Each example becomes a Worker named `tickflare-<example>` on your `workers.dev` subdomain.
+
+The ranked example also uses a D1 database and a Queue, which the workflow creates. For that the token needs two more permissions than the template gives it: "D1: Edit" and "Queues: Edit". Without them the other three still deploy. The workflow replaces the development join-token secret from the config with one derived from your API token.
 
 To deploy by hand instead: `npx wrangler deploy --config examples/arena/wrangler.jsonc --var JOIN_SECRET:<a long random value>`.
 

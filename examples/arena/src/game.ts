@@ -8,6 +8,8 @@ const SPEED = 160;
 /** How close a dot must be to eat a pellet. */
 const REACH = 14;
 const PELLETS = 12;
+/** How far past a wall the arena next door can be seen. */
+const MARGIN = 60;
 /** How long a disconnected player's dot stays in the arena. */
 const AWAY_MS = 15_000;
 
@@ -27,6 +29,18 @@ export interface ArenaState {
   dots: Record<string, Dot>;
   pellets: Record<string, { x: number; y: number }>;
   nextPellet: number;
+  /**
+   * Dots of the arenas next door that are close to the shared wall, by that
+   * arena's room id. Their positions are in this arena's coordinates, so they
+   * lie just outside it.
+   */
+  ghosts: Record<string, { at: number; dots: Record<string, Ghost> }>;
+}
+
+interface Ghost {
+  x: number;
+  y: number;
+  hue: number;
 }
 
 export type ArenaCommand = { type: "move"; x: number; y: number };
@@ -56,7 +70,7 @@ export class Arena extends Room<ArenaState, ArenaCommand, Env> {
   protected override seatTimeoutMs = AWAY_MS;
 
   protected initialState(): ArenaState {
-    return { dots: {}, pellets: {}, nextPellet: 0 };
+    return { dots: {}, pellets: {}, nextPellet: 0, ghosts: {} };
   }
 
   protected parseCommand(raw: unknown): ArenaCommand {
@@ -123,6 +137,53 @@ export class Arena extends Room<ArenaState, ArenaCommand, Env> {
       delete dots[playerId];
       this.movePlayer(playerId, next, luggage);
     }
+
+    this.#showNeighbours();
+  }
+
+  /** Which walls had dots near them at the last report. */
+  #reported = { west: false, east: false };
+
+  /**
+   * Seeing across the border: a few times a second, tell each arena next door
+   * which dots are near the wall it shares with this one.
+   */
+  #showNeighbours(): void {
+    // Rooms saved before ghosts existed have no such field yet.
+    const ghosts = (this.state.ghosts ??= {});
+    // A neighbour that stops reporting (it emptied, or was restarted) must not leave ghosts behind.
+    for (const [from, seen] of Object.entries(ghosts)) {
+      if (this.tick - seen.at > 12) delete ghosts[from];
+    }
+    if (this.tick % 2 !== 0) return;
+
+    for (const step of [-1, 1]) {
+      const next = this.#neighbour(step);
+      if (!next) continue;
+      const near: Record<string, Ghost> = {};
+      for (const [id, dot] of Object.entries(this.state.dots)) {
+        const toWall = step === 1 ? SIZE - dot.x : dot.x;
+        // Seen from next door, this arena lies one arena-width beyond the wall.
+        if (toWall <= MARGIN) near[id] = { x: dot.x - step * SIZE, y: dot.y, hue: dot.hue };
+      }
+      const side = step === 1 ? "east" : "west";
+      const any = Object.keys(near).length > 0;
+      // One empty report after the last dot walks away clears it next door at once.
+      if (any || this.#reported[side]) this.signal(next, { dots: near }, { onlyIfWatched: true });
+      this.#reported[side] = any;
+    }
+  }
+
+  protected override async relay(roomId: string, data: unknown): Promise<boolean> {
+    const rooms = this.env.ROOMS;
+    return rooms.get(rooms.idFromName(roomId)).hear(this.roomId!, data);
+  }
+
+  protected override onSignal(fromRoomId: string, data: unknown): void {
+    const dots = (data as { dots?: Record<string, Ghost> } | null)?.dots ?? {};
+    const ghosts = (this.state.ghosts ??= {});
+    if (Object.keys(dots).length === 0) delete ghosts[fromRoomId];
+    else ghosts[fromRoomId] = { at: this.tick, dots };
   }
 
   protected override async handOver(roomId: string, playerId: string, carry: unknown): Promise<void> {

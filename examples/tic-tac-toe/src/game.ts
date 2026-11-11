@@ -26,7 +26,7 @@ const LINES = [
   [0, 4, 8], [2, 4, 6],
 ] as const;
 
-export class TicTacToe extends Room<TicTacToeState, TicTacToeCommand> {
+export class TicTacToe<Env = Cloudflare.Env> extends Room<TicTacToeState, TicTacToeCommand, Env> {
   protected override maxPlayers = 2;
   // A player who drops keeps their seat for a while; then onLeave runs and it is free again.
   protected override seatTimeoutMs = AWAY_MS;

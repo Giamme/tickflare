@@ -37,12 +37,14 @@ export type TestCommand =
   | { type: "finish" }
   | { type: "finishThenReject" }
   | { type: "move"; to: string; gold: number }
-  | { type: "moveThenReject"; to: string };
+  | { type: "moveThenReject"; to: string }
+  | { type: "signal"; to: string; text: string; quiet?: boolean }
+  | { type: "signalThenReject"; to: string };
 
 const COMMANDS = [
   "add", "secret", "noop", "half", "boom", "async",
   "timer", "timerThenReject", "cancel", "kick", "kickThenReject", "lock",
-  "finish", "finishThenReject", "move", "moveThenReject",
+  "finish", "finishThenReject", "move", "moveThenReject", "signal", "signalThenReject",
 ];
 
 /** A room that exercises every kernel feature; not a game. */
@@ -139,7 +141,22 @@ export class TestRoom extends Room<TestState, TestCommand> {
       case "moveThenReject":
         this.movePlayer(player.id, command.to);
         reject("changed_my_mind");
+      case "signal":
+        this.signal(command.to, { text: command.text }, { onlyIfWatched: command.quiet });
+        return;
+      case "signalThenReject":
+        this.signal(command.to, { text: "never sent" });
+        reject("changed_my_mind");
     }
+  }
+
+  protected override async relay(roomId: string, data: unknown): Promise<boolean> {
+    const rooms = this.env.ROOMS;
+    return rooms.get(rooms.idFromName(roomId)).hear(this.roomId!, data);
+  }
+
+  protected override onSignal(fromRoomId: string, data: unknown): void {
+    this.state.log.push(`heard:${fromRoomId}:${(data as { text: string }).text}`);
   }
 
   protected override async handOver(roomId: string, playerId: string, carry: unknown): Promise<void> {
@@ -276,6 +293,13 @@ export class TestMatchmaker extends Matchmaker {
   }
 }
 
+/** Waits for four players, but starts with two or more once the first has waited 150 ms. */
+export class PatientMatchmaker extends TestMatchmaker {
+  protected override matchSize = 4;
+  protected override minPlayers = 2;
+  protected override maxWaitMs = 150;
+}
+
 /** Signs the join tokens accepted under /secure. */
 export const TEST_SECRET = "test-secret-0123456789";
 
@@ -292,6 +316,7 @@ export default {
       (await routeToRoom(request, { rooms: env.TURNS, prefix: "/turns", authenticate: whoIs })) ??
       (await routeToMatchmaker(request, { matchmaker: env.MATCHMAKER, authenticate: whoIs })) ??
       (await routeToRoom(request, { rooms: env.AWAY, prefix: "/away", authenticate: whoIs })) ??
+      (await routeToMatchmaker(request, { matchmaker: env.PATIENT, prefix: "/patient", authenticate: whoIs })) ??
       (await routeToRoom(request, {
         rooms: env.ROOMS,
         prefix: "/secure",

@@ -133,6 +133,13 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
   #invited: string[] | null = null;
   /** Players the current hook is handing to another room, not yet committed. */
   #moved: { player: string; to: string; carry: unknown }[] = [];
+  /** Messages for other rooms sent by the current hook, not yet committed. */
+  #signals: { to: string; data: unknown; onlyIfWatched: boolean }[] = [];
+  /** Messages for other rooms that are committed and waiting to go out. */
+  #outgoing: { to: string; data: unknown; onlyIfWatched: boolean }[] = [];
+  /** Rooms that said nobody is connected, and until when to leave them alone. */
+  #unwatched = new Map<string, number>();
+  #flushing = false;
   /** Seats changed in a way the remaining players have not been told about yet. */
   #presenceStale = false;
   /** Finished matches announced by the current hook, not yet committed. */
@@ -331,6 +338,48 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
       playerId,
       JSON.stringify(carry ?? null),
     );
+  }
+
+  /**
+   * Send a message to another room, which receives it in `onSignal`. It goes
+   * out once after this hook has committed. It is not saved and not retried:
+   * use it for things that are replaced by the next one anyway, such as a
+   * snapshot of what is near a border. Call from inside a hook, and implement
+   * `relay`.
+   *
+   * With `onlyIfWatched`, a room that reports nobody connected is left alone
+   * for two seconds at a time, so an empty neighbour is not kept awake.
+   */
+  protected signal(roomId: string, data: unknown, options: { onlyIfWatched?: boolean } = {}): void {
+    if (this.relay === Room.prototype.relay) {
+      throw new TypeError("signal() needs relay() to be implemented");
+    }
+    this.#signals.push({ to: roomId, data: data ?? null, onlyIfWatched: options.onlyIfWatched === true });
+  }
+
+  /**
+   * Deliver a signal to another room and return what its `hear` returns.
+   * Typically:
+   *
+   *     const rooms = this.env.ROOMS;
+   *     return rooms.get(rooms.idFromName(roomId)).hear(this.roomId!, data);
+   */
+  protected relay(_roomId: string, _data: unknown): Promise<boolean> {
+    return Promise.reject(new TypeError("relay() is not implemented"));
+  }
+
+  /** Another room sent this one a message with `signal`. */
+  protected onSignal(_fromRoomId: string, _data: unknown): void {}
+
+  /**
+   * Called by another room, over RPC, to deliver a signal. Returns whether
+   * anyone is connected here to see its effect.
+   */
+  async hear(fromRoomId: string, data: unknown): Promise<boolean> {
+    this.#load();
+    this.#apply(() => this.onSignal(fromRoomId, data));
+    await this.#finish();
+    return this.#seatedSockets().length > 0;
   }
 
   /**
@@ -635,10 +684,36 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
       else await this.ctx.storage.setAlarm(next);
     }
 
-    if (this.#outboxPending) await this.#flushOutbox();
+    if (this.#outgoing.length > 0) await this.#sendSignals();
+    if (this.#outboxPending && !this.#flushing) {
+      // One at a time: an event that arrives while a delivery is under way must not repeat it.
+      this.#flushing = true;
+      try {
+        await this.#flushOutbox();
+      } finally {
+        this.#flushing = false;
+      }
+    }
 
     if (afterEvent) this.#stalled = false;
     this.#syncLoop();
+  }
+
+  async #sendSignals(): Promise<void> {
+    const now = Date.now();
+    await Promise.all(
+      this.#outgoing.splice(0).map(async ({ to, data, onlyIfWatched }) => {
+        if (onlyIfWatched && (this.#unwatched.get(to) ?? 0) > now) return;
+        try {
+          if (await this.relay(to, data)) this.#unwatched.delete(to);
+          else this.#unwatched.set(to, now + 2000);
+        } catch (err) {
+          // Not retried by design. Back off so a broken neighbour is not hammered at tick rate.
+          this.#unwatched.set(to, now + 2000);
+          console.error(`[tickflare] could not signal ${to}:`, err);
+        }
+      }),
+    );
   }
 
   /**
@@ -821,6 +896,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     const removedBefore = this.#removed.length;
     this.#finished.length = 0;
     this.#moved.length = 0;
+    this.#signals.length = 0;
     try {
       const returned = hook() as unknown;
       if (isThenable(returned)) {
@@ -865,6 +941,8 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
         this.#presenceStale = true;
       }
 
+      this.#outgoing.push(...this.#signals.splice(0));
+
       this.#seq = seq;
       this.#committed = next;
       if (stateChanged && !ticking) this.#broadcastState();
@@ -874,6 +952,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
       this.#removed.length = removedBefore;
       this.#finished.length = 0;
       this.#moved.length = 0;
+      this.#signals.length = 0;
       if (err instanceof Rejection) return { ok: false, reason: err.reason };
       console.error("[tickflare] room hook failed:", err);
       return { ok: false, reason: "internal_error" };

@@ -22,6 +22,19 @@ export abstract class Matchmaker<Env = Cloudflare.Env> extends DurableObject<Env
   /** Players per match. */
   protected matchSize = 2;
 
+  /**
+   * The fewest players a match may start with once the longest-waiting
+   * player has waited `maxWaitMs`. Defaults to `matchSize`: full matches only.
+   */
+  protected minPlayers: number | undefined;
+
+  /**
+   * How long the longest-waiting player waits for a full match before one
+   * starts with whoever is there, provided that is at least `minPlayers`.
+   * 0, the default, waits for a full match however long it takes.
+   */
+  protected maxWaitMs = 0;
+
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair(PING, PONG));
@@ -75,6 +88,11 @@ export abstract class Matchmaker<Env = Cloudflare.Env> extends DurableObject<Env
     }
   }
 
+  /** The wait is over for whoever is in the queue. */
+  override async alarm(): Promise<void> {
+    await this.#match();
+  }
+
   /** Forms as many matches as the waiting players allow, longest wait first. */
   async #match(): Promise<void> {
     const queue = this.ctx
@@ -84,26 +102,46 @@ export abstract class Matchmaker<Env = Cloudflare.Env> extends DurableObject<Env
       .sort((a, b) => a.since - b.since);
 
     while (queue.length >= this.matchSize) {
-      const group = queue.splice(0, this.matchSize);
-      const players = group.map((waiting) => waiting.player);
-      const room = crypto.randomUUID();
+      if (!(await this.#start(queue.splice(0, this.matchSize)))) return;
+    }
+
+    const fewest = this.minPlayers ?? this.matchSize;
+    if (this.maxWaitMs <= 0 || fewest >= this.matchSize) return;
+    const longest = queue[0];
+    if (!longest || queue.length < fewest) {
+      await this.ctx.storage.deleteAlarm();
+      return;
+    }
+    const due = longest.since + this.maxWaitMs;
+    if (Date.now() < due) {
+      await this.ctx.storage.setAlarm(due);
+    } else {
+      await this.ctx.storage.deleteAlarm();
+      await this.#start(queue.splice(0));
+    }
+  }
+
+  /** Reserves a room for the group and sends them there. False if the room could not be reserved. */
+  async #start(group: (Waiting & { ws: WebSocket })[]): Promise<boolean> {
+    const players = group.map((waiting) => waiting.player);
+    const room = crypto.randomUUID();
+    try {
+      await this.reserveRoom(room, players, mostCommonHint(group));
+    } catch (err) {
+      // They keep waiting; the next arrival tries again.
+      console.error("[tickflare] could not reserve a room:", err);
+      return false;
+    }
+    const found = JSON.stringify({ t: "match", room, players } satisfies MatchFound);
+    for (const { ws } of group) {
       try {
-        await this.reserveRoom(room, players, mostCommonHint(group));
-      } catch (err) {
-        // They keep waiting; the next arrival tries again.
-        console.error("[tickflare] could not reserve a room:", err);
-        return;
-      }
-      const found = JSON.stringify({ t: "match", room, players } satisfies MatchFound);
-      for (const { ws } of group) {
-        try {
-          ws.send(found);
-          ws.close(1000, "matched");
-        } catch {
-          // The player gave up at the last moment. Their seat stays reserved.
-        }
+        ws.send(found);
+        ws.close(1000, "matched");
+      } catch {
+        // The player gave up at the last moment. Their seat stays reserved.
       }
     }
+    return true;
   }
 }
 

@@ -1,0 +1,31 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "tickflare-ranked",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-01",
+  // Signs join tokens. This value is for local development only. Before deploying, delete
+  // this block and run `wrangler secret put JOIN_SECRET` with a long random value, or pass
+  // `--var JOIN_SECRET:<value>` to `wrangler deploy` as the deploy workflow does.
+  "vars": {
+    "JOIN_SECRET": "local-development-only-secret"
+  },
+  "assets": {
+    "directory": "./public"
+  },
+  "durable_objects": {
+    "bindings": [
+      { "name": "ROOMS", "class_name": "RankedTicTacToe" },
+      { "name": "LOBBY", "class_name": "Lobby" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RankedTicTacToe", "Lobby"] }],
+  // Finished matches go from the room onto this queue; the same Worker consumes it.
+  // Create it once before the first deploy: `wrangler queues create tickflare-ranked-matches`.
+  "queues": {
+    "producers": [{ "binding": "MATCHES", "queue": "tickflare-ranked-matches" }],
+    "consumers": [{ "queue": "tickflare-ranked-matches", "max_batch_timeout": 1 }]
+  },
+  // Where the consumer stores them. No database_id: Wrangler creates the database on the
+  // first deploy and keeps using it afterwards.
+  "d1_databases": [{ "binding": "DB", "database_name": "tickflare-ranked" }]
+}

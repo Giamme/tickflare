@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Tickflare ranked tic-tac-toe</title>
+    <link rel="icon" href="data:," />
+    <style>
+      :root {
+        color-scheme: light dark;
+        --line: light-dark(#d6d3cb, #45433e);
+        --muted: light-dark(#6b6962, #a3a096);
+        --accent: light-dark(#b4501e, #f0996f);
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        font: 16px/1.5 system-ui, sans-serif;
+      }
+      main {
+        width: min(22rem, 100vw - 2rem);
+        text-align: center;
+      }
+      h1 {
+        font-size: 1.5rem;
+        margin: 0 0 0.25rem;
+      }
+      h2 {
+        font-size: 1rem;
+        margin: 1.5rem 0 0.25rem;
+      }
+      #status {
+        min-height: 1.5em;
+        margin: 0 0 1rem;
+      }
+      #board {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 0.5rem;
+      }
+      #board button {
+        aspect-ratio: 1;
+        font: 600 2.5rem system-ui, sans-serif;
+      }
+      button {
+        padding: 0.5rem 1rem;
+        font: inherit;
+        color: inherit;
+        background: none;
+        border: 1px solid var(--line);
+        border-radius: 0.5rem;
+        cursor: pointer;
+      }
+      button:disabled {
+        cursor: default;
+      }
+      button:not(:disabled):hover {
+        border-color: var(--accent);
+      }
+      .actions {
+        min-height: 2.5rem;
+        margin-top: 1rem;
+      }
+      #matches {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        color: var(--muted);
+        font-size: 0.875rem;
+        min-height: 1.5em;
+      }
+      .hint {
+        color: var(--muted);
+        font-size: 0.875rem;
+        margin-top: 1.5rem;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Ranked tic-tac-toe</h1>
+      <p id="status" role="status"></p>
+      <div id="board" hidden></div>
+      <div class="actions">
+        <button id="find">Find a match</button>
+        <button id="cancel" hidden>Cancel</button>
+        <button id="back" hidden>Back to the lobby</button>
+      </div>
+      <h2>Recent matches</h2>
+      <ul id="matches"></ul>
+      <p class="hint">
+        Open this page in a second tab and press "Find a match" in both. The matchmaker pairs
+        them and reserves a room; when the game ends the room reports it through a queue, and it
+        shows up above from the database a moment later.
+      </p>
+    </main>
+
+    <script type="module">
+      import { RoomClient, findMatch } from "./tickflare-client.js";
+
+      const { player, token } = await guest();
+      const origin = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}`;
+      const $ = (id) => document.getElementById(id);
+      const statusEl = $("status");
+      const boardEl = $("board");
+
+      /** The game being played, if any. */
+      let client = null;
+      /** Set while waiting in the matchmaking queue. */
+      let searching = null;
+      let closedBecause = "";
+
+      const cells = Array.from({ length: 9 }, (_, cell) => {
+        const button = document.createElement("button");
+        button.setAttribute("aria-label", `Cell ${cell + 1}`);
+        button.addEventListener("click", () =>
+          client?.send({ type: "place", cell }).catch((error) => console.info(error.message)),
+        );
+        boardEl.append(button);
+        return button;
+      });
+
+      $("find").addEventListener("click", async () => {
+        searching = new AbortController();
+        render();
+        try {
+          const { room } = await findMatch(`${origin}/matchmaking/ranked?token=${token}`, {
+            signal: searching.signal,
+          });
+          client = new RoomClient(`${origin}/rooms/${room}?token=${token}`, {
+            onState: render,
+            onPresence: render,
+            onStatus(status, detail) {
+              if (status === "closed") closedBecause = detail?.code === 4003 ? "You left the game." : "Disconnected.";
+              render();
+            },
+          });
+        } catch {
+          // Cancelled, or the queue went away: back to the lobby.
+        }
+        searching = null;
+        render();
+      });
+      $("cancel").addEventListener("click", () => searching?.abort("cancelled"));
+      $("back").addEventListener("click", async () => {
+        // Giving up the seat tells the room this player is done with it.
+        await client.leave().catch(() => client.close());
+        client = null;
+        render();
+        showMatches();
+      });
+
+      function render() {
+        const state = client?.state;
+        const playing = client !== null;
+        const mine = state?.marks[client.you];
+        const seated = state ? Object.keys(state.marks).length : 0;
+        const open = playing && client.status === "open";
+        const myTurn = open && state && !state.winner && seated === 2 && state.turn === mine;
+
+        boardEl.hidden = !playing;
+        cells.forEach((button, cell) => {
+          const mark = state?.board[cell] ?? "";
+          button.textContent = mark;
+          button.disabled = !myTurn || mark !== "";
+        });
+        $("find").hidden = playing || searching !== null;
+        $("cancel").hidden = searching === null;
+        $("back").hidden = !playing;
+
+        const secondsLeft = state?.turnEndsAt
+          ? ` ${Math.max(0, Math.ceil((state.turnEndsAt - Date.now()) / 1000))}s left.`
+          : "";
+        if (searching) statusEl.textContent = "Waiting for an opponent…";
+        else if (!playing) statusEl.textContent = "";
+        else if (client.status === "closed") statusEl.textContent = closedBecause;
+        else if (!open || !state) statusEl.textContent = "Connecting…";
+        else if (state.winner === "draw") statusEl.textContent = "Draw.";
+        else if (state.winner) statusEl.textContent = state.winner === mine ? "You won." : "You lost.";
+        else if (seated < 2) statusEl.textContent = "Your opponent left.";
+        else statusEl.textContent = (myTurn ? `Your turn (${mine}).` : "Opponent's turn.") + secondsLeft;
+      }
+      render();
+      setInterval(render, 500);
+
+      async function showMatches() {
+        let matches;
+        try {
+          matches = await (await fetch("/api/matches")).json();
+        } catch {
+          return;
+        }
+        $("matches").replaceChildren(
+          ...matches.map((match) => {
+            const item = document.createElement("li");
+            const { winner, how } = match.result;
+            const outcome =
+              winner === null
+                ? "Draw"
+                : winner === player
+                  ? "You won"
+                  : match.players.includes(player)
+                    ? "You lost"
+                    : "A player won";
+            const time = new Date(match.endedAt).toLocaleTimeString();
+            item.textContent = `${time} · ${outcome}${how === "forfeit" || how === "timeout" ? ` (${how})` : ""}`;
+            return item;
+          }),
+        );
+      }
+      showMatches();
+      setInterval(showMatches, 3000);
+
+      async function guest() {
+        // Do not join from a page the browser is only preparing in the background.
+        if (document.prerendering) {
+          await new Promise((resolve) => document.addEventListener("prerenderingchange", resolve, { once: true }));
+        }
+        // The server makes up a guest player and signs a token for it. Kept per tab, so every
+        // tab is its own player and a reload stays the same one.
+        try {
+          const saved = JSON.parse(sessionStorage.getItem("tickflare-guest"));
+          if (saved?.token && saved.expiresAt > Date.now() + 60_000) return saved;
+        } catch {
+          // No usable storage: ask again.
+        }
+        const fresh = await (await fetch("/api/guest", { method: "POST" })).json();
+        try {
+          sessionStorage.setItem("tickflare-guest", JSON.stringify(fresh));
+        } catch {
+          // Works without it, as a new guest on every load.
+        }
+        return fresh;
+      }
+    </script>
+  </body>
+</html>

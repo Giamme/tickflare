@@ -11,6 +11,7 @@ import {
 
 export { CloseCode, type MatchFound, type Player } from "../protocol.js";
 export { findMatch, type FindMatchOptions } from "./matchmaking.js";
+export { Interpolator } from "./interpolate.js";
 export { LockstepClient, type LockstepClientOptions } from "./lockstep.js";
 export {
   runReplay,
