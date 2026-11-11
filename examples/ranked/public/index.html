@@ -104,7 +104,7 @@
     <script type="module">
       import { RoomClient, findMatch } from "./tickflare-client.js";
 
-      const { player, token } = await guest();
+      const { player } = await guest();
       const origin = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}`;
       const $ = (id) => document.getElementById(id);
       const statusEl = $("status");
@@ -132,11 +132,12 @@
         searching = new AbortController();
         render();
         try {
-          const { room } = await findMatch(`${origin}/matchmaking/ranked?token=${token}`, {
+          const { room } = await findMatch(`${origin}/matchmaking/ranked?token=${(await guest()).token}`, {
             signal: searching.signal,
           });
           started = false;
-          client = new RoomClient(`${origin}/rooms/${room}?token=${token}`, {
+          client = new RoomClient(`${origin}/rooms/${room}`, {
+            token: async () => (await guest()).token,
             onState: render,
             onPresence: render,
             onStatus(status, detail) {
@@ -228,13 +229,17 @@
         }
         // The server makes up a guest player and signs a token for it. Kept per tab, so every
         // tab is its own player and a reload stays the same one.
+        let saved;
         try {
-          const saved = JSON.parse(sessionStorage.getItem("tickflare-guest"));
-          if (saved?.token && saved.expiresAt > Date.now() + 60_000) return saved;
+          saved = JSON.parse(sessionStorage.getItem("tickflare-guest"));
         } catch {
           // No usable storage: ask again.
         }
-        const fresh = await (await fetch("/api/guest", { method: "POST" })).json();
+        if (saved?.token && Date.now() < saved.renewAt) return saved;
+        // Past half its life but still valid: trade it in and stay the same player.
+        // Expired or missing: a new guest.
+        const headers = saved?.token && Date.now() < saved.expiresAt ? { Authorization: `Bearer ${saved.token}` } : {};
+        const fresh = await (await fetch("/api/guest", { method: "POST", headers })).json();
         try {
           sessionStorage.setItem("tickflare-guest", JSON.stringify(fresh));
         } catch {

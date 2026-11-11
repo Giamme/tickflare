@@ -1,4 +1,5 @@
 import { applyPatch } from "../patch.js";
+import { roomIn, withFreshToken, type TokenSource } from "./token.js";
 import {
   CloseCode,
   PING,
@@ -11,6 +12,7 @@ import {
 
 export { CloseCode, type MatchFound, type Player } from "../protocol.js";
 export { findMatch, type FindMatchOptions } from "./matchmaking.js";
+export type { TokenSource } from "./token.js";
 export { Interpolator } from "./interpolate.js";
 export { LockstepClient, type LockstepClientOptions } from "./lockstep.js";
 export {
@@ -39,9 +41,24 @@ export interface RoomClientOptions<View> {
    * connection that was lost or never opened: it is called again for every
    * failed attempt. A client that keeps failing this way while the network is
    * fine is being turned away before it reaches the room, most often because
-   * its join token has expired: get a new one and make a new client.
+   * the join token in its URL has expired: see `token`.
    */
   onStatus?(status: ConnectionStatus, detail?: { code: number; reason: string }): void;
+  /**
+   * Supplies the join token, instead of putting one in the URL. It is called
+   * before every connection attempt (the first, every reconnect, and when the
+   * room hands the player to another room) with the id of the room being
+   * connected to, and what it returns is sent as the `token` query parameter,
+   * where `tokenAuth` reads it.
+   *
+   * Use it whenever tokens expire: a token in the URL is fixed for the life
+   * of the client, so once it has run out the client can no longer
+   * reconnect. Return the token you have while it is still good and fetch a
+   * new one when it is not. If this throws, the attempt counts as failed
+   * (`onStatus` gets `connecting` with the reason `token_failed`) and is
+   * tried again like any other.
+   */
+  token?: TokenSource;
   /** The room handed this player to another room, and the client is now connecting there. */
   onMoved?(roomId: string): void;
   /** Reconnect after an unexpected close. Defaults to true. */
@@ -147,7 +164,24 @@ export class RoomClient<View = unknown, Command = unknown> {
 
   #open(): void {
     this.#setStatus("connecting");
-    const socket = new WebSocket(this.#url);
+    const { token } = this.#options;
+    if (!token) return this.#connect(this.#url);
+
+    withFreshToken(this.#url, roomIn(this.#url), token).then(
+      (url) => {
+        // close() may have been called while the token was on its way.
+        if (!this.#stopped) this.#connect(url);
+      },
+      (err) => {
+        if (this.#stopped) return;
+        console.warn("[tickflare] could not get a join token:", err);
+        this.#closed(1006, "token_failed");
+      },
+    );
+  }
+
+  #connect(url: string): void {
+    const socket = new WebSocket(url);
     this.#socket = socket;
 
     socket.addEventListener("message", (event) => {

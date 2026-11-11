@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { RoomClient } from "../src/client/index.js";
+import { LockstepClient, RoomClient } from "../src/client/index.js";
 import { PING, PONG } from "../src/protocol.js";
 
 /** A socket the test drives by hand: nothing happens on it unless the test says so. */
@@ -130,5 +130,105 @@ describe("RoomClient", () => {
     expect(moved).toEqual(["new"]);
     expect(FakeSocket.all[1]!.url).toBe("wss://tickflare.test/rooms/new?token=t");
     client.close();
+  });
+
+  describe("with a token source", () => {
+    /** Hands out t1, t2, ... and remembers which room each was asked for. */
+    const counter = () => {
+      const askedFor: string[] = [];
+      const token = (room: string) => {
+        askedFor.push(room);
+        return Promise.resolve(`t${askedFor.length}`);
+      };
+      return { askedFor, token };
+    };
+    const urls = () => FakeSocket.all.map((socket) => socket.url);
+
+    it("asks for a token before every attempt, so an expired one is never sent again", async () => {
+      const { askedFor, token } = counter();
+      const client = new RoomClient("wss://tickflare.test/rooms/r", { token });
+      await vi.advanceTimersByTimeAsync(0);
+      FakeSocket.all[0]!.welcome();
+      FakeSocket.all[0]!.drop(1006);
+      await vi.advanceTimersByTimeAsync(250);
+      FakeSocket.all[1]!.drop(1006);
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(urls()).toEqual([
+        "wss://tickflare.test/rooms/r?token=t1",
+        "wss://tickflare.test/rooms/r?token=t2",
+        "wss://tickflare.test/rooms/r?token=t3",
+      ]);
+      expect(askedFor).toEqual(["r", "r", "r"]);
+      client.close();
+    });
+
+    it("asks for one for the new room when the player is handed over", async () => {
+      const { askedFor, token } = counter();
+      const client = new RoomClient("wss://tickflare.test/rooms/old?token=stale&lang=it", { token });
+      await vi.advanceTimersByTimeAsync(0);
+      FakeSocket.all[0]!.welcome();
+      FakeSocket.all[0]!.drop(4004, "new");
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(urls()).toEqual([
+        "wss://tickflare.test/rooms/old?token=t1&lang=it",
+        "wss://tickflare.test/rooms/new?token=t2&lang=it",
+      ]);
+      expect(askedFor).toEqual(["old", "new"]);
+      client.close();
+    });
+
+    it("counts a token that cannot be had as a failed attempt and tries again", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const { seen, onStatus } = statuses();
+      let calls = 0;
+      const token = () => (++calls === 1 ? Promise.reject(new Error("offline")) : "t2");
+      const client = new RoomClient("wss://tickflare.test/rooms/r", { token, onStatus });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(FakeSocket.all).toHaveLength(0);
+      expect(seen).toEqual(["connecting:1006:token_failed"]);
+
+      await vi.advanceTimersByTimeAsync(250);
+      expect(urls()).toEqual(["wss://tickflare.test/rooms/r?token=t2"]);
+      warn.mockRestore();
+      client.close();
+    });
+
+    it("does not connect if it is closed while the token is on its way", async () => {
+      const { token } = counter();
+      const client = new RoomClient("wss://tickflare.test/rooms/r", { token });
+      client.close();
+      await vi.advanceTimersByTimeAsync(1000);
+
+      expect(FakeSocket.all).toHaveLength(0);
+      expect(client.status).toBe("closed");
+    });
+
+    it("asks again before loading a lockstep recording", async () => {
+      const { askedFor, token } = counter();
+      const loaded: string[] = [];
+      const client = new LockstepClient("wss://tickflare.test/rooms/r", {
+        token,
+        create: () => ({}),
+        step: () => {},
+        loadReplay: (url) => {
+          loaded.push(url);
+          return Promise.resolve({ v: 1, seed: 1, turnRate: 10, turn: 0, turns: [] });
+        },
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      const socket = FakeSocket.all[0]!;
+      socket.readyState = 1;
+      socket.receive({
+        t: "welcome", v: 1, you: "p1", seq: 0, tick: 0, tickRate: 10, players: [],
+        state: { seed: 1, turn: 0, entries: [], desync: null },
+      });
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(loaded).toEqual(["https://tickflare.test/rooms/r/replay?token=t2"]);
+      expect(askedFor).toEqual(["r", "r"]);
+      client.close();
+    });
   });
 });

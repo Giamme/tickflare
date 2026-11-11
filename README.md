@@ -132,14 +132,17 @@ await routeToRoom(request, {
 ```
 
 ```ts
-// 3. The client connects with it.
-const room = new RoomClient(`wss://my-game.example/rooms/lobby?token=${token}`);
+// 3. The client connects with it. `token` is asked before every connection attempt.
+const room = new RoomClient("wss://my-game.example/rooms/lobby", {
+  token: (roomId) => getJoinToken(roomId), // yours: return the one you have, or fetch a new one
+});
 ```
 
 - A token is an HMAC-SHA256 signature over the player id and an expiry. It cannot be forged or changed without the secret, so a player cannot connect as someone else.
-- Pass `scope: roomId` to `createJoinToken` for a token that only opens one room or one matchmaking queue.
+- Tokens expire, and a client reconnects for as long as the page is open. That is why the client takes a function: it is called for the first connection, for every reconnect and when the room hands the player to another room, each time with the id of the room being connected to. Return the token you have while it is still good and get a new one from your backend when it is not. A token written into the URL (`?token=...`) works too, but it is fixed for the life of the client: once it has run out, the client can no longer reconnect.
+- Pass `scope: roomId` to `createJoinToken` for a token that only opens one room or one matchmaking queue. The `roomId` the client passes to `token` is what to ask your backend for.
 - Keep the secret out of the repository: `wrangler secret put JOIN_SECRET`. It must be at least 16 characters.
-- The examples sign tokens for anonymous guests at `POST /api/guest` (see [`examples/shared`](examples/shared/src/guest.ts)). That is the place to plug in your own accounts.
+- The examples sign tokens for anonymous guests at `POST /api/guest` (see [`examples/shared`](examples/shared/src/guest.ts)), and a guest who presents a token that is still valid gets a new one for the same player. That is the place to plug in your own accounts.
 
 You can still write `authenticate` yourself, for example to read a session cookie. It receives the request and the room id, and returns the player id or a `Response` to refuse.
 
@@ -492,7 +495,6 @@ Close codes: `4000` replaced by a newer connection, `4001` room full, `4002` ref
 - Handover is for rooms in event mode and state sync. A lockstep client does not follow a move.
 - The matchmaker is first come, first served: no skill ratings.
 - Match history is one table keyed by match. There is no per-player index or leaderboard yet.
-- A `RoomClient` keeps the URL it was given, join token included. Once the token has expired, or a handover leads to a room the token is not valid for, it cannot reconnect. `onStatus` reports each failed attempt with its close code; the way out today is a new client with a new token.
 - What a room owes (a finished match, a handover) and could not deliver is tried again on the room's next event, not on a timer of its own. Delivery is at least once: after a crash at the wrong moment a handover or a match message can arrive twice.
 - A replay passes through a row of the room's database on its way to R2, so it is limited to 2 MB as well.
 - Rooms are never deleted. A room's storage, a lockstep recording included, stays until you remove it.

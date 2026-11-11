@@ -148,7 +148,9 @@
       let desyncAt = null;
       let closedBecause = "";
       const scheme = location.protocol === "https:" ? "wss" : "ws";
-      const client = new LockstepClient(`${scheme}://${location.host}/rooms/${room}?token=${token}`, {
+      const client = new LockstepClient(`${scheme}://${location.host}/rooms/${room}`, {
+        // Asked before every (re)connect and before the recording is loaded.
+        token: async () => (await guest()).token,
         ...simulation,
         onTurn() {
           turnAt = performance.now();
@@ -226,13 +228,17 @@
         }
         // The server makes up a guest player and signs a token for it. Kept per tab, so every
         // tab is its own player and a reload stays the same one.
+        let saved;
         try {
-          const saved = JSON.parse(sessionStorage.getItem("tickflare-guest"));
-          if (saved?.token && saved.expiresAt > Date.now() + 60_000) return saved;
+          saved = JSON.parse(sessionStorage.getItem("tickflare-guest"));
         } catch {
           // No usable storage: ask again.
         }
-        const fresh = await (await fetch("/api/guest", { method: "POST" })).json();
+        if (saved?.token && Date.now() < saved.renewAt) return saved;
+        // Past half its life but still valid: trade it in and stay the same player.
+        // Expired or missing: a new guest.
+        const headers = saved?.token && Date.now() < saved.expiresAt ? { Authorization: `Bearer ${saved.token}` } : {};
+        const fresh = await (await fetch("/api/guest", { method: "POST", headers })).json();
         try {
           sessionStorage.setItem("tickflare-guest", JSON.stringify(fresh));
         } catch {

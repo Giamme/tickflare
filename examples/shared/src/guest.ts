@@ -1,7 +1,8 @@
-// In your own project: import { createJoinToken } from "tickflare";
-import { createJoinToken } from "../../../src/server/index.js";
+// In your own project: import { createJoinToken, verifyJoinToken } from "tickflare";
+import { createJoinToken, verifyJoinToken } from "../../../src/server/index.js";
 
-const DAY = 24 * 60 * 60;
+/** How long a guest token is good for, in seconds: a day. */
+const LIFETIME = 24 * 60 * 60;
 
 /**
  * `POST /api/guest`: makes up a player and signs a join token for them.
@@ -11,13 +12,26 @@ const DAY = 24 * 60 * 60;
  * everyone gets a fresh guest. What matters is that the id comes from the
  * server: a player cannot pick someone else's.
  *
+ * A caller who sends a token that is still valid (`Authorization: Bearer`)
+ * stays the same player and gets a new token. The pages do that once a token
+ * is past half its life, which is how a session outlasts any one token.
+ *
  * Returns `null` for any other URL so the Worker can try its other routes.
  */
 export async function guestRoute(request: Request, secret: string): Promise<Response | null> {
   if (new URL(request.url).pathname !== "/api/guest") return null;
   if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
 
-  const player = crypto.randomUUID();
-  const token = await createJoinToken(secret, { player, expiresIn: DAY });
-  return Response.json({ player, token, expiresAt: Date.now() + DAY * 1000 });
+  const held = request.headers.get("Authorization")?.match(/^Bearer (\S+)$/)?.[1];
+  const known = held ? await verifyJoinToken(secret, held) : null;
+  const player = known?.player ?? crypto.randomUUID();
+  const token = await createJoinToken(secret, { player, expiresIn: LIFETIME });
+  const now = Date.now();
+  return Response.json({
+    player,
+    token,
+    expiresAt: now + LIFETIME * 1000,
+    // When the page should trade the token in for a new one.
+    renewAt: now + (LIFETIME * 1000) / 2,
+  });
 }

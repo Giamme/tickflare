@@ -7,6 +7,7 @@ import {
 } from "../lockstep.js";
 import { RoomClient, type ConnectionStatus } from "./index.js";
 import { TurnPacer } from "./pacer.js";
+import { roomIn, withFreshToken, type TokenSource } from "./token.js";
 
 export interface LockstepClientOptions<Input, Sim> extends Simulation<Input, Sim> {
   /**
@@ -30,6 +31,11 @@ export interface LockstepClientOptions<Input, Sim> extends Simulation<Input, Sim
   /** Two players' simulations differed at `turn`. */
   onDesync?(turn: number): void;
   onStatus?(status: ConnectionStatus, detail?: { code: number; reason: string }): void;
+  /**
+   * Supplies the join token, instead of putting one in the URL: see
+   * `RoomClientOptions.token`. Also asked before the recording is loaded.
+   */
+  token?: TokenSource;
   /** How to load the recording when (re)connecting. Defaults to `fetch` on the room's `/replay` URL. */
   loadReplay?(url: string): Promise<Replay<Input>>;
 }
@@ -53,6 +59,8 @@ export class LockstepClient<Input = unknown, Sim = unknown> {
   readonly #room: RoomClient<LockstepView<Input>, unknown>;
   readonly #options: LockstepClientOptions<Input, Sim>;
   readonly #replayUrl: string;
+  /** The room's id, which is what a token is asked for. */
+  readonly #roomId: string;
   /** Live turns that arrived while the recording was loading. */
   #buffer = new Map<number, TurnEntry<Input>[]>();
   /** Plays live turns out evenly. Created once the turn rate is known. */
@@ -70,6 +78,7 @@ export class LockstepClient<Input = unknown, Sim = unknown> {
     replay.protocol = replay.protocol === "wss:" ? "https:" : "http:";
     replay.pathname = `${replay.pathname.replace(/\/+$/, "")}/replay`;
     this.#replayUrl = replay.toString();
+    this.#roomId = roomIn(String(url));
 
     this.#room = new RoomClient<LockstepView<Input>, unknown>(url, {
       onStatus: (status, detail) => {
@@ -80,6 +89,7 @@ export class LockstepClient<Input = unknown, Sim = unknown> {
         if (status === "open") this.#needsSync = true;
         options.onStatus?.(status, detail);
       },
+      token: options.token,
       onState: (view) => this.#receive(view),
     });
   }
@@ -134,7 +144,9 @@ export class LockstepClient<Input = unknown, Sim = unknown> {
     const id = ++this.#syncId;
     let replay: Replay<Input>;
     try {
-      replay = await (this.#options.loadReplay ?? loadReplay)(this.#replayUrl);
+      const { token } = this.#options;
+      const url = token ? await withFreshToken(this.#replayUrl, this.#roomId, token) : this.#replayUrl;
+      replay = await (this.#options.loadReplay ?? loadReplay)(url);
     } catch (err) {
       console.warn("[tickflare] could not load the recording; retrying on the next turn", err);
       if (id === this.#syncId) this.#needsSync = true;
