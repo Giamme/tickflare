@@ -1,0 +1,38 @@
+{
+  "name": "tickflare",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Multiplayer game framework for Cloudflare Workers and Durable Objects",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/server/index.d.ts",
+      "import": "./dist/server/index.js"
+    },
+    "./client": {
+      "types": "./dist/client/index.d.ts",
+      "import": "./dist/client/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "npm run build:example && wrangler dev --config examples/tic-tac-toe/wrangler.jsonc",
+    "build": "tsc -p tsconfig.build.json",
+    "build:example": "esbuild src/client/index.ts --bundle --format=esm --outfile=examples/tic-tac-toe/public/tickflare-client.js",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "^1.7.0",
+    "@cloudflare/workers-types": "^5.20261110.1",
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2",
+    "vitest": "^5.1.0",
+    "wrangler": "^4.160.0"
+  }
+}

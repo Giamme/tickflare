@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.wrangler/
+.dev.vars*
+*.log
+
+# Built from src/client by `npm run build:example`
+examples/*/public/tickflare-client.js
