@@ -64,6 +64,30 @@ export const CloseCode = {
   Removed: 4003,
 } as const;
 
+/** Sent by a matchmaker to every player of a match it has just put together. */
+export interface MatchFound {
+  t: "match";
+  /** The room to connect to. Only these players can take a seat in it. */
+  room: string;
+  players: string[];
+}
+
+/** What a room puts on its queue when it calls `finishMatch`. */
+export interface MatchResult {
+  /** Unique per finished match. Safe to use as a primary key: redeliveries carry the same id. */
+  id: string;
+  /** The room id, if the room knows it (it does when players came through the gateway). */
+  room: string | null;
+  /** Epoch milliseconds. */
+  endedAt: number;
+  /** Everyone who held a seat when the match ended. */
+  players: string[];
+  /** Whatever the room passed to `finishMatch`. */
+  result: Record<string, unknown>;
+  /** Where the replay was stored in the room's R2 bucket, if it stored one. */
+  replayKey?: string;
+}
+
 export function isFatalCloseCode(code: number): boolean {
   return code >= 4000 && code < 4100;
 }

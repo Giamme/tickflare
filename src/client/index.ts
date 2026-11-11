@@ -8,7 +8,8 @@ import {
   type ServerMessage,
 } from "../protocol.js";
 
-export { CloseCode, type Player } from "../protocol.js";
+export { CloseCode, type MatchFound, type Player } from "../protocol.js";
+export { findMatch, type FindMatchOptions } from "./matchmaking.js";
 export { LockstepClient, type LockstepClientOptions } from "./lockstep.js";
 export {
   runReplay,

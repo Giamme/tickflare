@@ -1,4 +1,14 @@
-import { LockstepRoom, Room, reject, routeToRoom, type Player } from "../src/server/index.js";
+import {
+  LockstepRoom,
+  Matchmaker,
+  Room,
+  recentMatches,
+  recordMatches,
+  reject,
+  routeToMatchmaker,
+  routeToRoom,
+  type Player,
+} from "../src/server/index.js";
 
 export interface TestState {
   total: number;
@@ -22,16 +32,20 @@ export type TestCommand =
   | { type: "cancel"; name: string }
   | { type: "kick"; id: string }
   | { type: "kickThenReject"; id: string }
-  | { type: "lock" };
+  | { type: "lock" }
+  | { type: "finish" }
+  | { type: "finishThenReject" };
 
 const COMMANDS = [
   "add", "secret", "noop", "half", "boom", "async",
   "timer", "timerThenReject", "cancel", "kick", "kickThenReject", "lock",
+  "finish", "finishThenReject",
 ];
 
 /** A room that exercises every kernel feature; not a game. */
 export class TestRoom extends Room<TestState, TestCommand> {
   protected override maxPlayers = 2;
+  protected override matchQueue = this.env.MATCHES;
   protected override maxMessageLength = 256;
 
   protected initialState(): TestState {
@@ -110,6 +124,12 @@ export class TestRoom extends Room<TestState, TestCommand> {
       case "lock":
         this.state.locked = true;
         return;
+      case "finish":
+        this.finishMatch({ winner: player.id, total: this.state.total });
+        return;
+      case "finishThenReject":
+        this.finishMatch({ winner: player.id });
+        reject("changed_my_mind");
     }
   }
 
@@ -205,11 +225,31 @@ export type TurnInput = { type: "add"; n: number };
 export class TurnRoom extends LockstepRoom<TurnInput> {
   protected override tickRate = 50;
   protected override maxInputsPerTurn = 3;
+  protected override matchQueue = this.env.MATCHES;
+  protected override matchBucket = this.env.REPLAYS;
+
+  // The match is over when the last player gives up their seat.
+  protected override onLeave(player: Player): void {
+    super.onLeave(player);
+    if (this.players.length === 1) this.finishMatch({ reason: "everyone_left" });
+  }
 
   protected parseInput(raw: unknown): TurnInput {
     const input = raw as { type?: unknown; n?: unknown } | null;
     if (input?.type !== "add" || typeof input.n !== "number") reject("bad_input");
     return { type: "add", n: input.n };
+  }
+}
+
+/** Pairs players and reserves a TestRoom for each pair. */
+export class TestMatchmaker extends Matchmaker {
+  protected async reserveRoom(
+    roomId: string,
+    players: string[],
+    locationHint: DurableObjectLocationHint | undefined,
+  ): Promise<void> {
+    const rooms = this.env.ROOMS;
+    await rooms.get(rooms.idFromName(roomId), { locationHint }).reserve(roomId, players);
   }
 }
 
@@ -223,7 +263,16 @@ export default {
     const response =
       (await routeToRoom(request, { rooms: env.ROOMS, authenticate: whoIs })) ??
       (await routeToRoom(request, { rooms: env.TICKS, prefix: "/ticks", authenticate: whoIs })) ??
-      (await routeToRoom(request, { rooms: env.TURNS, prefix: "/turns", authenticate: whoIs }));
-    return response ?? new Response("Not found", { status: 404 });
+      (await routeToRoom(request, { rooms: env.TURNS, prefix: "/turns", authenticate: whoIs })) ??
+      (await routeToMatchmaker(request, { matchmaker: env.MATCHMAKER, authenticate: whoIs }));
+    if (response) return response;
+    if (new URL(request.url).pathname === "/matches") {
+      return Response.json(await recentMatches(env.DB, 100));
+    }
+    return new Response("Not found", { status: 404 });
   },
-} satisfies ExportedHandler<Cloudflare.Env>;
+
+  async queue(batch, env): Promise<void> {
+    await recordMatches(batch, env.DB);
+  },
+} satisfies ExportedHandler<Cloudflare.Env, import("../src/protocol.js").MatchResult>;

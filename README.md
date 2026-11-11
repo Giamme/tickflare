@@ -6,7 +6,7 @@ Each room is one Durable Object: a single-threaded, authoritative server with it
 
 It is aimed at turn-based, card, co-op, .io-style and strategy games. Games that need UDP and rollback netcode (shooters, fighting games, sim racing) are out of scope.
 
-> **Status: early.** Steps 1 to 3 of the [roadmap](#roadmap) are in: the room kernel with event mode, state sync and lockstep, and a minimal client. Expect the API to change. The package is not on npm yet.
+> **Status: early.** Steps 1 to 4 of the [roadmap](#roadmap) are in: the room kernel with event mode, state sync and lockstep, matchmaking, match results, and a minimal client. Expect the API to change. The package is not on npm yet.
 
 ## Try the examples
 
@@ -254,6 +254,85 @@ Your simulation must be deterministic. In practice:
 - Prefer whole numbers. `+ - * /` and `Math.sqrt` give the same result everywhere; `Math.sin`, `Math.cos` and friends are not guaranteed to.
 - Iterate in a fixed order. Object keys keep insertion order, which is the same on every client because joins arrive in the same order.
 
+### Matchmaking
+
+A `Matchmaker` is a Durable Object that players wait in. When enough are waiting it picks a new room id, reserves that room for them and tells each where to go. Each queue name is its own object, so `ranked` and `casual` fill separately.
+
+```ts
+// server
+import { Matchmaker, routeToMatchmaker, routeToRoom } from "tickflare";
+
+export class Lobby extends Matchmaker<Env> {
+  protected override matchSize = 2;
+
+  protected async reserveRoom(roomId: string, players: string[], locationHint?: DurableObjectLocationHint) {
+    const rooms = this.env.ROOMS;
+    await rooms.get(rooms.idFromName(roomId), { locationHint }).reserve(roomId, players);
+  }
+}
+
+export default {
+  async fetch(request, env) {
+    const response =
+      (await routeToRoom(request, { rooms: env.ROOMS, authenticate })) ??
+      (await routeToMatchmaker(request, { matchmaker: env.LOBBY, authenticate }));
+    return response ?? new Response("Not found", { status: 404 });
+  },
+} satisfies ExportedHandler<Env>;
+```
+
+```ts
+// client
+import { RoomClient, findMatch } from "tickflare/client";
+
+const { room } = await findMatch("wss://my-game.example/matchmaking/ranked");
+const client = new RoomClient(`wss://my-game.example/rooms/${room}`);
+```
+
+- **Reserved seats.** Only the matched players can take a seat in the room; anyone else is closed with `4002` and `not_invited`.
+- **Placement.** The gateway works out roughly where each player is from `request.cf`, and the matchmaker passes the most common region as `locationHint`, so the room is created near the players. Locally there is no `request.cf` and the hint is undefined.
+- **Cost.** The queue is the set of open WebSockets, so a matchmaker hibernates while people wait.
+
+Add the matchmaker class to `durable_objects.bindings` and `migrations` in your Wrangler config like a room. `findMatch` takes an `AbortSignal` to stop waiting.
+
+### Match results
+
+Call `this.finishMatch(result)` from a hook when a match ends. The room puts a message on a queue; a queue consumer stores it in D1. Lockstep rooms also store their recording in R2 and the message carries its key.
+
+```ts
+export class Duel extends Room<State, Command, Env> {
+  protected override matchQueue = this.env.MATCHES; // a Queue binding
+  protected override matchBucket = this.env.REPLAYS; // optional: an R2 binding, for replays
+
+  protected onCommand(player: Player, command: Command): void {
+    // ...
+    if (this.state.winner) this.finishMatch({ winner: this.state.winner });
+  }
+}
+
+export default {
+  // ...fetch as above
+  async queue(batch, env) {
+    await recordMatches(batch, env.DB); // a D1 binding
+  },
+} satisfies ExportedHandler<Env, MatchResult>;
+```
+
+```jsonc
+// wrangler.jsonc, in addition to the Durable Objects
+"queues": {
+  "producers": [{ "binding": "MATCHES", "queue": "matches" }],
+  "consumers": [{ "queue": "matches" }]
+},
+"d1_databases": [{ "binding": "DB", "database_name": "my-game", "database_id": "..." }],
+"r2_buckets": [{ "binding": "REPLAYS", "bucket_name": "my-game-replays" }]
+```
+
+- The message is `{ id, room, endedAt, players, result, replayKey? }`. `result` is whatever you passed.
+- The announcement is saved with the room in the same step as the hook's other changes, and sent afterwards. If the queue or bucket is unavailable it is sent on the room's next event. A hook that rejects announces nothing.
+- `recordMatches` creates its table, `tickflare_matches`, on first use (the SQL is exported as `MATCHES_SCHEMA` if you prefer migrations), and stores a match once however often its message is delivered. `recentMatches(db, limit)` reads them back.
+- Do your own post-match work in the same consumer: ratings, achievements, notifications.
+
 ### What the kernel does for you
 
 - **Rollback.** If a hook calls `reject()` or throws, everything it did is undone: changes to `this.state`, timers it set or cleared, and players it removed.
@@ -299,14 +378,15 @@ Close codes: `4000` replaced by a newer connection, `4001` room full, `4002` ref
 - Lockstep clients load the whole recording on every (re)connect and simulate it from turn 1. There are no snapshots to shortcut a long match yet.
 - Lockstep hashes show that a desync happened and at which turn, not which player is wrong.
 - No rate limiting of commands.
-- No matchmaking; clients pick the room id.
+- The matchmaker only fills matches of a fixed size, first come first served: no skill ratings, no "start with fewer after a wait".
+- Match history is one table keyed by match. There is no per-player index or leaderboard yet.
 
 ## Roadmap
 
 1. **Room kernel, event mode, TypeScript client** (done)
 2. **State sync: a fixed-rate authoritative simulation with delta snapshots and visibility rules** (done)
 3. **Lockstep: the room orders inputs, clients simulate deterministically; replays from the input log** (done)
-4. Matchmaking and the services around a room (D1, R2, Queues)
+4. **Matchmaking and the services around a room (D1, R2, Queues)** (done)
 5. World shards: large worlds split across rooms, with handoff between them
 
 ## Development

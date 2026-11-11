@@ -4,11 +4,12 @@ import {
   PING,
   PONG,
   PROTOCOL_VERSION,
+  type MatchResult,
   type Player,
   type ServerMessage,
 } from "../protocol.js";
 import { applyPatch, diff } from "../patch.js";
-import { PLAYER_HEADER } from "./gateway.js";
+import { PLAYER_HEADER, ROOM_HEADER } from "./gateway.js";
 
 /** Thrown by a hook to refuse a command, a join or a leave. The reason is sent to the client. */
 export class Rejection extends Error {
@@ -70,6 +71,18 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
   /** Longest client frame accepted, in characters. */
   protected maxMessageLength = 16 * 1024;
 
+  /**
+   * Where `finishMatch` announces a finished match. Set it to a Queue binding:
+   * `protected override matchQueue = this.env.MATCHES;`
+   */
+  protected matchQueue: Queue<MatchResult> | undefined;
+
+  /**
+   * Where `finishMatch` stores the replay it is given, if any. Set it to an R2
+   * binding: `protected override matchBucket = this.env.REPLAYS;`
+   */
+  protected matchBucket: R2Bucket | undefined;
+
   /** Simulation rate in ticks per second. 0, the default, is event mode: no tick loop. */
   protected tickRate = 0;
 
@@ -94,6 +107,15 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
   #removed: { id: string; reason: string }[] = [];
   /** The timers changed, so the object's alarm has to be moved before the event ends. */
   #alarmStale = false;
+
+  /** The id this room is known by. Learned from the gateway or from `reserve`. */
+  #roomId: string | null = null;
+  /** If set, only these players may take a seat. Set by a matchmaker through `reserve`. */
+  #invited: string[] | null = null;
+  /** Finished matches announced by the current hook, not yet committed. */
+  #finished: { message: MatchResult; replay?: string }[] = [];
+  /** There are finished matches in storage that still have to reach the queue. */
+  #outboxPending = false;
 
   /** Ticks run since the room was created. */
   #tick = 0;
@@ -192,6 +214,52 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     return this.#tick;
   }
 
+  /** The id this room is reached under, once someone has connected through the gateway. */
+  protected get roomId(): string | null {
+    return this.#roomId;
+  }
+
+  /**
+   * Announce that a match is over. `result` is yours to define (winner,
+   * scores, ...). It is put on `matchQueue` together with the room id and the
+   * players, for a queue consumer such as `recordMatches` to store. Pass a
+   * `replay` to have it written to `matchBucket` first; the message then
+   * carries its key. Call from inside a hook.
+   *
+   * The announcement is saved with the room and sent after the hook has
+   * committed. If sending fails it is tried again on the room's next event.
+   */
+  protected finishMatch(result: Record<string, unknown> = {}, replay?: unknown): void {
+    if (!this.matchQueue) throw new TypeError("finishMatch() needs matchQueue to be set");
+    const message: MatchResult = {
+      id: crypto.randomUUID(),
+      room: this.#roomId,
+      endedAt: Date.now(),
+      players: [...this.#roster],
+      result,
+    };
+    if (replay !== undefined && this.matchBucket) {
+      message.replayKey = `replays/${message.id}.json`;
+      this.#finished.push({ message, replay: JSON.stringify(replay) });
+    } else {
+      this.#finished.push({ message });
+    }
+  }
+
+  /**
+   * Called by a matchmaker, over RPC, before a match's players arrive. It
+   * creates the room where the matchmaker asked for it and closes it to
+   * everyone but `playerIds`.
+   */
+  async reserve(roomId: string, playerIds: string[]): Promise<void> {
+    this.#load();
+    this.#roomId = roomId;
+    this.#invited = [...playerIds];
+    const sql = this.ctx.storage.sql;
+    sql.exec("INSERT OR REPLACE INTO tickflare_meta (key, value) VALUES ('room', ?)", roomId);
+    sql.exec("INSERT OR REPLACE INTO tickflare_meta (key, value) VALUES ('invited', ?)", JSON.stringify(playerIds));
+  }
+
   /**
    * Run `onTimer(name)` once, `delayMs` from now. A timer with the same name
    * is replaced. Returns the time it fires in epoch milliseconds, which you
@@ -232,6 +300,11 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
       return new Response("Missing player identity", { status: 401 });
     }
     this.#load();
+    const roomId = request.headers.get(ROOM_HEADER);
+    if (roomId && roomId !== this.#roomId) {
+      this.#roomId = roomId;
+      this.ctx.storage.sql.exec("INSERT OR REPLACE INTO tickflare_meta (key, value) VALUES ('room', ?)", roomId);
+    }
     if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
       return this.onHttp(request, { id: playerId, connected: this.#isConnected(playerId) });
     }
@@ -291,6 +364,9 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     const player: Player = { id: playerId, connected: true };
 
     if (!this.#roster.includes(playerId)) {
+      if (this.#invited && !this.#invited.includes(playerId)) {
+        return refuse(client, server, CloseCode.JoinRejected, "not_invited");
+      }
       if (this.#roster.length >= this.maxPlayers) {
         return refuse(client, server, CloseCode.RoomFull, "room_full");
       }
@@ -420,8 +496,34 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
       else await this.ctx.storage.setAlarm(next);
     }
 
+    if (this.#outboxPending) await this.#sendFinished();
+
     if (afterEvent) this.#stalled = false;
     this.#syncLoop();
+  }
+
+  /** Delivers finished matches that are waiting in storage: replay to R2, then the message to the queue. */
+  async #sendFinished(): Promise<void> {
+    const sql = this.ctx.storage.sql;
+    const waiting = sql
+      .exec<{ id: number; body: string }>("SELECT id, body FROM tickflare_outbox ORDER BY id")
+      .toArray();
+    try {
+      for (const row of waiting) {
+        const { message, replay } = JSON.parse(row.body) as { message: MatchResult; replay?: string };
+        if (replay !== undefined && message.replayKey && this.matchBucket) {
+          await this.matchBucket.put(message.replayKey, replay, {
+            httpMetadata: { contentType: "application/json" },
+          });
+        }
+        await this.matchQueue?.send(message);
+        sql.exec("DELETE FROM tickflare_outbox WHERE id = ?", row.id);
+      }
+      this.#outboxPending = false;
+    } catch (err) {
+      // Left in storage; the next event tries again.
+      console.error("[tickflare] could not announce a finished match:", err);
+    }
   }
 
   /** Starts the simulation if it should be running and stops it if it should not. */
@@ -484,6 +586,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
        )`,
     );
     sql.exec("CREATE TABLE IF NOT EXISTS tickflare_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+    sql.exec("CREATE TABLE IF NOT EXISTS tickflare_outbox (id INTEGER PRIMARY KEY AUTOINCREMENT, body TEXT NOT NULL)");
     const room = sql
       .exec<StoredRoom>("SELECT seq, state, players FROM tickflare_room WHERE id = 1")
       .toArray()[0];
@@ -501,10 +604,16 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
         throw new TypeError("initialState() must return a JSON-serializable value");
       }
     }
-    const tick = sql
-      .exec<{ value: string }>("SELECT value FROM tickflare_meta WHERE key = 'tick'")
-      .toArray()[0];
-    this.#tick = tick ? Number(tick.value) : 0;
+    const meta = new Map(
+      sql
+        .exec<{ key: string; value: string }>("SELECT key, value FROM tickflare_meta")
+        .toArray()
+        .map((row) => [row.key, row.value]),
+    );
+    this.#tick = Number(meta.get("tick") ?? 0);
+    this.#roomId = meta.get("room") ?? null;
+    this.#invited = meta.has("invited") ? (JSON.parse(meta.get("invited")!) as string[]) : null;
+    this.#outboxPending = sql.exec("SELECT 1 FROM tickflare_outbox LIMIT 1").toArray().length > 0;
     this.#seq = room?.seq ?? 0;
     this.#committed = { state, roster: room?.players ?? "[]", timers: JSON.stringify(timers) };
     // Start from the JSON round-trip, so new and resumed rooms behave the same.
@@ -544,6 +653,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
    */
   #apply(hook: () => void): Outcome {
     const removedBefore = this.#removed.length;
+    this.#finished.length = 0;
     try {
       const returned = hook() as unknown;
       if (isThenable(returned)) {
@@ -578,6 +688,11 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
         this.#alarmStale = true;
       }
 
+      for (const finished of this.#finished.splice(0)) {
+        sql.exec("INSERT INTO tickflare_outbox (body) VALUES (?)", JSON.stringify(finished));
+        this.#outboxPending = true;
+      }
+
       this.#seq = seq;
       this.#committed = next;
       if (stateChanged && !ticking) this.#broadcastState();
@@ -585,6 +700,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     } catch (err) {
       this.#restore();
       this.#removed.length = removedBefore;
+      this.#finished.length = 0;
       if (err instanceof Rejection) return { ok: false, reason: err.reason };
       console.error("[tickflare] room hook failed:", err);
       return { ok: false, reason: "internal_error" };

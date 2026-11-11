@@ -141,6 +141,11 @@ export abstract class LockstepRoom<Input, Env = Cloudflare.Env> extends Room<
     return Response.json(this.replay());
   }
 
+  /** Announces the end of the match and, if `matchBucket` is set, stores the recording as its replay. */
+  protected override finishMatch(result: Record<string, unknown> = {}): void {
+    super.finishMatch(result, this.replay());
+  }
+
   /** The recording so far. */
   protected replay(): Replay<Input> {
     const turns = this.#turns()

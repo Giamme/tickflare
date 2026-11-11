@@ -7,8 +7,19 @@
     "bindings": [
       { "name": "ROOMS", "class_name": "TestRoom" },
       { "name": "TICKS", "class_name": "TickRoom" },
-      { "name": "TURNS", "class_name": "TurnRoom" }
+      { "name": "TURNS", "class_name": "TurnRoom" },
+      { "name": "MATCHMAKER", "class_name": "TestMatchmaker" }
     ]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["TestRoom", "TickRoom", "TurnRoom"] }]
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["TestRoom", "TickRoom", "TurnRoom", "TestMatchmaker"] }
+  ],
+  "queues": {
+    "producers": [{ "binding": "MATCHES", "queue": "tickflare-test-matches" }],
+    "consumers": [{ "queue": "tickflare-test-matches", "max_batch_size": 10, "max_batch_timeout": 1 }]
+  },
+  "d1_databases": [
+    { "binding": "DB", "database_name": "tickflare-test", "database_id": "00000000-0000-0000-0000-000000000000" }
+  ],
+  "r2_buckets": [{ "binding": "REPLAYS", "bucket_name": "tickflare-test-replays" }]
 }
