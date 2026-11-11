@@ -1,65 +1,10 @@
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { applyPatch } from "../src/patch.js";
-import type { ServerMessage } from "../src/protocol.js";
-import { freshRoom, sleep, upgrade } from "./helpers.js";
-import type { TickCommand, TickState } from "./worker.js";
+import { describe, expect, it, vi } from "vitest";
+import { follow, freshRoom, sleep, until } from "./helpers.js";
+import type { TickState } from "./worker.js";
 
-type Frame = ServerMessage<TickState>;
-
-const open: WebSocket[] = [];
-afterEach(() => {
-  for (const ws of open.splice(0)) {
-    try {
-      ws.close(1000, "test_done");
-    } catch {
-      // Already closed.
-    }
-  }
-});
-
-/** A connection that rebuilds the state from frames the way the real client does. */
-async function join(room: string, player: string) {
-  const response = await upgrade(`/ticks/${room}?player=${player}`);
-  expect(response.status).toBe(101);
-  const ws = response.webSocket!;
-  const seen = {
-    ws,
-    frames: [] as Frame[],
-    state: undefined as TickState | undefined,
-    tick: 0,
-    /** `count` as this client saw it at each tick. */
-    countAt: new Map<number, number>(),
-    send(command: TickCommand) {
-      ws.send(JSON.stringify({ t: "cmd", id: seen.frames.length + 1, data: command }));
-    },
-    of<T extends Frame["t"]>(t: T) {
-      return seen.frames.filter((f): f is Extract<Frame, { t: T }> => f.t === t);
-    },
-  };
-  ws.addEventListener("message", (event) => {
-    const frame = JSON.parse(event.data as string) as Frame;
-    seen.frames.push(frame);
-    if (frame.t === "welcome" || frame.t === "state") seen.state = frame.state;
-    if (frame.t === "patch") seen.state = applyPatch(seen.state!, frame.p);
-    if (frame.t === "welcome" || frame.t === "patch" || (frame.t === "state" && frame.tick !== undefined)) {
-      seen.tick = frame.tick!;
-      seen.countAt.set(seen.tick, seen.state!.count);
-    }
-  });
-  ws.accept();
-  open.push(ws);
-  await until(() => seen.state !== undefined);
-  return seen;
-}
-
-async function until(condition: () => boolean, what = "condition"): Promise<void> {
-  for (let waited = 0; !condition(); waited += 5) {
-    if (waited > 3000) throw new Error(`Timed out waiting for ${what}`);
-    await sleep(5);
-  }
-}
+const join = (room: string, player: string) => follow<TickState>("/ticks", room, player);
 
 const stubFor = (room: string) => env.TICKS.get(env.TICKS.idFromName(room));
 
@@ -115,7 +60,7 @@ describe("state sync", () => {
 
     expect(p2.of("state")).toHaveLength(0);
     for (let tick = joinedAt + 1; tick <= joinedAt + 6; tick++) {
-      expect(p2.countAt.get(tick), `tick ${tick}`).toBe(p1.countAt.get(tick));
+      expect(p2.history.get(tick)?.count, `tick ${tick}`).toBe(p1.history.get(tick)?.count);
     }
     expect(p2.state!.ballast).toEqual(p1.state!.ballast);
   });
@@ -139,7 +84,7 @@ describe("state sync", () => {
     const before = p1.tick;
     await until(() => p1.tick >= before + 4);
 
-    const counts = [...p1.countAt.values()];
+    const counts = [...p1.history.values()].map((state) => state.count);
     expect(Math.max(...counts)).toBeLessThan(1000);
     expect(counts).toEqual([...counts].sort((a, b) => a - b));
     expect(p1.state!.count).toBeGreaterThanOrEqual(before);

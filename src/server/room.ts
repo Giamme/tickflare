@@ -162,6 +162,16 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     return true;
   }
 
+  /**
+   * A plain HTTP request for this room, sent to `{prefix}/{roomId}/...` and
+   * already authenticated by the gateway. For reading from the room, e.g. a
+   * replay or a scoreboard: changes made to the state here are not saved or
+   * sent to anyone.
+   */
+  protected onHttp(_request: Request, _player: Player): Response | Promise<Response> {
+    return new Response("Not found", { status: 404 });
+  }
+
   /** What `player` is allowed to see. Defaults to the whole state. */
   protected view(_player: Player): unknown {
     return this.state;
@@ -217,14 +227,14 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
   }
 
   override async fetch(request: Request): Promise<Response> {
-    if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
-      return new Response("Expected a WebSocket upgrade", { status: 426 });
-    }
     const playerId = request.headers.get(PLAYER_HEADER);
     if (!playerId) {
       return new Response("Missing player identity", { status: 401 });
     }
     this.#load();
+    if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
+      return this.onHttp(request, { id: playerId, connected: this.#isConnected(playerId) });
+    }
     const response = this.#connect(playerId);
     await this.#finish();
     return response;

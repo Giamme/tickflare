@@ -25,9 +25,11 @@ export interface RouteOptions {
 }
 
 /**
- * Forwards `GET {prefix}/{roomId}` WebSocket upgrades to the room's Durable
- * Object. Returns `null` when the URL is not a room URL, so the caller can
- * fall through to its other routes.
+ * Forwards room traffic to the room's Durable Object: WebSocket upgrades on
+ * `{prefix}/{roomId}`, and plain HTTP requests on `{prefix}/{roomId}/...`,
+ * which reach the room's `onHttp` hook. Both are authenticated first.
+ * Returns `null` when the URL is not a room URL, so the caller can fall
+ * through to its other routes.
  */
 export async function routeToRoom(
   request: Request,
@@ -37,11 +39,12 @@ export async function routeToRoom(
   const { pathname } = new URL(request.url);
   if (!pathname.startsWith(`${prefix}/`)) return null;
 
-  const roomId = pathname.slice(prefix.length + 1);
-  if (!ROOM_ID.test(roomId)) {
+  const [roomId = "", ...rest] = pathname.slice(prefix.length + 1).split("/");
+  const upgrade = request.headers.get("Upgrade")?.toLowerCase() === "websocket";
+  if (!ROOM_ID.test(roomId) || (upgrade && rest.length > 0)) {
     return new Response("Invalid room id", { status: 400 });
   }
-  if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
+  if (!upgrade && rest.length === 0) {
     return new Response("Expected a WebSocket upgrade", { status: 426 });
   }
 

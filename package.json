@@ -23,8 +23,9 @@
   "scripts": {
     "dev": "npm run build:example && wrangler dev --config examples/tic-tac-toe/wrangler.jsonc",
     "dev:arena": "npm run build:example && wrangler dev --config examples/arena/wrangler.jsonc",
+    "dev:skirmish": "npm run build:example && wrangler dev --config examples/skirmish/wrangler.jsonc",
     "build": "tsc -p tsconfig.build.json",
-    "build:example": "esbuild src/client/index.ts --bundle --format=esm --outfile=examples/tic-tac-toe/public/tickflare-client.js && esbuild src/client/index.ts --bundle --format=esm --outfile=examples/arena/public/tickflare-client.js",
+    "build:example": "esbuild src/client/index.ts --bundle --format=esm --outfile=examples/tic-tac-toe/public/tickflare-client.js && esbuild src/client/index.ts --bundle --format=esm --outfile=examples/arena/public/tickflare-client.js && esbuild src/client/index.ts --bundle --format=esm --outfile=examples/skirmish/public/tickflare-client.js",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },

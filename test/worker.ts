@@ -1,4 +1,4 @@
-import { Room, reject, routeToRoom, type Player } from "../src/server/index.js";
+import { LockstepRoom, Room, reject, routeToRoom, type Player } from "../src/server/index.js";
 
 export interface TestState {
   total: number;
@@ -199,6 +199,20 @@ export class TickRoom extends Room<TickState, TickCommand> {
   }
 }
 
+export type TurnInput = { type: "add"; n: number };
+
+/** A lockstep room at 50 turns a second. */
+export class TurnRoom extends LockstepRoom<TurnInput> {
+  protected override tickRate = 50;
+  protected override maxInputsPerTurn = 3;
+
+  protected parseInput(raw: unknown): TurnInput {
+    const input = raw as { type?: unknown; n?: unknown } | null;
+    if (input?.type !== "add" || typeof input.n !== "number") reject("bad_input");
+    return { type: "add", n: input.n };
+  }
+}
+
 function whoIs(request: Request): string | Response {
   const player = new URL(request.url).searchParams.get("player");
   return player ?? new Response("Who are you?", { status: 401 });
@@ -208,7 +222,8 @@ export default {
   async fetch(request, env): Promise<Response> {
     const response =
       (await routeToRoom(request, { rooms: env.ROOMS, authenticate: whoIs })) ??
-      (await routeToRoom(request, { rooms: env.TICKS, prefix: "/ticks", authenticate: whoIs }));
+      (await routeToRoom(request, { rooms: env.TICKS, prefix: "/ticks", authenticate: whoIs })) ??
+      (await routeToRoom(request, { rooms: env.TURNS, prefix: "/turns", authenticate: whoIs }));
     return response ?? new Response("Not found", { status: 404 });
   },
 } satisfies ExportedHandler<Cloudflare.Env>;

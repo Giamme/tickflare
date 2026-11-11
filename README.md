@@ -6,7 +6,7 @@ Each room is one Durable Object: a single-threaded, authoritative server with it
 
 It is aimed at turn-based, card, co-op, .io-style and strategy games. Games that need UDP and rollback netcode (shooters, fighting games, sim racing) are out of scope.
 
-> **Status: early.** Steps 1 and 2 of the [roadmap](#roadmap) are in: the room kernel with event mode and state sync, and a minimal client. Expect the API to change. The package is not on npm yet.
+> **Status: early.** Steps 1 to 3 of the [roadmap](#roadmap) are in: the room kernel with event mode, state sync and lockstep, and a minimal client. Expect the API to change. The package is not on npm yet.
 
 ## Try the examples
 
@@ -14,11 +14,14 @@ It is aimed at turn-based, card, co-op, .io-style and strategy games. Games that
 npm install
 npm run dev         # tic-tac-toe: event mode
 npm run dev:arena   # arena: state sync at 20 ticks a second
+npm run dev:skirmish  # skirmish: lockstep at 10 turns a second
 ```
 
 Open <http://localhost:8787> in two tabs and play tic-tac-toe against yourself. Reload a tab mid-game to see it resume. Each move is on a 30-second clock, and a tab that stays closed for 30 seconds loses its seat. The example lives in [`examples/tic-tac-toe`](examples/tic-tac-toe).
 
 The arena in [`examples/arena`](examples/arena) is a real-time room: click to move a dot and eat pellets, with every extra tab another player.
+
+The skirmish in [`examples/skirmish`](examples/skirmish) is lockstep: each tab commands a squad and simulates the whole battle itself, and a fingerprint on screen shows the tabs agree.
 
 ## How it fits together
 
@@ -28,10 +31,11 @@ browser ── WebSocket ──▶ Worker (gateway) ──▶ Room (Durable Obje
                          and routes             sends each player their view
 ```
 
-A room synchronises its players in one of two ways so far:
+A room synchronises its players in one of three ways:
 
 - **Event mode** is the default. There is no tick loop: the room wakes when a player connects, sends a command, drops or leaves, or when a timer you set runs out. It runs your hook and goes back to sleep. While it sleeps the WebSockets stay open and you are not billed for duration, which makes turn-based and asynchronous games close to free to host.
 - **State sync** adds a simulation. The room calls `onTick` at a fixed rate while players are connected and sends each player only what changed in their view since the previous tick. See [State sync](#state-sync).
+- **Lockstep** turns that around: the room never runs the game. It orders everyone's inputs into numbered turns and every client runs the same deterministic simulation over them. Bandwidth depends on what players do, not on how many units exist, which is what strategy games need. See [Lockstep](#lockstep).
 
 ## Write a room
 
@@ -120,6 +124,7 @@ await room.leave(); // gives up the seat; the room then closes the connection
 | `onTick(dt)` | `tickRate` times a second while the room is ticking | `dt` is always `1 / tickRate` seconds |
 | `shouldTick()` | After every event and every tick | Return false to pause the simulation. Defaults to true |
 | `view(player)` | Before state is sent to a player | Return what that player may see. Defaults to everything |
+| `onHttp(request, player)` | A plain HTTP request to `{prefix}/{roomId}/...` | For reading from the room, e.g. a scoreboard. Already authenticated. Defaults to 404 |
 
 Options are plain fields you override: `maxPlayers` (default unlimited), `maxMessageLength` (default 16,384 characters), `tickRate` (default 0, which is event mode) and `saveIntervalMs` (default 5,000).
 
@@ -189,6 +194,66 @@ Two things keep ticks cheap:
 - Keep things that change one at a time (units, players, projectiles) in objects keyed by id. Objects are patched key by key; arrays are sent whole when anything in them changes.
 - Round what you can. A position with one decimal is shorter on the wire than a 17-digit float.
 
+### Lockstep
+
+The room validates and orders inputs; the game itself lives in the client.
+
+```ts
+// server: src/game.ts
+import { LockstepRoom, reject } from "tickflare";
+
+type Order = { type: "move"; x: number; y: number };
+
+export class Skirmish extends LockstepRoom<Order> {
+  protected override tickRate = 10; // turns per second
+
+  // Every client will feed what this returns to its simulation.
+  protected parseInput(raw: unknown): Order {
+    const input = raw as Partial<Order> | null;
+    if (input?.type !== "move" || !Number.isFinite(input.x) || !Number.isFinite(input.y)) {
+      return reject("invalid_order");
+    }
+    return { type: "move", x: Math.round(input.x!), y: Math.round(input.y!) };
+  }
+}
+```
+
+```ts
+// client
+import { LockstepClient, seededRandom } from "tickflare/client";
+
+const client = new LockstepClient<Order, World>("wss://my-game.example/rooms/lobby", {
+  create: (seed) => new World(seededRandom(seed)),
+  step(world, entries, turn) {
+    for (const entry of entries) {
+      if (entry.e === "join") world.addPlayer(entry.p);
+      else if (entry.e === "leave") world.removePlayer(entry.p);
+      else if (entry.i) world.order(entry.p, entry.i);
+    }
+    world.advance();
+  },
+  hash: (world) => world.checksum(), // optional: lets the room catch desyncs
+  onTurn: (world) => render(world),
+});
+
+client.input({ type: "move", x: 120, y: 80 });
+```
+
+How it works:
+
+- **Turns.** `tickRate` times a second the room closes a turn: whatever inputs arrived since the last one, in arrival order. All players get the same turn. An input takes effect in the turn the room puts it in, for everyone at once, so there is nothing to predict or roll back.
+- **Players are part of the stream.** Joining, leaving, dropping and reconnecting arrive as entries with `e` set, so every simulation sees them at the same turn.
+- **Recording.** Every turn in which something happened is stored in the room. The recording is served at `{prefix}/{roomId}/replay`, behind the same `authenticate` as the WebSocket. `runReplay(replay, { create, step })` plays one back.
+- **Catching up.** On every (re)connect the client rebuilds its simulation from the recording and then follows the live turns. A reload mid-match ends in the same state as everyone else.
+- **Desync detection.** If you pass `hash`, clients report it every 20 turns. When two players disagree about a turn the room sets `desync` and every client's `onDesync` fires.
+
+Your simulation must be deterministic. In practice:
+
+- Take randomness only from `seededRandom(seed)`, never `Math.random()`.
+- Do not read the clock. Time is the turn number.
+- Prefer whole numbers. `+ - * /` and `Math.sqrt` give the same result everywhere; `Math.sin`, `Math.cos` and friends are not guaranteed to.
+- Iterate in a fixed order. Object keys keep insertion order, which is the same on every client because joins arrive in the same order.
+
 ### What the kernel does for you
 
 - **Rollback.** If a hook calls `reject()` or throws, everything it did is undone: changes to `this.state`, timers it set or cleared, and players it removed.
@@ -231,6 +296,8 @@ Close codes: `4000` replaced by a newer connection, `4001` room full, `4002` ref
 - In event mode the state is sent whole on every change.
 - The client applies patches but has no interpolation or prediction helpers yet. The arena example interpolates by hand.
 - A ticking room keeps one tick per timer fire: if the object falls behind, the simulation slows down instead of catching up.
+- Lockstep clients load the whole recording on every (re)connect and simulate it from turn 1. There are no snapshots to shortcut a long match yet.
+- Lockstep hashes show that a desync happened and at which turn, not which player is wrong.
 - No rate limiting of commands.
 - No matchmaking; clients pick the room id.
 
@@ -238,7 +305,7 @@ Close codes: `4000` replaced by a newer connection, `4001` room full, `4002` ref
 
 1. **Room kernel, event mode, TypeScript client** (done)
 2. **State sync: a fixed-rate authoritative simulation with delta snapshots and visibility rules** (done)
-3. Lockstep: the room orders inputs, clients simulate deterministically; replays from the input log
+3. **Lockstep: the room orders inputs, clients simulate deterministically; replays from the input log** (done)
 4. Matchmaking and the services around a room (D1, R2, Queues)
 5. World shards: large worlds split across rooms, with handoff between them
 
@@ -250,6 +317,7 @@ npm run typecheck
 npm run build       # emits dist/ for the tickflare and tickflare/client entry points
 npm run dev         # the tic-tac-toe example on http://localhost:8787
 npm run dev:arena   # the arena example
+npm run dev:skirmish  # the skirmish example
 ```
 
 The tests in [`test/`](test) drive a fixture Worker over real WebSockets, including eviction of the room while sockets are open and timers are pending.

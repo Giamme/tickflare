@@ -30,6 +30,15 @@ describe("routeToRoom", () => {
     expect((await upgrade(`/rooms/abc?player=${"x".repeat(129)}`)).status).toBe(400);
   });
 
+  it("forwards authenticated HTTP requests below a room to its onHttp hook", async () => {
+    const get = (path: string) => exports.default.fetch(`https://tickflare.test${path}`);
+    // The fixture room does not override onHttp, so it answers 404 itself.
+    expect((await get("/rooms/abc/anything?player=p1")).status).toBe(404);
+    expect((await get("/rooms/abc/anything")).status).toBe(401);
+    // A WebSocket upgrade is only accepted on the room URL itself.
+    expect((await upgrade("/rooms/abc/anything?player=p1")).status).toBe(400);
+  });
+
   it("ignores an identity header sent by the client", async () => {
     const p1 = await connect(freshRoom(), "p1", { "x-tickflare-player": "admin" });
     expect((await p1.next("welcome")).you).toBe("p1");

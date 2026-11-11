@@ -9,6 +9,15 @@ import {
 } from "../protocol.js";
 
 export { CloseCode, type Player } from "../protocol.js";
+export { LockstepClient, type LockstepClientOptions } from "./lockstep.js";
+export {
+  runReplay,
+  seededRandom,
+  type LockstepView,
+  type Replay,
+  type Simulation,
+  type TurnEntry,
+} from "../lockstep.js";
 
 export type ConnectionStatus = "connecting" | "open" | "closed";
 

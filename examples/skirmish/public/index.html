@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Tickflare skirmish</title>
+    <link rel="icon" href="data:," />
+    <style>
+      :root {
+        color-scheme: light dark;
+        --line: light-dark(#d6d3cb, #45433e);
+        --muted: light-dark(#6b6962, #a3a096);
+        --floor: light-dark(#f6f4ee, #24231f);
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        font: 16px/1.5 system-ui, sans-serif;
+      }
+      main {
+        width: min(30rem, 100vw - 2rem);
+      }
+      h1 {
+        font-size: 1.5rem;
+        margin: 0;
+      }
+      #status {
+        margin: 0 0 0.75rem;
+        min-height: 1.5em;
+        font-variant-numeric: tabular-nums;
+      }
+      canvas {
+        display: block;
+        width: 100%;
+        aspect-ratio: 1;
+        background: var(--floor);
+        border: 1px solid var(--line);
+        border-radius: 0.5rem;
+        touch-action: none;
+        cursor: crosshair;
+      }
+      .hint {
+        color: var(--muted);
+        font-size: 0.875rem;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Skirmish</h1>
+      <p id="status" role="status">Connecting…</p>
+      <canvas id="field" width="480" height="480" aria-label="Battlefield. Click to send your squad."></canvas>
+      <p class="hint">
+        Click or tap to send your squad there. Room <code id="room"></code>: every extra tab is
+        another player, up to four. The room only orders the clicks into turns; each tab runs the
+        simulation itself, and the fingerprint above shows they agree.
+        <a id="replay" target="_blank" rel="noopener">See the recording</a>.
+      </p>
+    </main>
+
+    <script type="module">
+      import { LockstepClient, seededRandom } from "./tickflare-client.js";
+
+      const SIZE = 480;
+      const SQUAD = 5;
+      /** Distance a unit covers per turn. */
+      const STEP = 12;
+
+      // The simulation. Everything here must be deterministic: no Math.random, no clocks,
+      // whole-number positions, and the same order of work on every machine.
+      const simulation = {
+        create(seed) {
+          return { random: seededRandom(seed), squads: {} };
+        },
+        step(sim, entries) {
+          for (const entry of entries) {
+            if (entry.e === "join") {
+              const cx = 60 + Math.floor(sim.random() * (SIZE - 120));
+              const cy = 60 + Math.floor(sim.random() * (SIZE - 120));
+              const hue = Math.floor(sim.random() * 360);
+              sim.squads[entry.p] = { hue, units: formation(cx, cy).map((at) => ({ ...at, px: at.x, py: at.y, tx: at.x, ty: at.y })) };
+            } else if (entry.e === "leave") {
+              delete sim.squads[entry.p];
+            } else if (entry.i && sim.squads[entry.p]) {
+              const targets = formation(entry.i.x, entry.i.y);
+              sim.squads[entry.p].units.forEach((unit, n) => {
+                unit.tx = targets[n].x;
+                unit.ty = targets[n].y;
+              });
+            }
+          }
+          for (const squad of Object.values(sim.squads)) {
+            for (const unit of squad.units) {
+              unit.px = unit.x;
+              unit.py = unit.y;
+              const dx = unit.tx - unit.x;
+              const dy = unit.ty - unit.y;
+              const distance = Math.sqrt(dx * dx + dy * dy);
+              if (distance <= STEP) {
+                unit.x = unit.tx;
+                unit.y = unit.ty;
+              } else {
+                unit.x += Math.round((dx / distance) * STEP);
+                unit.y += Math.round((dy / distance) * STEP);
+              }
+            }
+          }
+        },
+        hash(sim) {
+          let h = 2166136261;
+          for (const [id, squad] of Object.entries(sim.squads)) {
+            for (const ch of id) h = Math.imul(h ^ ch.charCodeAt(0), 16777619);
+            for (const unit of squad.units) {
+              h = Math.imul(h ^ unit.x, 16777619);
+              h = Math.imul(h ^ unit.y, 16777619);
+            }
+          }
+          return (h >>> 0).toString(16).padStart(8, "0");
+        },
+      };
+
+      /** Five spots around a point: the middle and four corners. */
+      function formation(cx, cy) {
+        const clamp = (n) => Math.min(SIZE, Math.max(0, n));
+        return [[0, 0], [-18, -18], [18, -18], [-18, 18], [18, 18]]
+          .slice(0, SQUAD)
+          .map(([dx, dy]) => ({ x: clamp(cx + dx), y: clamp(cy + dy) }));
+      }
+
+      const room = /^[A-Za-z0-9_-]{1,64}$/.test(location.hash.slice(1))
+        ? location.hash.slice(1)
+        : "lobby";
+      const player = playerId();
+      const statusEl = document.getElementById("status");
+      const canvas = document.getElementById("field");
+      const ctx = canvas.getContext("2d");
+      document.getElementById("room").textContent = room;
+      document.getElementById("replay").href = `/rooms/${room}/replay?player=${player}`;
+      addEventListener("hashchange", () => location.reload());
+
+      let turnAt = performance.now();
+      let desyncAt = null;
+      let closedBecause = "";
+      const scheme = location.protocol === "https:" ? "wss" : "ws";
+      const client = new LockstepClient(`${scheme}://${location.host}/rooms/${room}?player=${player}`, {
+        ...simulation,
+        onTurn() {
+          turnAt = performance.now();
+        },
+        onDesync(turn) {
+          desyncAt = turn;
+        },
+        onStatus(status, detail) {
+          if (status === "closed") {
+            closedBecause = detail?.code === 4001 ? "This skirmish is full." : "Disconnected.";
+          }
+        },
+      });
+      // For the console, and for the end-to-end test.
+      window.skirmish = { client, fingerprint: () => (client.sim ? simulation.hash(client.sim) : null) };
+
+      canvas.addEventListener("pointerdown", (event) => {
+        const box = canvas.getBoundingClientRect();
+        const x = ((event.clientX - box.left) / box.width) * SIZE;
+        const y = ((event.clientY - box.top) / box.height) * SIZE;
+        client.input({ type: "move", x, y }).catch((error) => console.info(error.message));
+      });
+
+      function draw(now) {
+        ctx.clearRect(0, 0, SIZE, SIZE);
+        if (client.status === "closed") statusEl.textContent = closedBecause;
+        else if (!client.ready) statusEl.textContent = "Catching up…";
+        else if (desyncAt !== null) statusEl.textContent = `Out of sync since turn ${desyncAt}.`;
+        else statusEl.textContent = `Turn ${client.turn} · fingerprint ${simulation.hash(client.sim)}`;
+
+        if (client.ready) {
+          // Glide from where each unit was last turn to where it is now.
+          const t = Math.min(1, (now - turnAt) / 100);
+          for (const [id, squad] of Object.entries(client.sim.squads)) {
+            ctx.fillStyle = `hsl(${squad.hue} 70% 50%)`;
+            for (const unit of squad.units) {
+              ctx.beginPath();
+              ctx.arc(unit.px + (unit.x - unit.px) * t, unit.py + (unit.y - unit.py) * t, 7, 0, Math.PI * 2);
+              ctx.fill();
+              if (id === client.you) {
+                ctx.lineWidth = 2;
+                ctx.strokeStyle = getComputedStyle(document.body).color;
+                ctx.stroke();
+              }
+            }
+          }
+        }
+        requestAnimationFrame(draw);
+      }
+      requestAnimationFrame(draw);
+
+      function playerId() {
+        // Per tab, so every tab is a player. Survives a reload.
+        try {
+          const saved = sessionStorage.getItem("tickflare-player");
+          if (saved) return saved;
+          const fresh = crypto.randomUUID();
+          sessionStorage.setItem("tickflare-player", fresh);
+          return fresh;
+        } catch {
+          return crypto.randomUUID();
+        }
+      }
+    </script>
+  </body>
+</html>

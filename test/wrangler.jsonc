@@ -6,8 +6,9 @@
   "durable_objects": {
     "bindings": [
       { "name": "ROOMS", "class_name": "TestRoom" },
-      { "name": "TICKS", "class_name": "TickRoom" }
+      { "name": "TICKS", "class_name": "TickRoom" },
+      { "name": "TURNS", "class_name": "TurnRoom" }
     ]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["TestRoom", "TickRoom"] }]
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["TestRoom", "TickRoom", "TurnRoom"] }]
 }

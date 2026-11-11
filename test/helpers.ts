@@ -1,5 +1,6 @@
 import { exports } from "cloudflare:workers";
 import { afterEach, expect } from "vitest";
+import { applyPatch } from "../src/patch.js";
 import type { ServerMessage } from "../src/protocol.js";
 import type { TestCommand, TestState } from "./worker.js";
 
@@ -112,4 +113,50 @@ export async function twoPlayers(room = freshRoom()) {
   await p1.next("state");
   await p1.next("presence");
   return { room, p1, p2 };
+}
+
+export async function until(condition: () => boolean, what = "condition"): Promise<void> {
+  for (let waited = 0; !condition(); waited += 5) {
+    if (waited > 3000) throw new Error(`Timed out waiting for ${what}`);
+    await sleep(5);
+  }
+}
+
+/**
+ * A connection that rebuilds the state from frames the way the real client
+ * does, for rooms that tick. `prefix` picks the fixture room class.
+ */
+export async function follow<State>(prefix: string, room: string, player: string) {
+  const response = await upgrade(`${prefix}/${room}?player=${player}`);
+  expect(response.status).toBe(101);
+  const ws = response.webSocket!;
+  type Frame = ServerMessage<State>;
+  const seen = {
+    ws,
+    frames: [] as Frame[],
+    state: undefined as State | undefined,
+    tick: 0,
+    /** The state as this client saw it at each tick. */
+    history: new Map<number, State>(),
+    send(command: unknown) {
+      ws.send(JSON.stringify({ t: "cmd", id: seen.frames.length + 1, data: command }));
+    },
+    of<T extends Frame["t"]>(t: T) {
+      return seen.frames.filter((f): f is Extract<Frame, { t: T }> => f.t === t);
+    },
+  };
+  ws.addEventListener("message", (event) => {
+    const frame = JSON.parse(event.data as string) as Frame;
+    seen.frames.push(frame);
+    if (frame.t === "welcome" || frame.t === "state") seen.state = frame.state;
+    if (frame.t === "patch") seen.state = applyPatch(seen.state!, frame.p);
+    if (frame.t === "welcome" || frame.t === "patch" || (frame.t === "state" && frame.tick !== undefined)) {
+      seen.tick = frame.tick!;
+      seen.history.set(seen.tick, seen.state!);
+    }
+  });
+  ws.accept();
+  open.push(ws);
+  await until(() => seen.state !== undefined);
+  return seen;
 }
