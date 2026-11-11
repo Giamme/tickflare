@@ -8,8 +8,12 @@ import {
   type Player,
   type ServerMessage,
 } from "../protocol.js";
-import { applyPatch, diff } from "../patch.js";
+import { DeltaSender } from "./delta.js";
+import { MAX_CLOSE_REASON, readFrame, refuse } from "./frames.js";
 import { PLAYER_HEADER, ROOM_HEADER } from "./gateway.js";
+import { RateLimiter } from "./limiter.js";
+import { SignalSender, type Signal } from "./signals.js";
+import { RoomStorage } from "./storage.js";
 
 /** Thrown by a hook to refuse a command, a join or a leave. The reason is sent to the client. */
 export class Rejection extends Error {
@@ -29,10 +33,6 @@ export function reject(reason: string): never {
 
 type Outcome = { ok: true } | { ok: false; reason: string };
 
-type ClientFrame = { t: "cmd"; id: number; data: unknown } | { t: "leave"; id: number };
-
-type StoredRoom = { seq: number; state: string; players: string };
-type StoredTimer = { name: string; fire_at: number };
 
 /** Everything a hook may change, as JSON. A hook that fails is rolled back to this. */
 interface Committed {
@@ -46,8 +46,6 @@ const SOCKET_OPEN = 1;
 const AWAY_TIMER = "tickflare:away:";
 /** Consecutive failed ticks after which the simulation pauses until the next event. */
 const MAX_FAILED_TICKS = 5;
-/** Close reasons are limited to 123 bytes by the WebSocket protocol. */
-const MAX_CLOSE_REASON = 120;
 
 /**
  * An authoritative game room: one Durable Object per room.
@@ -117,6 +115,8 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
   protected state!: State;
 
   #loaded = false;
+  /** The room's database. Set by `#load`. */
+  #store!: RoomStorage;
   #seq = 0;
   #roster: string[] = [];
   /** Timer name to the time it fires, in epoch milliseconds. */
@@ -134,11 +134,9 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
   /** Players the current hook is handing to another room, not yet committed. */
   #moved: { player: string; to: string; carry: unknown }[] = [];
   /** Messages for other rooms sent by the current hook, not yet committed. */
-  #signals: { to: string; data: unknown; onlyIfWatched: boolean }[] = [];
+  #signals: Signal[] = [];
   /** Messages for other rooms that are committed and waiting to go out. */
-  #outgoing: { to: string; data: unknown; onlyIfWatched: boolean }[] = [];
-  /** Rooms that said nobody is connected, and until when to leave them alone. */
-  #unwatched = new Map<string, number>();
+  #outgoing = new SignalSender();
   #flushing = false;
   /** Seats changed in a way the remaining players have not been told about yet. */
   #presenceStale = false;
@@ -147,8 +145,8 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
   /** There are finished matches in storage that still have to reach the queue. */
   #outboxPending = false;
 
-  /** Per player: how many frames they may still send, and when that was last topped up. */
-  #allowance = new Map<string, { left: number; at: number }>();
+  /** Holds each player to `maxCommandsPerSecond`. */
+  #limiter = new RateLimiter();
 
   /** Ticks run since the room was created. */
   #tick = 0;
@@ -160,10 +158,8 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
   #failedTicks = 0;
   /** onTick kept failing, so the loop stays off until something else happens. */
   #stalled = false;
-  /** What each socket was last sent, to diff the next tick against. */
-  #baselines = new Map<WebSocket, unknown>();
-  /** The `seq` of the last tick broadcast. */
-  #sentSeq = -1;
+  /** Knows what each socket holds, to send it only the difference at the next tick. */
+  #deltas = new DeltaSender();
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -328,16 +324,8 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
    */
   async arrive(roomId: string, playerId: string, carry: unknown): Promise<void> {
     this.#load();
-    const sql = this.ctx.storage.sql;
-    if (this.#roomId !== roomId) {
-      this.#roomId = roomId;
-      sql.exec("INSERT OR REPLACE INTO tickflare_meta (key, value) VALUES ('room', ?)", roomId);
-    }
-    sql.exec(
-      "INSERT OR REPLACE INTO tickflare_arrivals (player, carry) VALUES (?, ?)",
-      playerId,
-      JSON.stringify(carry ?? null),
-    );
+    this.#learnRoomId(roomId);
+    this.#store.putArrival(playerId, carry);
   }
 
   /**
@@ -389,11 +377,9 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
    */
   async reserve(roomId: string, playerIds: string[]): Promise<void> {
     this.#load();
-    this.#roomId = roomId;
+    this.#learnRoomId(roomId);
     this.#invited = [...playerIds];
-    const sql = this.ctx.storage.sql;
-    sql.exec("INSERT OR REPLACE INTO tickflare_meta (key, value) VALUES ('room', ?)", roomId);
-    sql.exec("INSERT OR REPLACE INTO tickflare_meta (key, value) VALUES ('invited', ?)", JSON.stringify(playerIds));
+    this.#store.setMeta("invited", JSON.stringify(playerIds));
   }
 
   /**
@@ -439,10 +425,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     }
     this.#load();
     const roomId = request.headers.get(ROOM_HEADER);
-    if (roomId && roomId !== this.#roomId) {
-      this.#roomId = roomId;
-      this.ctx.storage.sql.exec("INSERT OR REPLACE INTO tickflare_meta (key, value) VALUES ('room', ?)", roomId);
-    }
+    if (roomId) this.#learnRoomId(roomId);
     if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
       return this.onHttp(request, { id: playerId, connected: this.#isConnected(playerId) });
     }
@@ -503,12 +486,9 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     const player: Player = { id: playerId, connected: true };
 
     if (!this.#roster.includes(playerId)) {
-      const sql = this.ctx.storage.sql;
-      const arrival = sql
-        .exec<{ carry: string }>("SELECT carry FROM tickflare_arrivals WHERE player = ?", playerId)
-        .toArray()[0];
+      const arrival = this.#store.arrival(playerId);
       // A player handed over by another room is always let in.
-      if (!arrival) {
+      if (arrival === undefined) {
         if (this.#invited && !this.#invited.includes(playerId)) {
           return refuse(client, server, CloseCode.JoinRejected, "not_invited");
         }
@@ -518,13 +498,13 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
       }
       const joined = this.#apply(() => {
         this.#roster.push(playerId);
-        if (arrival) this.onArrive(player, JSON.parse(arrival.carry));
+        if (arrival !== undefined) this.onArrive(player, JSON.parse(arrival));
         else this.onJoin(player);
       });
       if (!joined.ok) {
         return refuse(client, server, CloseCode.JoinRejected, joined.reason);
       }
-      if (arrival) sql.exec("DELETE FROM tickflare_arrivals WHERE player = ?", playerId);
+      if (arrival !== undefined) this.#store.removeArrival(playerId);
     } else if (!this.#isConnected(playerId)) {
       this.#apply(() => {
         this.#timers.delete(AWAY_TIMER + playerId);
@@ -556,7 +536,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     server.send(welcome);
     if (this.tickRate > 0) {
       // Remember exactly what this socket has, as a copy the simulation cannot touch.
-      this.#baselines.set(server, (JSON.parse(welcome) as { state: unknown }).state);
+      this.#deltas.remember(server, (JSON.parse(welcome) as { state: unknown }).state);
     }
     this.#broadcastPresence(server);
 
@@ -574,7 +554,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     if (message.length > this.maxMessageLength) {
       return this.#send(ws, { t: "error", reason: "message_too_large" });
     }
-    const allowed = this.#spendAllowance(playerId);
+    const allowed = this.#limiter.spend(playerId, this.maxCommandsPerSecond);
 
     let parsed: unknown;
     try {
@@ -623,7 +603,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     // A newer connection for the same player took over: nothing to announce.
     if (this.#isConnected(playerId, ws)) return;
 
-    this.#allowance.delete(playerId);
+    this.#limiter.forget(playerId);
     this.#apply(() => this.onDisconnect({ id: playerId, connected: false }));
     this.#apply(() => this.#startSeatTimeout(playerId));
     this.#broadcastPresence(ws);
@@ -642,20 +622,6 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
       this.onLeave({ id: playerId, connected: false });
       this.removePlayer(playerId, "away");
     });
-  }
-
-  /** Token bucket: refills at `maxCommandsPerSecond`, holds at most one second's worth. */
-  #spendAllowance(playerId: string): boolean {
-    const rate = this.maxCommandsPerSecond;
-    if (!Number.isFinite(rate)) return true;
-    const now = Date.now();
-    const bucket = this.#allowance.get(playerId) ?? { left: rate, at: now };
-    bucket.left = Math.min(rate, bucket.left + ((now - bucket.at) / 1000) * rate);
-    bucket.at = now;
-    this.#allowance.set(playerId, bucket);
-    if (bucket.left < 1) return false;
-    bucket.left -= 1;
-    return true;
   }
 
   /**
@@ -684,7 +650,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
       else await this.ctx.storage.setAlarm(next);
     }
 
-    if (this.#outgoing.length > 0) await this.#sendSignals();
+    if (this.#outgoing.pending) await this.#outgoing.send((to, data) => this.relay(to, data));
     if (this.#outboxPending && !this.#flushing) {
       // One at a time: an event that arrives while a delivery is under way must not repeat it.
       this.#flushing = true;
@@ -699,38 +665,14 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     this.#syncLoop();
   }
 
-  async #sendSignals(): Promise<void> {
-    const now = Date.now();
-    await Promise.all(
-      this.#outgoing.splice(0).map(async ({ to, data, onlyIfWatched }) => {
-        if (onlyIfWatched && (this.#unwatched.get(to) ?? 0) > now) return;
-        try {
-          if (await this.relay(to, data)) this.#unwatched.delete(to);
-          else this.#unwatched.set(to, now + 2000);
-        } catch (err) {
-          // Not retried by design. Back off so a broken neighbour is not hammered at tick rate.
-          this.#unwatched.set(to, now + 2000);
-          console.error(`[tickflare] could not signal ${to}:`, err);
-        }
-      }),
-    );
-  }
-
   /**
    * Delivers what is waiting in storage. A finished match: replay to R2, then
    * the message to the queue. A handover: the player to the other room, then
    * their connection is closed so the client follows.
    */
   async #flushOutbox(): Promise<void> {
-    const sql = this.ctx.storage.sql;
-    const waiting = sql
-      .exec<{ id: number; body: string }>("SELECT id, body FROM tickflare_outbox ORDER BY id")
-      .toArray();
     try {
-      for (const row of waiting) {
-        const entry = JSON.parse(row.body) as
-          | { message: MatchResult; replay?: string; move?: undefined }
-          | { move: { player: string; to: string; carry: unknown } };
+      for (const { id, entry } of this.#store.outbox()) {
         if (entry.move) {
           const { player, to, carry } = entry.move;
           await this.handOver(to, player, carry);
@@ -750,7 +692,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
           }
           await this.matchQueue?.send(message);
         }
-        sql.exec("DELETE FROM tickflare_outbox WHERE id = ?", row.id);
+        this.#store.removeFromOutbox(id);
       }
       this.#outboxPending = false;
     } catch (err) {
@@ -777,7 +719,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
       // Send what changed since the last tick, or it would never go out.
       this.#broadcastTick();
       if (this.#unsaved) this.#writeRoom(this.#seq, this.#committed);
-      this.#baselines.clear();
+      this.#deltas.reset();
     }
   }
 
@@ -803,31 +745,8 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
   /** Reads the room from storage the first time an event arrives after a (re)start. */
   #load(): void {
     if (this.#loaded) return;
-    const sql = this.ctx.storage.sql;
-    sql.exec(
-      `CREATE TABLE IF NOT EXISTS tickflare_room (
-         id INTEGER PRIMARY KEY CHECK (id = 1),
-         seq INTEGER NOT NULL,
-         state TEXT NOT NULL,
-         players TEXT NOT NULL
-       )`,
-    );
-    sql.exec(
-      `CREATE TABLE IF NOT EXISTS tickflare_timers (
-         name TEXT PRIMARY KEY,
-         fire_at INTEGER NOT NULL
-       )`,
-    );
-    sql.exec("CREATE TABLE IF NOT EXISTS tickflare_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
-    sql.exec("CREATE TABLE IF NOT EXISTS tickflare_outbox (id INTEGER PRIMARY KEY AUTOINCREMENT, body TEXT NOT NULL)");
-    sql.exec("CREATE TABLE IF NOT EXISTS tickflare_arrivals (player TEXT PRIMARY KEY, carry TEXT NOT NULL)");
-    const room = sql
-      .exec<StoredRoom>("SELECT seq, state, players FROM tickflare_room WHERE id = 1")
-      .toArray()[0];
-    const timers = sql
-      .exec<StoredTimer>("SELECT name, fire_at FROM tickflare_timers ORDER BY name")
-      .toArray()
-      .map((timer) => [timer.name, timer.fire_at]);
+    this.#store = new RoomStorage(this.ctx.storage.sql);
+    const room = this.#store.room();
 
     let state: string;
     if (room) {
@@ -838,18 +757,17 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
         throw new TypeError("initialState() must return a JSON-serializable value");
       }
     }
-    const meta = new Map(
-      sql
-        .exec<{ key: string; value: string }>("SELECT key, value FROM tickflare_meta")
-        .toArray()
-        .map((row) => [row.key, row.value]),
-    );
+    const meta = this.#store.meta();
     this.#tick = Number(meta.get("tick") ?? 0);
     this.#roomId = meta.get("room") ?? null;
     this.#invited = meta.has("invited") ? (JSON.parse(meta.get("invited")!) as string[]) : null;
-    this.#outboxPending = sql.exec("SELECT 1 FROM tickflare_outbox LIMIT 1").toArray().length > 0;
+    this.#outboxPending = this.#store.hasOutbox();
     this.#seq = room?.seq ?? 0;
-    this.#committed = { state, roster: room?.players ?? "[]", timers: JSON.stringify(timers) };
+    this.#committed = {
+      state,
+      roster: room?.roster ?? "[]",
+      timers: JSON.stringify(this.#store.timers()),
+    };
     // Start from the JSON round-trip, so new and resumed rooms behave the same.
     this.#restore();
     this.#loaded = true;
@@ -870,17 +788,16 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
   }
 
   #writeRoom(seq: number, committed: Committed): void {
-    const sql = this.ctx.storage.sql;
-    sql.exec(
-      "INSERT OR REPLACE INTO tickflare_room (id, seq, state, players) VALUES (1, ?, ?, ?)",
-      seq,
-      committed.state,
-      committed.roster,
-    );
-    if (this.tickRate > 0) {
-      sql.exec("INSERT OR REPLACE INTO tickflare_meta (key, value) VALUES ('tick', ?)", String(this.#tick));
-    }
+    this.#store.writeRoom({ seq, state: committed.state, roster: committed.roster });
+    if (this.tickRate > 0) this.#store.setMeta("tick", String(this.#tick));
     this.#unsaved = false;
+  }
+
+  /** Remembers the id this room is reached under, the first time it hears it. */
+  #learnRoomId(roomId: string): void {
+    if (this.#roomId === roomId) return;
+    this.#roomId = roomId;
+    this.#store.setMeta("room", roomId);
   }
 
   /**
@@ -917,31 +834,27 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
       const stateChanged = next.state !== was.state;
       const seq = stateChanged ? this.#seq + 1 : this.#seq;
 
-      const sql = this.ctx.storage.sql;
       if (next.roster !== was.roster || (stateChanged && !ticking)) {
         this.#writeRoom(seq, next);
       } else if (stateChanged) {
         this.#unsaved = true;
       }
       if (next.timers !== was.timers) {
-        sql.exec("DELETE FROM tickflare_timers");
-        for (const [name, firesAt] of this.#timers) {
-          sql.exec("INSERT INTO tickflare_timers (name, fire_at) VALUES (?, ?)", name, firesAt);
-        }
+        this.#store.replaceTimers(this.#timers);
         this.#alarmStale = true;
       }
 
       for (const finished of this.#finished.splice(0)) {
-        sql.exec("INSERT INTO tickflare_outbox (body) VALUES (?)", JSON.stringify(finished));
+        this.#store.addToOutbox(finished);
         this.#outboxPending = true;
       }
       for (const move of this.#moved.splice(0)) {
-        sql.exec("INSERT INTO tickflare_outbox (body) VALUES (?)", JSON.stringify({ move }));
+        this.#store.addToOutbox({ move });
         this.#outboxPending = true;
         this.#presenceStale = true;
       }
 
-      this.#outgoing.push(...this.#signals.splice(0));
+      this.#outgoing.add(this.#signals.splice(0));
 
       this.#seq = seq;
       this.#committed = next;
@@ -962,7 +875,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
   /** Sends everyone their whole view. Used outside the simulation. */
   #broadcastState(): void {
     // Whatever the sockets were sent during an earlier simulation is now out of date.
-    this.#baselines.clear();
+    this.#deltas.reset();
     // Without a custom view everyone gets the same frame, so build it once.
     const shared =
       this.view === Room.prototype.view
@@ -989,60 +902,13 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
   /** Sends everyone what changed in their view since the last tick. */
   #broadcastTick(): void {
     const custom = this.view !== Room.prototype.view;
-    const sockets = this.#seatedSockets();
-    if (
-      !custom &&
-      this.#seq === this.#sentSeq &&
-      sockets.every(({ ws }) => this.#baselines.has(ws))
-    ) {
-      return;
-    }
-
-    const baselines = new Map<WebSocket, unknown>();
-    // Without a custom view, sockets that were last sent the same snapshot share one diff,
-    // and everyone ends the tick on the same snapshot.
-    const shared = new Map<unknown, { frame?: string; next: unknown }>();
-    let common: { next: unknown } | undefined;
-
-    for (const { ws, id } of sockets) {
-      try {
-        const base = this.#baselines.get(ws);
-        let update = custom || base === undefined ? undefined : shared.get(base);
-        if (!update) {
-          update = this.#tickFrame(base, custom ? this.view({ id, connected: true }) : this.state);
-          if (!custom) {
-            if (common) update.next = common.next;
-            else common = update;
-            if (base !== undefined) shared.set(base, update);
-          }
-        }
-        if (update.frame) ws.send(update.frame);
-        baselines.set(ws, update.next);
-      } catch (err) {
-        // A view() that threw must not starve the other players.
-        console.error(`[tickflare] could not send the tick to ${id}:`, err);
-      }
-    }
-    this.#baselines = baselines;
-    this.#sentSeq = this.#seq;
-  }
-
-  /** The frame that brings a socket from `base` to `live`, and the snapshot it will then hold. */
-  #tickFrame(base: unknown, live: unknown): { frame?: string; next: unknown } {
-    const head = `"seq":${this.#seq},"tick":${this.#tick}`;
-    if (base !== undefined) {
-      const patch = diff(base, live);
-      if (patch === undefined) return { next: base };
-      if (patch !== null) {
-        const json = JSON.stringify(patch);
-        return {
-          frame: `{"t":"patch",${head},"p":${json}}`,
-          next: applyPatch(base, JSON.parse(json)),
-        };
-      }
-    }
-    const json = JSON.stringify(live) ?? "null";
-    return { frame: `{"t":"state",${head},"state":${json}}`, next: JSON.parse(json) };
+    this.#deltas.send(
+      this.#seatedSockets(),
+      this.#seq,
+      this.#tick,
+      this.state,
+      custom ? (id) => this.view({ id, connected: true }) : undefined,
+    );
   }
 
   #broadcastPresence(except?: WebSocket): void {
@@ -1094,23 +960,6 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     }
     return next;
   }
-}
-
-/** Completes the upgrade, then closes straight away so the client learns why. */
-function refuse(client: WebSocket, server: WebSocket, code: number, reason: string): Response {
-  server.accept();
-  server.close(code, reason.slice(0, MAX_CLOSE_REASON));
-  return new Response(null, { status: 101, webSocket: client });
-}
-
-function readFrame(value: unknown): ClientFrame | undefined {
-  if (typeof value !== "object" || value === null) return undefined;
-  const frame = value as { t?: unknown; id?: unknown; data?: unknown };
-  if (!Number.isSafeInteger(frame.id)) return undefined;
-  const id = frame.id as number;
-  if (frame.t === "cmd") return { t: "cmd", id, data: frame.data };
-  if (frame.t === "leave") return { t: "leave", id };
-  return undefined;
 }
 
 function isThenable(value: unknown): value is PromiseLike<unknown> {
