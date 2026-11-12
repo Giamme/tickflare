@@ -38,6 +38,7 @@ export {
   runReplay,
   seededRandom,
   type LockstepView,
+  type TurnsMessage,
   type Replay,
   type Simulation,
   type TurnEntry,

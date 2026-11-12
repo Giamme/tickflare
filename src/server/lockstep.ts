@@ -1,4 +1,4 @@
-import type { LockstepView, Replay, TurnEntry } from "../lockstep.js";
+import type { LockstepView, Replay, TurnEntry, TurnsMessage } from "../lockstep.js";
 import type { Player } from "../protocol.js";
 import { Room, reject } from "./room.js";
 
@@ -8,8 +8,16 @@ export interface LockstepState<Input> extends LockstepView<Input> {
   pending: TurnEntry<Input>[];
 }
 
-/** What a `LockstepClient` sends: an input (`i`), or its simulation's hash after turn `n` (`h`). */
+/**
+ * What a `LockstepClient` sends: an input (`i`), its simulation's hash after
+ * turn `n` (`h`), or, to a room whose `turnClock` is `"players"`, a request
+ * to close the turns that are due (`t`).
+ */
 export type LockstepCommand<Input> =
+  | {
+      /** A request to close the turns that are due. */
+      k: "t";
+    }
   | {
       /** An input. */
       k: "i";
@@ -29,6 +37,13 @@ export type LockstepCommand<Input> =
 const HASHES_KEPT = 128;
 
 /**
+ * With players asking for the turns: the most one request may close. If
+ * nobody asked for longer than this many turns, the game stood still for the
+ * rest of that time.
+ */
+const MOST_TURNS_AT_ONCE = 30;
+
+/**
  * A lockstep room. It never runs the game: it validates inputs, orders them
  * into turns at `tickRate` turns a second, records every turn in which
  * something happened, and sends all players the same stream. Players coming
@@ -37,6 +52,10 @@ const HASHES_KEPT = 128;
  *
  * The recording is served at `{prefix}/{roomId}/replay`. Clients read it when
  * they (re)connect, to catch up, and it doubles as the match replay.
+ *
+ * By default the room closes the turns itself, on a timer, and so is awake
+ * and billed for as long as the match lasts. Set `turnClock = "players"` and
+ * it sleeps between turns instead: see `turnClock`.
  *
  * If you override `onJoin`, `onDisconnect` or `onReconnect`, call `super` so
  * the event still reaches the turn stream. A seat that is given up, whether
@@ -54,7 +73,37 @@ export abstract class LockstepRoom<Input, Env = Cloudflare.Env> extends Room<
   /** Inputs one player may send within a single turn. More are refused. */
   protected maxInputsPerTurn = 32;
 
+  /**
+   * Who keeps time.
+   *
+   * `"room"`: the room closes a turn every `1 / tickRate` seconds on a timer
+   * of its own. It is awake for the whole match.
+   *
+   * `"players"`: the room has no timer. `LockstepClient` asks it for each
+   * turn as it falls due, one player's client at a time, and the room closes
+   * as many turns as its own clock says have passed, never more: a player
+   * can neither speed the game up nor hold it back while anyone else is
+   * connected. Between requests the room is asleep, which is most of the
+   * time. Orders take effect as soon as they do with `"room"`. Two things
+   * differ: the game stands still while nobody is connected to ask, and after
+   * a restart it skips ahead by up to `saveIntervalMs` of empty turns instead
+   * of going back by as much.
+   */
+  protected turnClock: "room" | "players" = "room";
+
   #resumed = false;
+  // With players asking for the turns, none of this is in `state`: a change to the state is a
+  // row written and a frame to everyone, and here turns change ten times a second.
+  /** The latest turn. `state.turn` is a checkpoint of it, written every `saveIntervalMs`. */
+  #turn = 0;
+  /** What happened in the latest turn. */
+  #entries: TurnEntry<Input>[] = [];
+  /** Inputs and events waiting for the next turn. */
+  #waiting: TurnEntry<Input>[] = [];
+  /** A moment and the turn that was current then: what "due" is counted from. */
+  #since: { at: number; turn: number } | undefined;
+  /** Turns to pass over at the next close, so that no number a player may have seen is used again. */
+  #skip = 0;
   /** The first hash reported for each recent turn, and who reported it. */
   #hashes = new Map<number, { hash: string; by: string }>();
 
@@ -80,6 +129,7 @@ export abstract class LockstepRoom<Input, Env = Cloudflare.Env> extends Room<
 
   protected parseCommand(raw: unknown): LockstepCommand<Input> {
     const frame = raw as { k?: unknown; d?: unknown; n?: unknown; h?: unknown } | null;
+    if (frame?.k === "t") return { k: "t" };
     if (frame?.k === "i") return { k: "i", d: this.parseInput(frame.d) };
     if (
       frame?.k === "h" &&
@@ -114,19 +164,91 @@ export abstract class LockstepRoom<Input, Env = Cloudflare.Env> extends Room<
       this.state.entries = JSON.parse(last.entries) as TurnEntry<Input>[];
       this.state.pending = [];
     }
+    if (this.turnClock === "players") {
+      this.#turn = this.state.turn;
+      this.#entries = last?.n === this.#turn ? (JSON.parse(last.entries) as TurnEntry<Input>[]) : [];
+      this.state.entries = [];
+      // Turns closed since the checkpoint were only in memory, and players still connected have
+      // seen them. There were fewer than a checkpoint's worth: pass over that many.
+      if (this.#turn > 0) this.#skip = this.#checkpointEvery();
+    }
+  }
+
+  /** With players asking for the turns: how many turns go by between checkpoints of the counter. */
+  #checkpointEvery(): number {
+    return Math.max(1, Math.round((this.saveIntervalMs * this.tickRate) / 1000));
+  }
+
+  /** Queues an input or an event for the next turn. */
+  #add(entry: TurnEntry<Input>): void {
+    this.#resume();
+    if (this.turnClock === "players") this.#waiting.push(entry);
+    else this.state.pending.push(entry);
+  }
+
+  /**
+   * With players asking for the turns: closes the turns that are due by this
+   * room's clock, and puts what was waiting into the last of them. `now`
+   * closes one even if none is due, for something that must not wait in
+   * memory: a player coming or going is recorded in the same breath as the
+   * change of seats.
+   */
+  #close(now: boolean, by?: string): void {
+    this.#resume();
+    const time = Date.now();
+    const turnMs = 1000 / this.tickRate;
+    // The first request after a (re)start finds one turn due.
+    this.#since ??= { at: time - turnMs, turn: this.#turn };
+    // Half a turn early is on time: requests arrive a little before and a little after the beat.
+    let count = Math.floor(this.#since.turn + (time - this.#since.at) / turnMs - this.#turn + 0.5);
+    const stoodStill = count > MOST_TURNS_AT_ONCE;
+    if (stoodStill) count = MOST_TURNS_AT_ONCE;
+    if (count < 1) {
+      if (!now) return;
+      count = 1;
+    }
+    // Turns passed over after a restart are not turns the clock is owed back.
+    count += this.#skip;
+    this.#since.turn += this.#skip;
+    this.#skip = 0;
+
+    const first = this.#turn + 1;
+    const last = this.#turn + count;
+    const entries = this.#waiting;
+    if (entries.length > 0) {
+      this.#turns().exec("INSERT OR REPLACE INTO tickflare_turns (n, entries) VALUES (?, ?)", last, JSON.stringify(entries));
+    }
+    this.#waiting = [];
+    this.#entries = entries;
+    this.#turn = last;
+    if (stoodStill) this.#since = { at: time, turn: last };
+    if (last - this.state.turn >= this.#checkpointEvery()) this.state.turn = last;
+    this.broadcast({ tickflare: "turns", n: first, c: count, e: entries, ...(by === undefined ? {} : { b: by }) } satisfies TurnsMessage<Input>);
+  }
+
+  /** The room keeps time only when it is asked to: with players asking, it has no simulation to wake for. */
+  protected override shouldTick(): boolean {
+    return this.turnClock === "room";
   }
 
   protected onCommand(player: Player, command: LockstepCommand<Input>): void {
     this.#resume();
+    const clocked = this.turnClock === "players";
+    if (command.k === "t") {
+      // A room that keeps its own time has nothing to be asked for.
+      if (clocked) this.#close(false, player.id);
+      return;
+    }
     if (command.k === "i") {
-      const waiting = this.state.pending.filter((entry) => entry.player === player.id && entry.input !== undefined);
+      const queue = clocked ? this.#waiting : this.state.pending;
+      const waiting = queue.filter((entry) => entry.player === player.id && entry.input !== undefined);
       if (waiting.length >= this.maxInputsPerTurn) reject("too_many_inputs");
-      this.state.pending.push({ player: player.id, input: command.d });
+      this.#add({ player: player.id, input: command.d });
       return;
     }
 
     // Only turns that have happened, and recently enough to still be compared.
-    const turn = this.state.turn;
+    const turn = clocked ? this.#turn : this.state.turn;
     if (command.n > turn || command.n <= turn - HASHES_KEPT) return;
     const first = this.#hashes.get(command.n);
     if (first === undefined) {
@@ -144,27 +266,29 @@ export abstract class LockstepRoom<Input, Env = Cloudflare.Env> extends Room<
   }
 
   protected override onJoin(player: Player): void {
-    this.#resume();
-    this.state.pending.push({ player: player.id, event: "join" });
+    this.#event({ player: player.id, event: "join" });
+  }
+
+  /** A player came or went. With players asking for the turns, it is in a turn before this hook returns. */
+  #event(entry: TurnEntry<Input>): void {
+    this.#add(entry);
+    if (this.turnClock === "players") this.#close(true);
   }
 
   /** Every way of losing a seat ends here, so every simulation hears about it. */
   protected override removePlayer(playerId: string, reason?: string): void {
     if (this.players.some((player) => player.id === playerId)) {
-      this.#resume();
-      this.state.pending.push({ player: playerId, event: "leave" });
+      this.#event({ player: playerId, event: "leave" });
     }
     super.removePlayer(playerId, reason);
   }
 
   protected override onDisconnect(player: Player): void {
-    this.#resume();
-    this.state.pending.push({ player: player.id, event: "disconnect" });
+    this.#event({ player: player.id, event: "disconnect" });
   }
 
   protected override onReconnect(player: Player): void {
-    this.#resume();
-    this.state.pending.push({ player: player.id, event: "reconnect" });
+    this.#event({ player: player.id, event: "reconnect" });
   }
 
   /**
@@ -174,6 +298,7 @@ export abstract class LockstepRoom<Input, Env = Cloudflare.Env> extends Room<
    * saved on its usual schedule instead of with every turn.
    */
   protected override onTick(): void {
+    if (this.turnClock === "players") return; // Only if a subclass turned the timer back on.
     this.#resume();
     const state = this.state;
     state.turn += 1;
@@ -190,7 +315,10 @@ export abstract class LockstepRoom<Input, Env = Cloudflare.Env> extends Room<
 
   protected override view(): LockstepView<Input> {
     const { seed, turn, entries, desync } = this.state;
-    return { seed, turn, entries, desync };
+    if (this.turnClock !== "players") return { seed, turn, entries, desync };
+    // Before anything has woken this instance up, the checkpoint is all it knows.
+    const latest = Math.max(turn, this.#turn);
+    return { seed, turn: latest, entries: latest === this.#turn ? this.#entries : [], desync, clock: "players" };
   }
 
   protected override onHttp(request: Request): Response {
@@ -216,7 +344,7 @@ export abstract class LockstepRoom<Input, Env = Cloudflare.Env> extends Room<
       v: 2,
       seed: this.state.seed,
       turnRate: this.tickRate,
-      turn: Math.max(this.state.turn, last),
+      turn: Math.max(this.state.turn, this.#turn, last),
       turns,
     };
   }

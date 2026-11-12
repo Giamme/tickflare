@@ -274,6 +274,20 @@ export class TickRoom extends Room<TickState, TickCommand> {
 
 export type TurnInput = { type: "add"; n: number };
 
+/** A lockstep room that sleeps between turns: 20 a second, asked for by its players. */
+export class AskedTurnRoom extends LockstepRoom<TurnInput> {
+  protected override tickRate = 20;
+  protected override turnClock = "players" as const;
+  protected override saveIntervalMs = 500; // a checkpoint every ten turns
+  protected override seatTimeoutMs = 400;
+
+  protected parseInput(raw: unknown): TurnInput {
+    const input = raw as { type?: unknown; n?: unknown } | null;
+    if (input?.type !== "add" || typeof input.n !== "number") reject("bad_input");
+    return { type: "add", n: input.n };
+  }
+}
+
 /** A lockstep room at 50 turns a second. */
 export class TurnRoom extends LockstepRoom<TurnInput> {
   protected override tickRate = 50;
@@ -494,6 +508,7 @@ export default {
       (await routeToRoom(request, { rooms: env.ROOMS, authenticate: whoIs })) ??
       (await routeToRoom(request, { rooms: env.TICKS, prefix: "/ticks", authenticate: whoIs })) ??
       (await routeToRoom(request, { rooms: env.TURNS, prefix: "/turns", authenticate: whoIs })) ??
+      (await routeToRoom(request, { rooms: env.ASKED, prefix: "/asked", authenticate: whoIs })) ??
       (await routeToMatchmaker(request, { matchmakers: env.MATCHMAKER, authenticate: whoIs })) ??
       (await routeToRoom(request, { rooms: env.AWAY, prefix: "/away", authenticate: whoIs })) ??
       (await routeToMatchmaker(request, { matchmakers: env.PATIENT, prefix: "/patient", authenticate: whoIs })) ??

@@ -2,12 +2,13 @@ declare namespace Cloudflare {
   interface GlobalProps {
     mainModule: typeof import("./worker");
     durableNamespaces: "TestRoom" | "TickRoom" | "TurnRoom" | "TestMatchmaker" | "AwayRoom" | "PatientMatchmaker"
-      | "EdgeRoom" | "LazyTickRoom" | "HalfRate" | "SlowLobby" | "FlakyLobby" | "NameRoom";
+      | "EdgeRoom" | "LazyTickRoom" | "HalfRate" | "SlowLobby" | "FlakyLobby" | "NameRoom" | "AskedTurnRoom";
   }
   interface Env {
     ROOMS: DurableObjectNamespace<import("./worker").TestRoom>;
     TICKS: DurableObjectNamespace<import("./worker").TickRoom>;
     TURNS: DurableObjectNamespace<import("./worker").TurnRoom>;
+    ASKED: DurableObjectNamespace<import("./worker").AskedTurnRoom>;
     AWAY: DurableObjectNamespace<import("./worker").AwayRoom>;
     PATIENT: DurableObjectNamespace<import("./worker").PatientMatchmaker>;
     MATCHMAKER: DurableObjectNamespace<import("./worker").TestMatchmaker>;

@@ -271,6 +271,118 @@ describe("RoomClient", () => {
   });
 });
 
+describe("LockstepClient in a room whose players ask for the turns", () => {
+  beforeEach(() => {
+    FakeSocket.all = [];
+    vi.useFakeTimers();
+    vi.stubGlobal("WebSocket", FakeSocket);
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  /** A client that has connected as `you` to a room at ten turns a second, with p1 and p2 in it. */
+  async function connected(you: string) {
+    const steps: string[] = [];
+    let loads = 0;
+    const client = new LockstepClient<{ n: number }, object>("wss://tickflare.test/rooms/r", {
+      create: () => ({}),
+      step: (_sim, entries, turn) => steps.push(`${turn}:${entries.map((entry) => entry.player).join("+")}`),
+      bufferTurns: 0,
+      loadReplay: () => {
+        loads += 1;
+        return Promise.resolve({ v: 2, seed: 1, turnRate: 10, turn: 0, turns: [] });
+      },
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    const socket = FakeSocket.all[0]!;
+    socket.readyState = 1;
+    socket.receive({
+      t: "welcome", v: 1, you, seq: 0, tick: 0, tickRate: 10,
+      players: [{ id: "p1", connected: true }, { id: "p2", connected: true }],
+      state: { seed: 1, turn: 0, entries: [], desync: null, clock: "players" },
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    const asks = () =>
+      socket.sent.filter((frame) => frame.startsWith("{") && (JSON.parse(frame) as { data?: { k?: string } }).data?.k === "t").length;
+    const turns = (n: number, c: number, by?: string, e: unknown[] = []) =>
+      socket.receive({ t: "msg", d: { tickflare: "turns", n, c, e, ...(by ? { b: by } : {}) } });
+    return { client, socket, steps, asks, turns, loads: () => loads };
+  }
+
+  it("asks when no turns arrive, and then once a turn for as long as its requests are the ones answered", async () => {
+    const { client, asks, turns } = await connected("p1");
+    await vi.advanceTimersByTimeAsync(149);
+    expect(asks()).toBe(0);
+    await vi.advanceTimersByTimeAsync(2); // a turn and a half of silence
+    expect(asks()).toBe(1);
+
+    turns(1, 1, "p1");
+    await vi.advanceTimersByTimeAsync(500);
+    expect(asks()).toBe(6); // one every 100 ms, counted from the first
+
+    // Someone else's request closed the latest turn: they are keeping time now.
+    turns(2, 1, "p2");
+    for (let n = 3; n < 13; n++) {
+      await vi.advanceTimersByTimeAsync(100);
+      turns(n, 1, "p2");
+    }
+    expect(asks()).toBe(6);
+    client.close();
+  });
+
+  it("waits a little longer than the player before it, so that only one takes over", async () => {
+    const { client, asks } = await connected("p2");
+    await vi.advanceTimersByTimeAsync(189);
+    expect(asks()).toBe(0);
+    await vi.advanceTimersByTimeAsync(2);
+    expect(asks()).toBe(1);
+    client.close();
+  });
+
+  it("is not made the one asking by turns closed for a player coming or going", async () => {
+    const { client, asks, turns } = await connected("p1");
+    await vi.advanceTimersByTimeAsync(151);
+    turns(1, 1, "p1");
+    turns(2, 1); // someone arrived: no request behind it
+    await vi.advanceTimersByTimeAsync(300);
+    expect(asks()).toBe(4);
+    client.close();
+  });
+
+  it("steps through every turn a message closes, and takes nothing from state frames", async () => {
+    const { client, socket, steps, turns, loads } = await connected("p1");
+    turns(1, 3, "p2", [{ player: "p2", input: { n: 1 } }]);
+    expect(steps).toEqual(["1:", "2:", "3:p2"]);
+
+    // A checkpoint of the counter: the turns it mentions have come, or are coming, as messages.
+    socket.receive({ t: "state", seq: 1, state: { seed: 1, turn: 3, entries: [{ player: "p2", input: { n: 1 } }], desync: null, clock: "players" } });
+    turns(2, 3, "p2", [{ player: "p1", input: { n: 2 } }]); // overlaps what it has: only turn 4 is new
+    expect(steps).toEqual(["1:", "2:", "3:p2", "4:p1"]);
+    expect(client.turn).toBe(4);
+
+    // A gap: start over from the recording.
+    expect(loads()).toBe(1);
+    turns(9, 1, "p2");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(loads()).toBe(2);
+    client.close();
+  });
+
+  it("stops asking when the connection drops", async () => {
+    const { client, socket, asks, turns } = await connected("p1");
+    await vi.advanceTimersByTimeAsync(151);
+    turns(1, 1, "p1");
+    await vi.advanceTimersByTimeAsync(200);
+    const before = asks();
+    socket.drop(1006);
+    await vi.advanceTimersByTimeAsync(120);
+    expect(asks()).toBe(before);
+    client.close();
+  });
+});
+
 describe("findMatch", () => {
   beforeEach(() => {
     FakeSocket.all = [];

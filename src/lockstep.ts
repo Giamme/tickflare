@@ -27,6 +27,28 @@ export interface LockstepView<Input = unknown> {
     /** The first turn two players' hashes differed on. */
     turn: number;
   } | null;
+  /**
+   * Set to `"players"` by a room whose `turnClock` is `"players"`: the room
+   * sleeps between turns, and closes them when a player's client asks.
+   */
+  clock?: "players";
+}
+
+/**
+ * What a room with `turnClock = "players"` sends when it closes turns: turns
+ * `n` to `n + c - 1`, all empty but the last, which has `e`.
+ */
+export interface TurnsMessage<Input = unknown> {
+  /** Marks the message as this one, among any the game sends itself. */
+  tickflare: "turns";
+  /** The first turn closed. */
+  n: number;
+  /** How many were closed. */
+  c: number;
+  /** What happened in the last of them. */
+  e: TurnEntry<Input>[];
+  /** The player whose request closed them, when it was a request. */
+  b?: string;
 }
 
 /** Everything needed to run a match again: the seed and every turn in which something happened. */

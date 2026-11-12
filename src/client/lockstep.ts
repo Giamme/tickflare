@@ -4,6 +4,7 @@ import {
   type Replay,
   type Simulation,
   type TurnEntry,
+  type TurnsMessage,
 } from "../lockstep.js";
 import { RoomClient, type CloseDetail, type ConnectionStatus } from "./index.js";
 import { TurnPacer } from "./pacer.js";
@@ -49,6 +50,10 @@ export interface LockstepClientOptions<Input, Sim> extends Simulation<Input, Sim
  * On every (re)connect the simulation is rebuilt from the room's recording
  * and then follows the live turns, so a reload or a dropped connection ends
  * up in exactly the same state as everyone else.
+ *
+ * In a room whose `turnClock` is `"players"` the client also keeps time for
+ * it: one player's client at a time asks the room for each turn as it falls
+ * due, and the others stand by to take over. There is nothing to set up.
  */
 export class LockstepClient<Input = unknown, Sim = unknown> {
   #sim: Sim | undefined;
@@ -70,6 +75,15 @@ export class LockstepClient<Input = unknown, Sim = unknown> {
   /** Guards against an older catch-up finishing after a newer one started. */
   #syncId = 0;
   #desyncReported = false;
+  /** The room sleeps between turns and closes them when a player asks. */
+  #clocked = false;
+  /** This client is the one asking, because the latest turns were closed at its request. */
+  #asking = false;
+  #askTimer: ReturnType<typeof setTimeout> | undefined;
+  /** When the pending request is due, when the last one was due, and when turns last arrived. */
+  #askAt = 0;
+  #askedAt = 0;
+  #turnsAt = 0;
 
   constructor(url: string | URL, options: LockstepClientOptions<Input, Sim>) {
     this.#options = options;
@@ -84,12 +98,15 @@ export class LockstepClient<Input = unknown, Sim = unknown> {
         if (status !== "open") {
           this.#ready = false;
           this.#pacer?.clear();
+          this.#asking = false;
+          this.#scheduleAsk();
         }
         if (status === "open") this.#needsSync = true;
         options.onStatus?.(status, detail);
       },
       token: options.token,
       onState: (view) => this.#receive(view),
+      onMessage: (message) => this.#turns(message),
     });
   }
 
@@ -132,6 +149,7 @@ export class LockstepClient<Input = unknown, Sim = unknown> {
   close(): void {
     this.#pacer?.clear();
     this.#room.close();
+    this.#scheduleAsk();
   }
 
   #receive(view: LockstepView<Input>): void {
@@ -144,18 +162,72 @@ export class LockstepClient<Input = unknown, Sim = unknown> {
       this.#buffer.clear();
       void this.#catchUp();
     }
+    if (view.clock === "players") {
+      // This room's turns arrive as messages, when someone has asked for them: see `#turns`.
+      if (!this.#clocked) {
+        this.#clocked = true;
+        this.#turnsAt = Date.now();
+      }
+      this.#scheduleAsk();
+      return;
+    }
+    this.#take(view.turn, 1, view.entries);
+  }
+
+  /** Turns `first` to `first + count - 1` have arrived. All are empty but the last, which has `entries`. */
+  #take(first: number, count: number, entries: TurnEntry<Input>[]): void {
+    const last = first + count - 1;
+    const of = (turn: number) => (turn === last ? entries : []);
     if (!this.#ready) {
-      this.#buffer.set(view.turn, view.entries);
-    } else if (view.turn === this.#received + 1) {
-      this.#received = view.turn;
-      this.#pacer?.push({ turn: view.turn, entries: view.entries });
-    } else if (view.turn > this.#received + 1) {
+      for (let turn = first; turn <= last; turn++) this.#buffer.set(turn, of(turn));
+    } else if (first > this.#received + 1) {
       // A turn went missing. Start over from the recording.
       this.#ready = false;
       this.#pacer?.clear();
       this.#buffer.clear();
       void this.#catchUp();
+    } else {
+      for (let turn = this.#received + 1; turn <= last; turn++) {
+        this.#received = turn;
+        this.#pacer?.push({ turn, entries: of(turn) });
+      }
     }
+  }
+
+  /** A room that sleeps between turns has closed some. */
+  #turns(message: unknown): void {
+    const turns = message as Partial<TurnsMessage<Input>> | null;
+    if (turns?.tickflare !== "turns" || !Number.isSafeInteger(turns.n) || !Number.isSafeInteger(turns.c)) return;
+    this.#turnsAt = Date.now();
+    // Whoever's request closed them keeps asking. Turns closed for another reason change nothing.
+    if (turns.b !== undefined) this.#asking = turns.b === this.#room.you;
+    this.#scheduleAsk();
+    this.#take(turns.n!, turns.c!, turns.e ?? []);
+  }
+
+  /**
+   * Arms the next request for turns. The client that is asking does so once
+   * a turn, on its own clock. The others wait for turns to stop arriving,
+   * each a little longer than the one before it, so that one takes over.
+   */
+  #scheduleAsk(): void {
+    if (this.#askTimer !== undefined) clearTimeout(this.#askTimer);
+    this.#askTimer = undefined;
+    if (!this.#clocked || this.#room.status !== "open") return;
+    const turnMs = 1000 / (this.#room.tickRate || 10);
+    if (this.#asking) {
+      this.#askAt = this.#askedAt + turnMs;
+    } else {
+      const connected = this.#room.players.filter((player) => player.connected).map((player) => player.id).sort();
+      const place = Math.max(0, connected.indexOf(this.#room.you ?? ""));
+      this.#askAt = Math.max(this.#turnsAt, this.#askedAt) + turnMs * (1.5 + 0.4 * place);
+    }
+    this.#askTimer = setTimeout(() => {
+      // From when it was due, not from when the timer got round to it: lateness must not add up.
+      this.#askedAt = Math.max(this.#askAt, Date.now() - turnMs);
+      this.#room.send({ k: "t" }).catch(() => {});
+      this.#scheduleAsk();
+    }, Math.max(0, this.#askAt - Date.now()));
   }
 
   async #catchUp(): Promise<void> {
