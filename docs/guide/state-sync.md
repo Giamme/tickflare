@@ -68,6 +68,8 @@ export class Arena extends Room<State, Command> {
 
 **Starting and stopping.** The simulation runs while at least one player is connected and `shouldTick()` returns true. When the last player disconnects, or `shouldTick()` returns false, it stops and the room can sleep. It starts again when both hold.
 
+So a match that every player leaves stands still: it does not play on, and nothing ends it. Decide what that means for your game; [Rooms nobody is in](./limits#rooms-nobody-is-in) has the few lines it takes.
+
 ```ts
 // Only simulate during the match. The lobby is in event mode.
 protected override shouldTick(): boolean {

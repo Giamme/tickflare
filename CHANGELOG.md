@@ -20,6 +20,8 @@ It is opt-in, and the default is unchanged. Two things differ with it: the game 
 
 For the costs guide's RTS example, 500 half-hour lockstep matches a day, this takes the bill from about $173 a month to $45.
 
+**Docs: the limits page is rewritten.** It gives each limit, where it comes from, what to do about it today and what would lift it, with measurements of how many players and units one room keeps up with. It also spells out one that is easy to miss: a room ticks only while a player is connected, so a match everyone leaves stands still until your room ends it.
+
 **Docs:** the home page has a live demo for each sync mode with the real code behind it, and a cost estimator for your own numbers whose examples fill in every setting. The costs guide now counts what rooms write to storage, which its first version left out, says how far each kind of game can grow before a rented server costs less, and shows how the design of a game changes its bill.
 
 ## 0.1.0
