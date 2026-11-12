@@ -106,7 +106,6 @@ function receive(player: Who, view: View): void {
   screen.prev = shown(player);
   screen.next = view;
   screen.at = clock;
-  ui.seen[player] = view.score;
 }
 
 /** The view a screen is drawing right now: gliding from the last patch to the newest. */
@@ -169,8 +168,9 @@ function moveFlights(): void {
   }
   for (const flight of flights) {
     const progress = (clock - flight.leave) / (flight.arrive - flight.leave);
-    // Ada's wire runs from her screen to the room; Grace's from the room to her screen.
-    const fromScreen = flight.wire === "ada" ? 0 : 1;
+    // Side by side, Ada's wire runs from her screen to the room and Grace's from the room to her
+    // screen. Stacked for a phone, both run down from a screen to the room.
+    const fromScreen = flight.wire === "ada" || vertical.value ? 0 : 1;
     const at = flight.toRoom ? fromScreen + (1 - 2 * fromScreen) * progress : 1 - fromScreen + (2 * fromScreen - 1) * progress;
     flight.el.style.setProperty("--at", `${(at * 100).toFixed(1)}%`);
   }
@@ -188,7 +188,6 @@ const ui = reactive({
   tick: 0,
   connected: { ada: true, grace: true } as Record<Who, boolean>,
   scores: { ada: 0, grace: 0 } as Record<Who, number>,
-  seen: { ada: 0, grace: 0 } as Record<Who, number>,
 });
 const narration = ref("Click a screen to steer its player.");
 const vertical = ref(false);
@@ -203,7 +202,7 @@ function steer(player: Who, target: Point): void {
   screen.click = { ...target, until: clock + 900 };
   screen.steeredUntil = clock + 8000;
   command(player, target);
-  narration.value = `${names[player]}'s screen sent a move. The room moves her dot; both screens hear back.`;
+  narration.value = `${names[player]} sent a move. The room moves her dot and tells both screens.`;
   if (!ui.playing) play();
 }
 
@@ -455,8 +454,10 @@ onBeforeUnmount(() => {
       <template v-for="(p, index) in who" :key="p">
         <div class="panel screen" :class="[p, { away: !ui.connected[p] }]">
           <div class="bar">
-            <span class="title"><i :style="{ background: hue[p] }" />{{ names[p] }}'s screen</span>
-            <span class="count">{{ ui.connected[p] ? `${ui.seen[p]} eaten` : "" }}</span>
+            <span class="title"><i :style="{ background: hue[p] }" /><span>{{ names[p] }}<span class="more">'s screen</span></span></span>
+            <button type="button" class="tab" :aria-label="`${ui.connected[p] ? 'Close' : 'Open'} ${names[p]}'s tab`" @click="toggleTab(p)">
+              {{ ui.connected[p] ? "Close" : "Open" }}<span class="more"> tab</span>
+            </button>
           </div>
           <div class="glass">
             <canvas
@@ -468,20 +469,20 @@ onBeforeUnmount(() => {
             />
             <p v-if="!ui.connected[p]" class="closed">Tab closed</p>
           </div>
-          <button type="button" class="tab" @click="toggleTab(p)">{{ ui.connected[p] ? "Close tab" : "Open tab" }}</button>
+          <p class="foot hint">{{ ui.connected[p] ? `Click to steer ${names[p]}` : "The room keeps the seat" }}</p>
         </div>
 
         <div :ref="(el) => el && (wires[p] = el as HTMLElement)" class="wire" :class="[p, { cut: !ui.connected[p] }]" aria-hidden="true" />
 
         <div v-if="index === 0" class="panel room">
           <div class="bar">
-            <span class="title">Room <span>arena</span></span>
+            <span class="title">Room <span class="muted">arena</span></span>
             <span class="count">tick {{ ui.tick }}</span>
           </div>
           <div class="glass">
             <canvas :ref="(el) => el && (canvases.room = el as HTMLCanvasElement)" aria-label="The room: the whole arena, with what each player can see marked by a circle." />
           </div>
-          <ul class="seats" aria-label="Seats">
+          <ul class="foot seats" aria-label="Seats">
             <li v-for="s in who" :key="s">
               <i :style="{ background: hue[s] }" />{{ names[s] }}
               <span :class="{ away: !ui.connected[s] }">{{ ui.connected[s] ? `${ui.scores[s]} eaten` : "away, seat kept" }}</span>
@@ -494,8 +495,8 @@ onBeforeUnmount(() => {
       <p class="narration" aria-live="polite">{{ narration }}</p>
       <p class="caption">
         <button type="button" class="playpause" @click="ui.playing ? pause(true) : play()">{{ ui.playing ? "Pause" : "Play" }}</button>
-        A tiny arena, simulated in your browser. The room runs the game ten times a second and sends
-        each screen only what its player can see: <span class="key patch" /> patches out, <span class="key cmd">cmd</span> moves in.
+        <span class="long">A tiny arena, simulated in your browser. The room runs the game ten times a second and sends
+        each screen only what its player can see: </span><span class="key patch" /> patches out, <span class="key cmd">cmd</span> moves in.
       </p>
     </figcaption>
   </figure>
@@ -504,7 +505,7 @@ onBeforeUnmount(() => {
 <style scoped>
 .demo {
   margin: 40px 0 0;
-  padding: 24px 20px 18px;
+  padding: 18px 16px 14px;
   border-radius: 20px;
   background: var(--tf-paper);
 }
@@ -523,8 +524,9 @@ onBeforeUnmount(() => {
 }
 
 .vertical .stage {
-  grid-template-columns: minmax(0, 1fr);
-  grid-template-areas: "ada" "wire-ada" "room" "wire-grace" "grace";
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  column-gap: 14px;
+  grid-template-areas: "ada grace" "wire-ada wire-grace" "room room";
   justify-items: center;
 }
 
@@ -544,10 +546,24 @@ onBeforeUnmount(() => {
 
 .bar {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
   gap: 8px;
+  min-height: 28px;
   margin-bottom: 8px;
+}
+
+/* What sits under a panel. The same height under all three, so the wires stay level. */
+.foot {
+  height: 44px;
+  margin: 10px 0 0;
+}
+
+.hint {
+  font-size: 13px;
+  line-height: 22px;
+  color: var(--tf-slate);
+  text-align: center;
 }
 
 .title {
@@ -562,7 +578,7 @@ onBeforeUnmount(() => {
   white-space: nowrap;
 }
 
-.title span {
+.title .muted {
   font-weight: 500;
   color: var(--tf-slate);
 }
@@ -631,11 +647,10 @@ canvas {
 }
 
 .tab {
-  display: block;
-  margin: 12px auto 13px;
-  padding: 5px 14px;
+  flex: none;
+  padding: 3px 11px;
   border-radius: 999px;
-  font-size: 13.5px;
+  font-size: 12.5px;
   font-weight: 600;
   line-height: 1.4;
   color: var(--tf-ink);
@@ -658,10 +673,9 @@ canvas {
   display: flex;
   flex-direction: column;
   align-items: center;
-  margin: 10px 0 0;
   padding: 0;
   font-size: 13px;
-  line-height: 1.7;
+  line-height: 22px;
   color: var(--tf-ink);
 }
 
@@ -686,11 +700,12 @@ canvas {
 
 .wire {
   position: relative;
+  z-index: 1;
   align-self: center;
   width: 100%;
   height: 2px;
-  /* Level with the middle of the screens, which sit between a title and what is under them. */
-  margin-top: -22px;
+  /* Level with the middle of the screens: the foot under them is taller than the bar above. */
+  margin-top: -16px;
   background: var(--tf-wire);
 }
 
@@ -701,12 +716,49 @@ canvas {
 
 .vertical .wire {
   width: 2px;
-  height: 56px;
-  margin: 2px 0 8px;
+  height: 30px;
+  margin: 3px 0 0;
 }
 
-.vertical .tab {
-  margin-bottom: 0;
+/* On a phone: two screens side by side, the room beneath, all in one screenful. */
+.vertical .screen .foot,
+.vertical .title .more,
+.vertical .tab .more,
+.vertical .caption .long {
+  display: none;
+}
+
+.vertical .screen .glass {
+  box-shadow: 0 0 0 3px var(--tf-ink);
+}
+
+.vertical .room {
+  display: flex;
+  flex-direction: column;
+  width: 70%;
+  max-width: 240px;
+}
+
+/* The wires land on the room itself, so its title moves below it. */
+.vertical .room .bar {
+  order: 2;
+  margin: 8px 0 0;
+}
+
+.vertical .room .seats {
+  order: 3;
+  height: auto;
+  margin-top: 2px;
+}
+
+.vertical .narration {
+  min-height: 2.8em;
+  font-size: 14.5px;
+  line-height: 1.4;
+}
+
+.vertical figcaption {
+  margin-top: 12px;
 }
 
 .vertical .wire.cut {

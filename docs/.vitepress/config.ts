@@ -59,6 +59,7 @@ const guide: DefaultTheme.SidebarItem[] = [
     text: "Shipping",
     items: [
       { text: "Deploying", link: "/guide/deploying" },
+      { text: "What it costs", link: "/guide/costs" },
       { text: "Testing your rooms", link: "/guide/testing" },
       { text: "Limits and known gaps", link: "/guide/limits" },
     ],

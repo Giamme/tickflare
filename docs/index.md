@@ -75,6 +75,28 @@ npx wrangler dev
 
 <section class="tf-section">
 
+## What runs where on Cloudflare
+
+<p class="tf-lede">A Tickflare game is one Worker and the services it is bound to. There are no servers to size, patch or restart, and each service is billed for what it does.</p>
+
+<CloudflareStack />
+
+</section>
+
+<section class="tf-section">
+
+## What it costs
+
+<p class="tf-lede">A room costs about half a cent for each hour it is awake, and nothing while it sleeps: between turns, or when it is empty. Bandwidth is free. So the bill follows how long rooms are awake, not how many players you have.</p>
+
+<CostCompare />
+
+<p class="tf-more"><a href="/guide/costs">How these figures are worked out</a>, with the prices and the sources behind them.</p>
+
+</section>
+
+<section class="tf-section">
+
 ## Add what your game needs
 
 <p class="tf-lede">Each of these is a few lines on top of a room like the arena, and has a guide of its own.</p>
