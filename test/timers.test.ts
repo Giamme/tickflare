@@ -1,4 +1,4 @@
-import { evictDurableObject, runDurableObjectAlarm } from "cloudflare:test";
+import { evictDurableObject, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it, vi } from "vitest";
 import { sleep, twoPlayers } from "./helpers.js";
@@ -103,5 +103,23 @@ describe("timers", () => {
     expect((await p1.next("state")).state.log).toContain("timer:far");
     // Nothing is left to fire.
     expect(await runDurableObjectAlarm(stubFor(room))).toBe(false);
+  });
+
+  it("is billed one row for setting a timer, and one for the tick counter a save writes", async () => {
+    const { room } = await twoPlayers();
+    // What Cloudflare bills as rows written. A table keyed by text with a row id of its own would make each of these two.
+    const rows = await runInDurableObject(stubFor(room), (_instance, state) => {
+      const written = (query: string, ...bindings: (string | number)[]) => {
+        const cursor = state.storage.sql.exec(query, ...bindings);
+        cursor.toArray();
+        return cursor.rowsWritten;
+      };
+      return {
+        timer: written("INSERT INTO tickflare_timers (name, fire_at) VALUES (?, ?)", "probe", 1),
+        counter: written("INSERT OR REPLACE INTO tickflare_meta (key, value) VALUES (?, ?)", "probe", "1"),
+        cleared: written("DELETE FROM tickflare_timers WHERE name = ?", "probe") + written("DELETE FROM tickflare_meta WHERE key = ?", "probe"),
+      };
+    });
+    expect(rows).toEqual({ timer: 1, counter: 1, cleared: 2 });
   });
 });

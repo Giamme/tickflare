@@ -49,13 +49,16 @@ export class RoomStorage {
          players TEXT NOT NULL
        )`,
     );
+    // WITHOUT ROWID: a table keyed by text otherwise keeps a second index, and every write to it is
+    // billed as two rows. These two are written on every save and every timer. A room that already
+    // has its tables keeps them as they are; they behave the same.
     sql.exec(
       `CREATE TABLE IF NOT EXISTS tickflare_timers (
          name TEXT PRIMARY KEY,
          fire_at INTEGER NOT NULL
-       )`,
+       ) WITHOUT ROWID`,
     );
-    sql.exec("CREATE TABLE IF NOT EXISTS tickflare_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+    sql.exec("CREATE TABLE IF NOT EXISTS tickflare_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID");
     sql.exec("CREATE TABLE IF NOT EXISTS tickflare_outbox (id INTEGER PRIMARY KEY AUTOINCREMENT, body TEXT NOT NULL)");
     sql.exec("CREATE TABLE IF NOT EXISTS tickflare_arrivals (player TEXT PRIMARY KEY, carry TEXT NOT NULL)");
     sql.exec(
