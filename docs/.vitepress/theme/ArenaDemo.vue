@@ -5,9 +5,11 @@
  * simulates at ten ticks a second and sends each screen only what its player
  * can see. Nothing here talks to a server.
  */
-import { onBeforeUnmount, onMounted, reactive, ref } from "vue";
+import { reactive, ref } from "vue";
+import { disc, fit, useLoop } from "./demo/loop";
+import { hue, names, who, type Who } from "./demo/shared";
+import { createWires } from "./demo/wires";
 
-type Who = "ada" | "grace";
 interface Point {
   x: number;
   y: number;
@@ -18,14 +20,6 @@ interface View {
   pellets: Record<string, Point>;
   score: number;
 }
-interface Flight {
-  wire: Who;
-  toRoom: boolean;
-  leave: number;
-  arrive: number;
-  el: HTMLElement;
-  land: () => void;
-}
 
 const WORLD = 100;
 const SIGHT = 30;
@@ -33,10 +27,6 @@ const SPEED = 26; // units a second
 const TICK_MS = 100;
 const LAG_MS = 260;
 const PELLETS = 8;
-
-const who: Who[] = ["ada", "grace"];
-const names: Record<Who, string> = { ada: "Ada", grace: "Grace" };
-const hue: Record<Who, string> = { ada: "#ff4f36", grace: "#3d8bff" };
 
 // ---- The room: the only place the game runs -------------------------------------------------
 
@@ -90,7 +80,7 @@ function roomTick(): void {
   for (const player of who) {
     if (!joined[player]) continue;
     const view = viewFor(player);
-    send(player, false, "patch", () => receive(player, view));
+    wires.send(clock, player, false, "patch", "", () => receive(player, view));
   }
 }
 
@@ -136,65 +126,25 @@ function think(player: Who): void {
 
 function command(player: Who, target: Point): void {
   const to = { x: Math.max(3, Math.min(WORLD - 3, target.x)), y: Math.max(3, Math.min(WORLD - 3, target.y)) };
-  send(player, true, "cmd", () => {
+  wires.send(clock, player, true, "cmd", "cmd", () => {
     if (!joined[player]) return;
     dots[player].tx = to.x;
     dots[player].ty = to.y;
   });
 }
 
-// ---- The wires ------------------------------------------------------------------------------
-
-let clock = 0;
-let flights: Flight[] = [];
-const wires: Partial<Record<Who, HTMLElement>> = {};
-
-function send(wire: Who, toRoom: boolean, kind: "patch" | "cmd" | "welcome", land: () => void): void {
-  const host = wires[wire];
-  if (!host) return land();
-  const el = document.createElement("span");
-  el.className = `pulse ${kind}`;
-  if (kind !== "patch") el.textContent = kind;
-  host.append(el);
-  flights.push({ wire, toRoom, leave: clock, arrive: clock + LAG_MS, el, land });
-}
-
-function moveFlights(): void {
-  const landed = flights.filter((flight) => flight.arrive <= clock);
-  flights = flights.filter((flight) => flight.arrive > clock);
-  for (const flight of landed) {
-    flight.el.remove();
-    flight.land();
-  }
-  for (const flight of flights) {
-    const progress = (clock - flight.leave) / (flight.arrive - flight.leave);
-    // Side by side, Ada's wire runs from her screen to the room and Grace's from the room to her
-    // screen. Stacked for a phone, both run down from a screen to the room.
-    const fromScreen = flight.wire === "ada" || vertical.value ? 0 : 1;
-    const at = flight.toRoom ? fromScreen + (1 - 2 * fromScreen) * progress : 1 - fromScreen + (2 * fromScreen - 1) * progress;
-    flight.el.style.setProperty("--at", `${(at * 100).toFixed(1)}%`);
-  }
-}
-
-function drop(wire: Who): void {
-  for (const flight of flights) if (flight.wire === wire) flight.el.remove();
-  flights = flights.filter((flight) => flight.wire !== wire);
-}
-
 // ---- What the visitor can do ----------------------------------------------------------------
 
+let clock = 0;
+
 const ui = reactive({
-  playing: false,
   tick: 0,
   connected: { ada: true, grace: true } as Record<Who, boolean>,
   scores: { ada: 0, grace: 0 } as Record<Who, number>,
 });
 const narration = ref("Click a screen to steer its player.");
-const vertical = ref(false);
 const root = ref<HTMLElement | null>(null);
 const canvases: Partial<Record<Who | "room", HTMLCanvasElement>> = {};
-let userPaused = false;
-let inView = false;
 
 function steer(player: Who, target: Point): void {
   if (!ui.connected[player]) return;
@@ -203,7 +153,7 @@ function steer(player: Who, target: Point): void {
   screen.steeredUntil = clock + 8000;
   command(player, target);
   narration.value = `${names[player]} sent a move. The room moves her dot and tells both screens.`;
-  if (!ui.playing) play();
+  if (!playing.value) play();
 }
 
 function onClick(player: Who, event: MouseEvent): void {
@@ -224,7 +174,7 @@ function toggleTab(player: Who): void {
   if (ui.connected[player]) {
     ui.connected[player] = false;
     joined[player] = false;
-    drop(player);
+    wires.drop(player);
     dots[player].tx = dots[player].x;
     dots[player].ty = dots[player].y;
     narration.value = `${names[player]} closed the tab. The room keeps her seat and her score.`;
@@ -232,7 +182,7 @@ function toggleTab(player: Who): void {
     ui.connected[player] = true;
     joined[player] = true;
     const view = viewFor(player);
-    send(player, false, "welcome", () => {
+    wires.send(clock, player, false, "welcome", "welcome", () => {
       screens[player].prev = screens[player].next = view;
       screens[player].at = clock;
     });
@@ -240,35 +190,10 @@ function toggleTab(player: Who): void {
     screens[player].thinkAt = clock + 900;
     narration.value = `${names[player]} is back. One welcome frame brings her screen up to date.`;
   }
-  if (!ui.playing) draw();
-}
-
-function play(): void {
-  userPaused = false;
-  if (ui.playing) return;
-  ui.playing = true;
-  last = performance.now();
-  frame = requestAnimationFrame(loop);
-}
-
-function pause(byUser: boolean): void {
-  if (byUser) userPaused = true;
-  ui.playing = false;
-  cancelAnimationFrame(frame);
+  if (!playing.value) draw();
 }
 
 // ---- Drawing --------------------------------------------------------------------------------
-
-function fit(canvas: HTMLCanvasElement): CanvasRenderingContext2D | null {
-  const size = Math.round(canvas.clientWidth * Math.min(2, window.devicePixelRatio || 1));
-  if (size > 0 && canvas.width !== size) canvas.width = canvas.height = size;
-  return canvas.getContext("2d");
-}
-
-function disc(ctx: CanvasRenderingContext2D, k: number, at: Point, radius: number): void {
-  ctx.beginPath();
-  ctx.arc(at.x * k, at.y * k, radius * k, 0, Math.PI * 2);
-}
 
 function drawScreen(player: Who): void {
   const canvas = canvases[player];
@@ -378,8 +303,6 @@ function draw(): void {
 
 // ---- The loop -------------------------------------------------------------------------------
 
-let frame = 0;
-let last = 0;
 let owed = 0;
 
 function advance(ms: number): void {
@@ -390,66 +313,20 @@ function advance(ms: number): void {
     roomTick();
   }
   for (const player of who) think(player);
-  moveFlights();
+  wires.move(clock);
 }
 
-function loop(now: number): void {
-  // A tab that was in the background comes back with one long frame; don't replay it.
-  advance(Math.min(50, now - last));
-  last = now;
-  draw();
-  if (ui.playing) frame = requestAnimationFrame(loop);
-}
-
-let observer: IntersectionObserver | undefined;
-let resize: ResizeObserver | undefined;
-let media: MediaQueryList | undefined;
-const onMedia = () => (vertical.value = media?.matches ?? false);
-const onHidden = () => {
-  if (document.hidden) pause(false);
-  else if (inView && !userPaused) play();
-};
-
-onMounted(() => {
+function setup(): void {
   for (let n = 0; n < PELLETS; n++) scatter();
   for (const player of who) screens[player].prev = screens[player].next = viewFor(player);
+}
 
-  media = window.matchMedia("(max-width: 760px)");
-  onMedia();
-  media.addEventListener("change", onMedia);
-  document.addEventListener("visibilitychange", onHidden);
-  resize = new ResizeObserver(() => !ui.playing && draw());
-  if (root.value) resize.observe(root.value);
-  draw();
-
-  // With reduced motion the arena waits for the visitor to press Play.
-  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-    userPaused = true;
-    narration.value = "Press Play, or click a screen to steer its player.";
-    return;
-  }
-  observer = new IntersectionObserver(
-    (entries) => {
-      inView = entries.some((entry) => entry.isIntersecting);
-      if (inView && !userPaused) play();
-      else if (!inView) pause(false);
-    },
-    { threshold: 0.25 },
-  );
-  if (root.value) observer.observe(root.value);
-});
-
-onBeforeUnmount(() => {
-  pause(false);
-  observer?.disconnect();
-  resize?.disconnect();
-  media?.removeEventListener("change", onMedia);
-  document.removeEventListener("visibilitychange", onHidden);
-});
+const { playing, vertical, waiting, play, pause } = useLoop(root, { setup, advance, draw });
+const wires = createWires(vertical, LAG_MS);
 </script>
 
 <template>
-  <figure ref="root" class="demo" :class="{ vertical }">
+  <figure ref="root" class="tf-demo" :class="{ vertical }">
     <div class="stage">
       <template v-for="(p, index) in who" :key="p">
         <div class="panel screen" :class="[p, { away: !ui.connected[p] }]">
@@ -472,7 +349,7 @@ onBeforeUnmount(() => {
           <p class="foot hint">{{ ui.connected[p] ? `Click to steer ${names[p]}` : "The room keeps the seat" }}</p>
         </div>
 
-        <div :ref="(el) => el && (wires[p] = el as HTMLElement)" class="wire" :class="[p, { cut: !ui.connected[p] }]" aria-hidden="true" />
+        <div :ref="(el) => el && (wires.hosts[p] = el as HTMLElement)" class="wire" :class="[p, { cut: !ui.connected[p] }]" aria-hidden="true" />
 
         <div v-if="index === 0" class="panel room">
           <div class="bar">
@@ -492,361 +369,12 @@ onBeforeUnmount(() => {
       </template>
     </div>
     <figcaption>
-      <p class="narration" aria-live="polite">{{ narration }}</p>
+      <p class="narration" aria-live="polite">{{ waiting ? "Press Play, or click a screen to steer its player." : narration }}</p>
       <p class="caption">
-        <button type="button" class="playpause" @click="ui.playing ? pause(true) : play()">{{ ui.playing ? "Pause" : "Play" }}</button>
+        <button type="button" class="playpause" @click="playing ? pause(true) : play()">{{ playing ? "Pause" : "Play" }}</button>
         <span class="long">A tiny arena, simulated in your browser. The room runs the game ten times a second and sends
-        each screen only what its player can see: </span><span class="key patch" /> patches out, <span class="key cmd">cmd</span> moves in.
+        each screen only what its player can see: </span><span class="key dot" /> patches out, <span class="key pill">cmd</span> <span class="more">moves </span>in.
       </p>
     </figcaption>
   </figure>
 </template>
-
-<style scoped>
-.demo {
-  margin: 40px 0 0;
-  padding: 18px 16px 14px;
-  border-radius: 20px;
-  background: var(--tf-paper);
-}
-
-@media (min-width: 960px) {
-  .demo {
-    padding: 32px 36px 22px;
-  }
-}
-
-.stage {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) clamp(40px, 7vw, 96px) minmax(0, 1fr) clamp(40px, 7vw, 96px) minmax(0, 1fr);
-  grid-template-areas: "ada wire-ada room wire-grace grace";
-  align-items: center;
-}
-
-.vertical .stage {
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  column-gap: 14px;
-  grid-template-areas: "ada grace" "wire-ada wire-grace" "room room";
-  justify-items: center;
-}
-
-.screen.ada { grid-area: ada; }
-.screen.grace { grid-area: grace; }
-.wire.ada { grid-area: wire-ada; }
-.wire.grace { grid-area: wire-grace; }
-.room { grid-area: room; }
-
-/* ---- Panels ---- */
-
-.panel {
-  width: 100%;
-  max-width: 300px;
-  justify-self: center;
-}
-
-.bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  min-height: 28px;
-  margin-bottom: 8px;
-}
-
-/* What sits under a panel. The same height under all three, so the wires stay level. */
-.foot {
-  height: 44px;
-  margin: 10px 0 0;
-}
-
-.hint {
-  font-size: 13px;
-  line-height: 22px;
-  color: var(--tf-slate);
-  text-align: center;
-}
-
-.title {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  font-family: var(--tf-display);
-  font-variation-settings: "CASL" 0.6;
-  font-weight: 700;
-  font-size: 15px;
-  color: var(--tf-ink);
-  white-space: nowrap;
-}
-
-.title .muted {
-  font-weight: 500;
-  color: var(--tf-slate);
-}
-
-.title i,
-.seats i {
-  flex: none;
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-}
-
-.count {
-  font-size: 12.5px;
-  color: var(--tf-slate);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-
-.glass {
-  position: relative;
-  aspect-ratio: 1;
-  border-radius: 14px;
-  overflow: hidden;
-}
-
-.screen .glass {
-  box-shadow: 0 0 0 4px var(--tf-ink);
-}
-
-.dark .screen .glass {
-  box-shadow: 0 0 0 4px #000;
-}
-
-.room .glass {
-  box-shadow: 0 0 0 1.5px var(--tf-wire);
-}
-
-canvas {
-  display: block;
-  width: 100%;
-  height: 100%;
-}
-
-.screen canvas {
-  cursor: crosshair;
-}
-
-.screen canvas:focus-visible {
-  outline: 3px solid var(--tf-flare);
-  outline-offset: -3px;
-}
-
-.closed {
-  position: absolute;
-  inset: 0;
-  display: grid;
-  place-items: center;
-  margin: 0;
-  font-family: var(--tf-display);
-  font-variation-settings: "CASL" 0.6;
-  font-weight: 650;
-  font-size: 15px;
-  color: #8793ab;
-  pointer-events: none;
-}
-
-.tab {
-  flex: none;
-  padding: 3px 11px;
-  border-radius: 999px;
-  font-size: 12.5px;
-  font-weight: 600;
-  line-height: 1.4;
-  color: var(--tf-ink);
-  box-shadow: inset 0 0 0 1.5px var(--tf-line);
-  transition: box-shadow 0.15s;
-}
-
-.tab:hover {
-  box-shadow: inset 0 0 0 1.5px var(--tf-ink);
-}
-
-.tab:focus-visible,
-.playpause:focus-visible {
-  outline: 2px solid var(--tf-flare);
-  outline-offset: 2px;
-}
-
-.seats {
-  list-style: none;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  padding: 0;
-  font-size: 13px;
-  line-height: 22px;
-  color: var(--tf-ink);
-}
-
-.seats li {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  margin: 0;
-  white-space: nowrap;
-}
-
-.seats span {
-  color: var(--tf-slate);
-  font-variant-numeric: tabular-nums;
-}
-
-.seats span.away {
-  color: var(--tf-flare-text);
-}
-
-/* ---- Wires and frames ---- */
-
-.wire {
-  position: relative;
-  z-index: 1;
-  align-self: center;
-  width: 100%;
-  height: 2px;
-  /* Level with the middle of the screens: the foot under them is taller than the bar above. */
-  margin-top: -16px;
-  background: var(--tf-wire);
-}
-
-.wire.cut {
-  background: repeating-linear-gradient(90deg, var(--tf-wire) 0 6px, transparent 6px 12px);
-  opacity: 0.6;
-}
-
-.vertical .wire {
-  width: 2px;
-  height: 30px;
-  margin: 3px 0 0;
-}
-
-/* On a phone: two screens side by side, the room beneath, all in one screenful. */
-.vertical .screen .foot,
-.vertical .title .more,
-.vertical .tab .more,
-.vertical .caption .long {
-  display: none;
-}
-
-.vertical .screen .glass {
-  box-shadow: 0 0 0 3px var(--tf-ink);
-}
-
-.vertical .room {
-  display: flex;
-  flex-direction: column;
-  width: 70%;
-  max-width: 240px;
-}
-
-/* The wires land on the room itself, so its title moves below it. */
-.vertical .room .bar {
-  order: 2;
-  margin: 8px 0 0;
-}
-
-.vertical .room .seats {
-  order: 3;
-  height: auto;
-  margin-top: 2px;
-}
-
-.vertical .narration {
-  min-height: 2.8em;
-  font-size: 14.5px;
-  line-height: 1.4;
-}
-
-.vertical figcaption {
-  margin-top: 12px;
-}
-
-.vertical .wire.cut {
-  background: repeating-linear-gradient(180deg, var(--tf-wire) 0 6px, transparent 6px 12px);
-}
-
-.wire :deep(.pulse) {
-  position: absolute;
-  top: 50%;
-  left: var(--at, 0%);
-  transform: translate(-50%, -50%);
-  pointer-events: none;
-}
-
-.vertical .wire :deep(.pulse) {
-  top: var(--at, 0%);
-  left: 50%;
-}
-
-.wire :deep(.pulse.patch),
-.key.patch {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--tf-flare);
-}
-
-.wire :deep(.pulse.cmd),
-.wire :deep(.pulse.welcome),
-.key.cmd {
-  padding: 1px 8px 2px;
-  border-radius: 999px;
-  font-family: var(--tf-display);
-  font-variation-settings: "CASL" 0.6;
-  font-size: 11.5px;
-  font-weight: 700;
-  line-height: 1.3;
-  white-space: nowrap;
-  background: var(--tf-ink);
-  color: var(--vp-c-bg);
-}
-
-.wire :deep(.pulse.welcome) {
-  background: var(--tf-flare);
-  color: #fff;
-}
-
-/* ---- Caption ---- */
-
-figcaption {
-  margin-top: 20px;
-  text-align: center;
-}
-
-.narration {
-  margin: 0;
-  min-height: 1.6em;
-  font-family: var(--tf-display);
-  font-variation-settings: "CASL" 0.5;
-  font-weight: 650;
-  font-size: 16px;
-  color: var(--tf-ink);
-}
-
-.caption {
-  margin: 6px auto 0;
-  max-width: 46rem;
-  font-size: 13.5px;
-  line-height: 1.7;
-  color: var(--tf-slate);
-}
-
-.key {
-  display: inline-block;
-  vertical-align: middle;
-}
-
-.playpause {
-  margin-right: 8px;
-  padding: 2px 12px;
-  border-radius: 999px;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--tf-ink);
-  box-shadow: inset 0 0 0 1.5px var(--tf-line);
-}
-
-.playpause:hover {
-  box-shadow: inset 0 0 0 1.5px var(--tf-ink);
-}
-</style>

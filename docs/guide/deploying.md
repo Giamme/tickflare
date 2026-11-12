@@ -122,4 +122,4 @@ Cloudflare creates each Durable Object near the request that first used it, and 
 
 ## What it costs
 
-A room costs about half a cent for each hour it is awake and nothing while it sleeps, so a turn-based game runs on the $5 plan and a real-time game costs in proportion to the rooms running. [What it costs](./costs) has the prices, three worked examples and a comparison with renting servers.
+A room costs under a cent for each hour it runs and nothing while it sleeps, so a turn-based game runs on the $5 plan and a real-time game costs by the match. [What it costs](./costs) has an estimator for your own numbers, the prices, three worked examples and a comparison with renting servers.

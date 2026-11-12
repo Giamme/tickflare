@@ -4,6 +4,7 @@
  * state on the wire; ink marks inputs; grey marks an empty turn.
  */
 import { withBase } from "vitepress";
+import { mode as shown, type Mode } from "./demo/shared";
 
 interface Mark {
   at: number; // seconds into the strip
@@ -19,7 +20,15 @@ function x(at: number): number {
   return 8 + at * (W - 16);
 }
 
+/** Switches the demo at the top of the page to this mode and goes there. */
+function watch(id: Mode): void {
+  shown.value = id;
+  const smooth = !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  document.querySelector("#demo")?.scrollIntoView({ behavior: smooth ? "smooth" : "auto", block: "center" });
+}
+
 const modes: {
+  id: Mode;
   name: string;
   what: string;
   suits: string;
@@ -29,6 +38,7 @@ const modes: {
   legend: string;
 }[] = [
   {
+    id: "event",
     name: "Event mode",
     what: "The room wakes when something happens, runs your hook, sends everyone their new view and goes back to sleep.",
     suits: "Turn-based, cards, board games, anything played over days.",
@@ -41,6 +51,7 @@ const modes: {
     legend: "Two moves: two whole views, and the room asleep in between",
   },
   {
+    id: "sync",
     name: "State sync",
     what: "The room runs onTick at a fixed rate and sends each player a patch with only what changed in their view.",
     suits: "Action, co-op, .io games, fog of war.",
@@ -53,6 +64,7 @@ const modes: {
     legend: "20 ticks a second: 20 small patches",
   },
   {
+    id: "lockstep",
     name: "Lockstep",
     what: "The room orders everyone's inputs into turns; every client runs the same deterministic simulation over them.",
     suits: "Real-time strategy, thousands of units, replays for free.",
@@ -73,7 +85,11 @@ const modes: {
       <div class="mode-text">
         <h3>{{ mode.name }}</h3>
         <p>{{ mode.what }}</p>
-        <p class="suits">{{ mode.suits }} <a :href="withBase(mode.link)">Read the guide</a></p>
+        <p class="suits">{{ mode.suits }}</p>
+        <p class="go">
+          <button type="button" @click="watch(mode.id)">Watch it run</button>
+          <a :href="withBase(mode.link)">Read the guide</a>
+        </p>
       </div>
       <figure class="mode-strip">
         <svg :viewBox="`0 0 ${W} ${H}`" role="img" :aria-label="mode.legend">
@@ -145,6 +161,33 @@ const modes: {
 .mode-text .suits {
   color: var(--tf-slate);
   font-size: 14.5px;
+}
+
+.mode-text .go {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px;
+  margin: 10px 0 0;
+  font-size: 14.5px;
+}
+
+.go button {
+  padding: 4px 13px;
+  border-radius: 999px;
+  font-weight: 600;
+  color: var(--tf-ink);
+  box-shadow: inset 0 0 0 1.5px var(--tf-line);
+  transition: box-shadow 0.15s;
+}
+
+.go button:hover {
+  box-shadow: inset 0 0 0 1.5px var(--tf-ink);
+}
+
+.go button:focus-visible {
+  outline: 2px solid var(--tf-flare);
+  outline-offset: 2px;
 }
 
 .mode-strip {

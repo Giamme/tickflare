@@ -13,7 +13,7 @@ const services = [
     name: "Durable Objects",
     role: "The rooms",
     does: "Each room, and each matchmaking queue, is one. It runs your rules on a single thread, holds the players' sockets, and keeps state, seats and timers in its own SQLite.",
-    billed: `Time awake: about ${dollars(roomHour)} an hour per room. Messages from players: 20 count as one request. Nothing while asleep.`,
+    billed: `Time awake: about ${dollars(roomHour)} an hour per room. Rows saved: $1 a million. Messages from players: 20 count as one request. Nothing while asleep.`,
     main: true,
   },
   {

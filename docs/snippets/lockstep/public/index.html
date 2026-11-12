@@ -1,0 +1,48 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Skirmish</title>
+<canvas id="field" width="600" height="600" style="max-width: 100%; border-radius: 14px"></canvas>
+<script type="module">
+  import { AccountClient, LockstepClient } from "./tickflare-client.js";
+  import { create, hash, step } from "./sim.js";
+
+  const canvas = document.querySelector("#field");
+  const ctx = canvas.getContext("2d");
+  const k = canvas.width / 1000;
+
+  const accounts = new AccountClient(); // a guest until they sign up
+  const scheme = location.protocol === "https:" ? "wss" : "ws";
+  // The client runs the simulation over the room's turns. After a reload it
+  // replays the room's recording from the first turn, then carries on live.
+  const game = new LockstepClient(`${scheme}://${location.host}/rooms/skirmish`, {
+    token: accounts.tokenSource,
+    create,
+    step,
+    hash,
+    onDesync: (turn) => console.error(`The simulations differ at turn ${turn}`),
+  });
+
+  // An order is not applied here. It goes to the room and comes back in a turn, for everyone at once.
+  canvas.addEventListener("click", (event) => {
+    const box = canvas.getBoundingClientRect();
+    const x = Math.round(((event.clientX - box.left) / box.width) * 1000);
+    const y = Math.round(((event.clientY - box.top) / box.height) * 1000);
+    game.input({ x, y }).catch(() => {});
+  });
+
+  function draw() {
+    ctx.fillStyle = "#18213a";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    for (const unit of game.sim?.units ?? []) {
+      if (unit.down > 0) continue;
+      ctx.globalAlpha = 0.4 + 0.12 * unit.hp;
+      ctx.fillStyle = unit.side === 0 ? "#ff4f36" : "#3d8bff";
+      ctx.beginPath();
+      ctx.arc(unit.x * k, unit.y * k, 27 * k, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+    requestAnimationFrame(draw);
+  }
+  draw();
+</script>

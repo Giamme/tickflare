@@ -4,6 +4,10 @@ title: Tickflare
 titleTemplate: Multiplayer rooms on Cloudflare
 ---
 
+<script setup>
+import { mode } from "./.vitepress/theme/demo/shared";
+</script>
+
 <HomeHero />
 
 <div class="tf-home">
@@ -11,6 +15,25 @@ titleTemplate: Multiplayer rooms on Cloudflare
 <section class="tf-code">
 
 :::: details See the code for this demo
+
+<div v-show="mode === 'event'">
+
+The real thing is about as long as the demo is small: a room with the rules, a Worker that lets players in, and a page. The room sets no tick rate, so it runs only when a move or its timer wakes it.
+
+::: code-group
+
+<<< @/snippets/turns/src/duel.ts [src/duel.ts]
+
+<<< @/snippets/turns/src/index.ts [src/index.ts]
+
+<<< @/snippets/turns/public/index.html [public/index.html]
+
+<<< @/snippets/turns/wrangler.jsonc [wrangler.jsonc]
+
+:::
+
+</div>
+<div v-show="mode === 'sync'">
 
 The real thing is about as long as the demo is small: a room with its rules, a Worker that lets players in, and a page. No servers to run and no database to set up by hand.
 
@@ -25,6 +48,27 @@ The real thing is about as long as the demo is small: a room with its rules, a W
 <<< @/snippets/arena/wrangler.jsonc [wrangler.jsonc]
 
 :::
+
+</div>
+<div v-show="mode === 'lockstep'">
+
+The room is a dozen lines, because it never runs the game. The game is `sim.js`, which every player's browser runs over the same turns; the client replays the room's recording to catch up after a reload.
+
+::: code-group
+
+<<< @/snippets/lockstep/src/skirmish.ts [src/skirmish.ts]
+
+<<< @/snippets/lockstep/public/sim.js [public/sim.js]
+
+<<< @/snippets/lockstep/public/index.html [public/index.html]
+
+<<< @/snippets/lockstep/src/index.ts [src/index.ts]
+
+<<< @/snippets/lockstep/wrangler.jsonc [wrangler.jsonc]
+
+:::
+
+</div>
 
 To run it yourself:
 
@@ -87,11 +131,11 @@ npx wrangler dev
 
 ## What it costs
 
-<p class="tf-lede">A room costs about half a cent for each hour it is awake, and nothing while it sleeps: between turns, or when it is empty. Bandwidth is free. So the bill follows how long rooms are awake, not how many players you have.</p>
+<p class="tf-lede">A room costs under a cent for each hour it runs, and nothing while it sleeps: between turns, between matches, or when it is empty. Bandwidth is free. So a game played in sessions is billed by the match, not by the server. Put in your own numbers.</p>
 
-<CostCompare />
+<CostEstimator />
 
-<p class="tf-more"><a href="/guide/costs">How these figures are worked out</a>, with the prices and the sources behind them.</p>
+<p class="tf-more"><a href="/guide/costs">How these figures are worked out</a>, and <a href="/guide/costs#designing-a-game-that-costs-less">how to design a game that costs less</a>.</p>
 
 </section>
 
@@ -99,7 +143,7 @@ npx wrangler dev
 
 ## Add what your game needs
 
-<p class="tf-lede">Each of these is a few lines on top of a room like the arena, and has a guide of its own.</p>
+<p class="tf-lede">Each of these is a few lines on top of a room like the ones above, and has a guide of its own.</p>
 
 <div class="tf-recipe">
 <div>

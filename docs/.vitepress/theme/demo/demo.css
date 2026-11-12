@@ -1,0 +1,436 @@
+/*
+ * The stage every home-page demo plays on: two players' screens, the room
+ * between them, and the wires that frames travel along.
+ */
+
+.tf-shell {
+  margin: 40px 0 0;
+  padding: 16px 16px 14px;
+  border-radius: 20px;
+  background: var(--tf-paper);
+}
+
+@media (min-width: 960px) {
+  .tf-shell {
+    padding: 24px 36px 22px;
+  }
+}
+
+.tf-pick {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 18px;
+}
+
+.tf-pick button {
+  padding: 6px 16px;
+  border-radius: 999px;
+  font-size: 14.5px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--tf-ink);
+  box-shadow: inset 0 0 0 1.5px var(--tf-line);
+  transition: background-color 0.15s, box-shadow 0.15s;
+}
+
+.tf-pick button:hover {
+  box-shadow: inset 0 0 0 1.5px var(--tf-ink);
+}
+
+.tf-pick button[aria-pressed="true"] {
+  background: var(--tf-ink);
+  color: var(--vp-c-bg);
+  box-shadow: none;
+}
+
+.tf-pick button:focus-visible,
+.tf-demo button:focus-visible {
+  outline: 2px solid var(--tf-flare);
+  outline-offset: 2px;
+}
+
+.tf-pick .about {
+  flex: 1 1 16rem;
+  margin: 0 0 0 4px;
+  font-size: 14px;
+  line-height: 1.45;
+  color: var(--tf-slate);
+}
+
+.tf-demo {
+  margin: 0;
+}
+
+.tf-demo .stage {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) clamp(40px, 7vw, 96px) minmax(0, 1fr) clamp(40px, 7vw, 96px) minmax(0, 1fr);
+  grid-template-areas: "ada wire-ada room wire-grace grace";
+  align-items: center;
+}
+
+.tf-demo .screen.ada { grid-area: ada; }
+.tf-demo .screen.grace { grid-area: grace; }
+.tf-demo .wire.ada { grid-area: wire-ada; }
+.tf-demo .wire.grace { grid-area: wire-grace; }
+.tf-demo .room { grid-area: room; }
+
+/* ---- Panels ---- */
+
+.tf-demo .panel {
+  width: 100%;
+  max-width: 300px;
+  justify-self: center;
+}
+
+.tf-demo .bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 28px;
+  margin-bottom: 8px;
+}
+
+.tf-demo .title {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-family: var(--tf-display);
+  font-variation-settings: "CASL" 0.6;
+  font-weight: 700;
+  font-size: 15px;
+  color: var(--tf-ink);
+  white-space: nowrap;
+}
+
+.tf-demo .muted {
+  font-weight: 500;
+  color: var(--tf-slate);
+}
+
+.tf-demo .title i,
+.tf-demo .seats i {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+}
+
+.tf-demo .count {
+  font-size: 12.5px;
+  color: var(--tf-slate);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.tf-demo .glass {
+  position: relative;
+  aspect-ratio: 1;
+  border-radius: 14px;
+  overflow: hidden;
+}
+
+.tf-demo .screen .glass {
+  background: #0b101c;
+  box-shadow: 0 0 0 4px var(--tf-ink);
+}
+
+.dark .tf-demo .screen .glass {
+  box-shadow: 0 0 0 4px #000;
+}
+
+.tf-demo .room .glass {
+  background: var(--vp-c-bg);
+  box-shadow: 0 0 0 1.5px var(--tf-wire);
+}
+
+.tf-demo canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.tf-demo .screen canvas {
+  cursor: crosshair;
+}
+
+.tf-demo .screen canvas:focus-visible {
+  outline: 3px solid var(--tf-flare);
+  outline-offset: -3px;
+}
+
+.tf-demo .closed {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  margin: 0;
+  background: #0b101c;
+  font-family: var(--tf-display);
+  font-variation-settings: "CASL" 0.6;
+  font-weight: 650;
+  font-size: 15px;
+  color: #8793ab;
+}
+
+.tf-demo .tab {
+  flex: none;
+  padding: 3px 11px;
+  border-radius: 999px;
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--tf-ink);
+  box-shadow: inset 0 0 0 1.5px var(--tf-line);
+  transition: box-shadow 0.15s;
+}
+
+.tf-demo .tab:hover,
+.tf-demo .playpause:hover {
+  box-shadow: inset 0 0 0 1.5px var(--tf-ink);
+}
+
+/* What sits under a panel. The same height under all three, so the wires stay level. */
+.tf-demo .foot {
+  height: 44px;
+  margin: 10px 0 0;
+  padding: 0;
+  font-size: 13px;
+  line-height: 22px;
+  color: var(--tf-slate);
+  text-align: center;
+}
+
+.tf-demo .hint.refused {
+  color: var(--tf-flare-text);
+  font-weight: 600;
+}
+
+.tf-demo .seats {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  color: var(--tf-ink);
+}
+
+.tf-demo .seats li {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  white-space: nowrap;
+}
+
+.tf-demo .seats span {
+  color: var(--tf-slate);
+  font-variant-numeric: tabular-nums;
+}
+
+.tf-demo .seats span.away {
+  color: var(--tf-flare-text);
+}
+
+/* ---- Wires and frames ---- */
+
+.tf-demo .wire {
+  position: relative;
+  z-index: 1;
+  align-self: center;
+  width: 100%;
+  height: 2px;
+  /* Level with the middle of the screens: the foot under them is taller than the bar above. */
+  margin-top: -16px;
+  background: var(--tf-wire);
+}
+
+.tf-demo .wire.cut {
+  background: repeating-linear-gradient(90deg, var(--tf-wire) 0 6px, transparent 6px 12px);
+  opacity: 0.6;
+}
+
+.tf-demo .pulse {
+  position: absolute;
+  top: 50%;
+  left: var(--at, 0%);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+/* Frames with nothing written on them are dots. */
+.tf-demo .pulse:empty,
+.tf-demo .key.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--tf-flare);
+}
+
+.tf-demo .pulse.turn:empty,
+.tf-demo .key.dot.turn {
+  width: 6px;
+  height: 6px;
+  background: var(--tf-wire);
+}
+
+.tf-demo .pulse:not(:empty),
+.tf-demo .key.pill {
+  padding: 1px 8px 2px;
+  border-radius: 999px;
+  font-family: var(--tf-display);
+  font-variation-settings: "CASL" 0.6;
+  font-size: 11.5px;
+  font-weight: 700;
+  line-height: 1.3;
+  white-space: nowrap;
+  background: var(--tf-ink);
+  color: var(--vp-c-bg);
+}
+
+.tf-demo .pulse.state,
+.tf-demo .pulse.welcome,
+.tf-demo .key.pill.state {
+  background: var(--tf-flare);
+  color: #fff;
+}
+
+.tf-demo .pulse.ack,
+.tf-demo .key.pill.ack {
+  background: var(--vp-c-bg);
+  color: var(--tf-ink);
+  box-shadow: inset 0 0 0 1.5px var(--tf-ink);
+}
+
+.tf-demo .pulse.reject {
+  background: var(--vp-c-bg);
+  color: var(--tf-flare-text);
+  box-shadow: inset 0 0 0 1.5px var(--tf-flare);
+}
+
+/* ---- Caption ---- */
+
+.tf-demo figcaption {
+  margin-top: 16px;
+  text-align: center;
+}
+
+.tf-demo .narration {
+  margin: 0;
+  min-height: 1.6em;
+  font-family: var(--tf-display);
+  font-variation-settings: "CASL" 0.5;
+  font-weight: 650;
+  font-size: 16px;
+  color: var(--tf-ink);
+}
+
+.tf-demo .caption {
+  margin: 6px auto 0;
+  max-width: 48rem;
+  font-size: 13.5px;
+  line-height: 1.7;
+  color: var(--tf-slate);
+}
+
+.tf-demo .key {
+  display: inline-block;
+  vertical-align: middle;
+}
+
+.tf-demo .playpause {
+  margin-right: 8px;
+  padding: 2px 12px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--tf-ink);
+  box-shadow: inset 0 0 0 1.5px var(--tf-line);
+}
+
+/* ---- On a phone: two screens side by side, the room beneath, all in one screenful. ---- */
+
+.tf-demo.vertical .stage {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  column-gap: 14px;
+  grid-template-areas: "ada grace" "wire-ada wire-grace" "room room";
+  justify-items: center;
+}
+
+.tf-demo.vertical .wire {
+  width: 2px;
+  height: 26px;
+  margin: 3px 0 0;
+}
+
+.tf-demo.vertical .wire.cut {
+  background: repeating-linear-gradient(180deg, var(--tf-wire) 0 6px, transparent 6px 12px);
+}
+
+.tf-demo.vertical .pulse {
+  top: var(--at, 0%);
+  left: 50%;
+}
+
+.tf-demo.vertical .screen .foot,
+.tf-demo.vertical .more,
+.tf-demo.vertical .caption .long {
+  display: none;
+}
+
+.tf-demo.vertical .screen .glass {
+  box-shadow: 0 0 0 3px var(--tf-ink);
+}
+
+.tf-demo.vertical .room {
+  display: flex;
+  flex-direction: column;
+  width: 70%;
+  max-width: 240px;
+}
+
+/* The wires land on the room itself, so its title moves below it. */
+.tf-demo.vertical .room .bar {
+  order: 2;
+  margin: 8px 0 0;
+}
+
+.tf-demo.vertical .room .foot {
+  order: 3;
+  height: auto;
+  min-height: 44px;
+  margin-top: 2px;
+}
+
+.tf-demo.vertical .narration {
+  min-height: 2.8em;
+  font-size: 14.5px;
+  line-height: 1.4;
+}
+
+.tf-demo.vertical figcaption {
+  margin-top: 10px;
+}
+
+@media (max-width: 760px) {
+  .tf-shell {
+    padding-top: 12px;
+  }
+
+  .tf-pick {
+    flex-wrap: nowrap;
+    gap: 6px;
+    margin-bottom: 10px;
+  }
+
+  .tf-pick button {
+    padding: 5px 10px;
+    font-size: 13px;
+    white-space: nowrap;
+  }
+
+  .tf-pick .about {
+    display: none;
+  }
+}

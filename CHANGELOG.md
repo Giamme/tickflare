@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- **Rooms write fewer rows.** The tables for timers and for the room's counters are now created without a second index, so setting a timer or saving a ticking room is billed as one row each instead of two. A ticking room's save goes from three rows to two, and a lockstep turn with an order in it from four to three. Rooms that already exist keep the tables they have and behave the same.
+- **Docs:** the home page has a live demo for each sync mode with the real code behind it, and a cost estimator for your own numbers. The costs guide now counts what rooms write to storage, which the first version left out: at a thousand players online around the clock that is about fifty dollars a month more than it said, and for lockstep at an RTS's rate of orders it is most of the bill. It also shows how the design of a game changes its bill.
+
 ## 0.1.0
 
 The first version with documentation of its own, at the docs site built from [`docs/`](https://github.com/Giamme/tickflare/tree/main/docs). The API had grown one roadmap step at a time; this release smooths the places where that showed. It breaks code written for 0.0 in the ways listed below, each a small change.

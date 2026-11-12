@@ -1,0 +1,30 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Duel</title>
+<p id="status">Connecting…</p>
+<div id="board" style="display: grid; grid-template-columns: repeat(3, 80px); gap: 6px"></div>
+<script type="module">
+  import { AccountClient, RoomClient } from "./tickflare-client.js";
+
+  const status = document.querySelector("#status");
+  const accounts = new AccountClient(); // a guest until they sign up
+  const scheme = location.protocol === "https:" ? "wss" : "ws";
+  const room = new RoomClient(`${scheme}://${location.host}/rooms/duel`, { token: accounts.tokenSource });
+
+  const squares = Array.from({ length: 9 }, (_, cell) => {
+    const square = document.createElement("button");
+    square.style.cssText = "height: 80px; font-size: 40px";
+    // The room decides. A move it refuses comes back with the reason it gave.
+    square.onclick = () => room.send({ type: "play", cell }).catch((err) => (status.textContent = `Refused: ${err.reason}`));
+    document.querySelector("#board").append(square);
+    return square;
+  });
+
+  // The whole board arrives after every move: there is nothing to keep in step by hand.
+  room.on("state", (state) => {
+    state.board.forEach((mark, cell) => (squares[cell].textContent = mark ?? ""));
+    const me = state.marks[room.you];
+    if (state.winner) status.textContent = state.winner === "draw" ? "A draw. Next game in a moment." : `${state.winner} won. Next game in a moment.`;
+    else status.textContent = state.turn === me ? `Your turn. You play ${me}.` : `Waiting for ${state.turn}.`;
+  });
+</script>
