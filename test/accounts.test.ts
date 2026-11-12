@@ -1,7 +1,7 @@
 import { env, exports } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { AccountClient, AccountRequestError } from "../src/client/accounts.js";
-import { hashPassword, verifyPassword } from "../src/server/accounts.js";
+import { Accounts, hashPassword, verifyPassword } from "../src/server/accounts.js";
 import { createJoinToken } from "../src/server/tokens.js";
 import { MATCHES_SCHEMA } from "../src/server/matches.js";
 import { freshRoom, sleep, upgrade } from "./helpers.js";
@@ -173,6 +173,22 @@ describe("names and email addresses", () => {
     expect(await email.json()).toMatchObject({ email: "a@b.co" });
     const cleared = await call("POST", "/email", { session: account.session, body: { password: PASSWORD, email: null } });
     expect(await cleared.json()).toMatchObject({ email: null });
+  });
+});
+
+describe("custom name rules", () => {
+  it("decide which names are allowed, and uniqueness still ignores case", async () => {
+    const accounts = new Accounts(env.DB, {
+      secret: TEST_SECRET,
+      normalizeName: name => (name.trim().length >= 1 && name.length <= 256 && !/[\u0000-\u001f]/.test(name) ? name.trim() : null),
+    });
+    const email = `Someone.${Date.now()}@Example.com`;
+    const account = await accounts.register({ name: email, password: PASSWORD });
+    expect(account.name).toBe(email);
+    expect((await accounts.signIn(email.toLowerCase(), PASSWORD)).id).toBe(account.id);
+    await expect(accounts.register({ name: email.toUpperCase(), password: PASSWORD })).rejects.toMatchObject({ code: "name_taken" });
+    await expect(accounts.register({ name: "   ", password: PASSWORD })).rejects.toMatchObject({ code: "invalid_name" });
+    await expect(accounts.register({ name: "...", password: PASSWORD })).rejects.toMatchObject({ code: "invalid_name" });
   });
 });
 

@@ -200,7 +200,7 @@ await accounts(env).setData(winner, "rating", newRating);
 - Passwords are hashed with PBKDF2-SHA256, 100,000 iterations, the most the Workers runtime allows. Sessions are stored as hashes, so a leaked database does not sign anyone in, and they last 30 days since last used. Changing the password ends every session.
 - Requests that would act as the player are refused from other sites' pages, cookie-carrying WebSocket connections included. If your pages are served from another origin, list it in `allowedOrigins`; it then gets CORS headers.
 - After ten failed sign-ins for a name, or fifty from one address, sign-ins are refused for up to fifteen minutes.
-- Names are 3 to 24 characters and unique regardless of case, spaces, dots, dashes and underscores. An email address is optional and only stored.
+- Names are 3 to 24 characters and unique regardless of case, spaces, dots, dashes and underscores; `normalizeName` sets rules of your own. An email address is optional and only stored.
 - Data is JSON per key, up to 64 KiB per key and 100 keys per player by default. Keys not listed in `data` are private and only your server writes them. Stats are numbers only your server writes, and every stat is a leaderboard: `GET /api/accounts/leaderboards/wins`. Guests can have data and stats too; leaderboards and profiles only list accounts.
 - `GET /export` gives a player everything stored about them, matches recorded by `recordMatches` included; `DELETE /me` with their password deletes their account, data and stats.
 - Moving from another service: `importAccount` takes an account with its id and its old password hash, and `verifyImportedPassword` checks that hash when they first sign in, after which it is replaced with one of these.

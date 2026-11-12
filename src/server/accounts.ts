@@ -48,6 +48,13 @@ export interface AccountsOptions {
   /** How many data keys one player may have. Default 100. */
   maxDataKeys?: number;
   /**
+   * Your own rules for account names, in place of the default (3 to 24
+   * letters, digits, spaces, dots, dashes and underscores). Return the name
+   * as it should be stored, or null to refuse it. Uniqueness is checked after,
+   * ignoring case, spaces, dots, dashes and underscores.
+   */
+  normalizeName?(name: string): string | null;
+  /**
    * Checks a password against a hash this module did not make, so accounts
    * imported from another service keep working. On success the password is
    * hashed again the usual way. Return false for hashes you do not recognise.
@@ -192,6 +199,7 @@ export class Accounts {
   readonly #maxDataBytes: number;
   readonly #maxDataKeys: number;
   readonly #verifyImported: AccountsOptions["verifyImportedPassword"];
+  readonly #normalizeName: (name: string) => string;
 
   constructor(db: D1Database, options: AccountsOptions) {
     if (typeof options.secret !== "string" || options.secret.length < 16) {
@@ -209,6 +217,16 @@ export class Accounts {
     this.#maxDataBytes = options.maxDataBytes ?? 64 * 1024;
     this.#maxDataKeys = options.maxDataKeys ?? 100;
     this.#verifyImported = options.verifyImportedPassword;
+    const custom = options.normalizeName;
+    this.#normalizeName = custom
+      ? name => {
+          const normalized = typeof name === "string" ? custom(name) : null;
+          if (typeof normalized !== "string" || normalized.length === 0 || nameKey(normalized).length === 0) {
+            throw new AccountError(400, "invalid_name", "That name is not allowed.");
+          }
+          return normalized;
+        }
+      : normalizeName;
   }
 
   /** Creates the tables if they are not there yet. Called for you before the first query. */
@@ -466,7 +484,7 @@ export class Accounts {
   /** Creates an account. `id` lets a guest keep theirs; it is made up otherwise. */
   async register(input: { name: string; password: string; email?: string | null; id?: string }): Promise<Identity> {
     await this.migrate();
-    const name = normalizeName(input.name);
+    const name = this.#normalizeName(input.name);
     checkPassword(input.password);
     const email = normalizeEmail(input.email ?? null);
     const id = input.id ?? crypto.randomUUID();
@@ -492,7 +510,7 @@ export class Accounts {
   /** Brings in an account from another service. Its password works through `verifyImportedPassword`. */
   async importAccount(account: ImportedAccount): Promise<void> {
     await this.migrate();
-    const name = normalizeName(account.name);
+    const name = this.#normalizeName(account.name);
     const createdAt = account.createdAt ?? Date.now();
     await this.#db
       .prepare(
@@ -523,7 +541,7 @@ export class Accounts {
   /** Gives an account another name, if nobody has it. Sessions and join tokens issued later carry the new one. */
   async rename(accountId: string, name: string): Promise<Identity> {
     await this.migrate();
-    const normalized = normalizeName(name);
+    const normalized = this.#normalizeName(name);
     try {
       const result = await this.#db
         .prepare("UPDATE tickflare_accounts SET name = ?, name_key = ? WHERE id = ?")
