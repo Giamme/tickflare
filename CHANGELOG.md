@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+**Lockstep rooms can sleep between turns.** Set `turnClock = "players"` on a `LockstepRoom` and it has no timer of its own: `LockstepClient` asks it for each turn as it falls due, one player's client at a time, with the others standing by to take over. The room closes as many turns as its own clock says have passed, so nobody can hurry the game or hold it back, and orders take effect as soon as they do with the room's clock. For the costs guide's RTS example it brings the bill from about $45 a month to about $11.
+
+It is opt-in, and the default is unchanged. Two things differ with it: the game stands still while nobody is connected, and after a restart it skips ahead by up to `saveIntervalMs` of empty turns where the room's clock goes back by as much. `LockstepClient` needs nothing set; a client of your own has one command to send and one message to read, both in the protocol reference.
+
 **Rooms write far fewer rows**, which is what Cloudflare bills storage by. Nothing changes in how rooms behave or in the API.
 
 | | Before | Now |

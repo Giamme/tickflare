@@ -52,6 +52,13 @@ export const room = {
   rowsPerTurn: 1,
   /** A lockstep client reports its hash once in this many turns. */
   hashEveryTurns: 20,
+  /**
+   * With players asking for the turns: how long a request keeps the room awake. It writes
+   * nothing unless the turn has an order in it; this is the figure Cloudflare's examples use
+   * for a message. And requests for each turn, with the odd one sent twice.
+   */
+  askSeconds: 0.01,
+  asksPerTurn: 1.05,
   /** Requests to the Worker for a player to get into a match: an identity, the connection, the odd retry. */
   workerRequestsPerPlayer: 3,
   /** Rows written as a player takes and gives up a seat. */
@@ -82,9 +89,14 @@ export const breakEven = (game: Pick<Game, "timerPerMove" | "saveEverySeconds">)
 export const breakEvenMovesAMinute = breakEven({ timerPerMove: false, saveEverySeconds: room.saveEverySeconds });
 
 /** How a room runs: asleep between moves, or ticking for the whole match. */
-export type Runs = "event" | "sync" | "lockstep";
+export type Runs = "event" | "sync" | "lockstep" | "asked";
 
-export const runsNames: Record<Runs, string> = { event: "Event mode", sync: "State sync", lockstep: "Lockstep" };
+export const runsNames: Record<Runs, string> = {
+  event: "Event mode",
+  sync: "State sync",
+  lockstep: "Lockstep",
+  asked: "Lockstep, players' clock",
+};
 
 export interface Game {
   runs: Runs;
@@ -150,26 +162,35 @@ export interface Estimate {
 
 const over = (used: number, included: number) => Math.max(0, used - included);
 
-export function estimate(game: Game): Estimate {
+/** `askSeconds` is there to show what the one assumption nobody outside Cloudflare can check is worth. */
+export function estimate(game: Game, askSeconds = room.askSeconds): Estimate {
   const matches = game.matchesPerDay * DAYS_A_MONTH;
   const matchSeconds = game.matchMinutes * 60;
   const moves = game.playersPerMatch * game.matchMinutes * game.messagesPerMinute;
-  const ticking = game.runs !== "event";
+  const ticking = game.runs === "sync" || game.runs === "lockstep";
+  const lockstep = game.runs === "lockstep" || game.runs === "asked";
 
   let secondsAwake = matchSeconds;
   let rowsPerMatch = game.playersPerMatch * room.rowsPerSeat;
   let messagesPerMatch = moves;
-  if (!ticking) {
+  if (game.runs === "event") {
     secondsAwake = Math.min(matchSeconds, moves * room.wakeSeconds);
     rowsPerMatch += moves * (room.rowsPerMove + (game.timerPerMove ? room.rowsPerTimer : 0));
   } else {
+    // A save on a schedule; with players asking for the turns it is the turn counter's checkpoint.
     rowsPerMatch += (matchSeconds / Math.max(1, game.saveEverySeconds)) * room.rowsPerSave;
-    if (game.runs === "lockstep") {
-      // A turn is recorded only if something arrived in it. Orders arrive when they like, so
-      // the share of turns with one in them follows from how many arrive in a turn on average.
-      const perTurn = moves / (matchSeconds * room.turnsPerSecond);
-      rowsPerMatch += matchSeconds * room.turnsPerSecond * (1 - Math.exp(-perTurn)) * room.rowsPerTurn;
-      messagesPerMatch += (game.playersPerMatch * matchSeconds * room.turnsPerSecond) / room.hashEveryTurns;
+  }
+  if (lockstep) {
+    // A turn is recorded only if something arrived in it. Orders arrive when they like, so
+    // the share of turns with one in them follows from how many arrive in a turn on average.
+    const turns = matchSeconds * room.turnsPerSecond;
+    rowsPerMatch += turns * (1 - Math.exp(-moves / turns)) * room.rowsPerTurn;
+    const hashes = (game.playersPerMatch * turns) / room.hashEveryTurns;
+    messagesPerMatch += hashes;
+    if (game.runs === "asked") {
+      const asks = turns * room.asksPerTurn;
+      messagesPerMatch += asks;
+      secondsAwake = Math.min(matchSeconds, (asks + hashes) * askSeconds + moves * room.wakeSeconds);
     }
   }
   const requestsPerMatch = messagesPerMatch / cloudflare.messagesPerRequest + game.playersPerMatch;

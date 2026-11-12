@@ -37,7 +37,7 @@ See [Lockstep](./lockstep).
 | Game runs on | the server, per event | the server, per tick | every client |
 | Sent to players | whole view per change | patch per tick | inputs per turn |
 | Hidden information | yes, with `view()` | yes, with `view()` | no |
-| Room sleeps | between events | when the simulation stops | never while players are connected |
+| Room sleeps | between events | when the simulation stops | never while players are connected, or [between turns](./lockstep#letting-the-room-sleep-between-turns) if players keep time |
 | Scales with | how often things happen | how much changes per tick | how often players act |
 | Typical rate | — | 10–30 ticks a second | 5–15 turns a second |
 

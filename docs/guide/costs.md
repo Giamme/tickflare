@@ -22,7 +22,8 @@ const about = (value) => Number(value.toPrecision(2)).toLocaleString("en-US");
 
 const freeAtLaunch = presets.filter((preset) => estimate(preset.game).free).length;
 const rts = estimate(grown("rts"));
-const rtsAsleep = estimate({ ...grown("rts"), runs: "event" });
+const rtsAsleep = estimate({ ...grown("rts"), runs: "asked" });
+const rtsAsleepSlower = estimate({ ...grown("rts"), runs: "asked" }, 0.02);
 const rtsStateSync = estimate({ ...grown("rts"), runs: "sync" });
 const cards = estimate(grown("cards"));
 const arena = estimate(grown("arena"));
@@ -50,7 +51,7 @@ So a game played in sessions costs by the match: rooms exist while matches do, a
 
 ## Your own numbers
 
-Start from an example or type your own; an example fills in every setting. The three boxes in the middle show the same game in each [sync mode](./sync-modes); pick one to see where the money goes.
+Start from an example or type your own; an example fills in every setting. The four boxes in the middle show the same game in each [sync mode](./sync-modes), lockstep twice: with the room keeping time, and with [the players' clients keeping it](./lockstep#letting-the-room-sleep-between-turns). Pick one to see where the money goes.
 
 <CostEstimator />
 
@@ -60,6 +61,7 @@ A room is a Durable Object. Cloudflare bills a Durable Object for the time it is
 
 - **Event mode.** The room is awake only while a hook runs: a few hundredths of a second for a move. Between moves it sleeps, and Cloudflare keeps the WebSockets open at no charge. Keepalives are answered without waking it, and a timer does not keep it awake while it waits.
 - **State sync and lockstep.** The room is awake for as long as its simulation runs: while at least one player is connected and `shouldTick()` returns true. When the last player disconnects, or the match ends, it goes back to sleep.
+- **Lockstep with the players' clock.** The room is awake only to answer: a request for the turns that are due, ten times a second from one player's client, and the orders themselves. Between them it sleeps.
 - **Matchmakers** sleep while players wait in the queue.
 
 Two things do not change the bill: the tick rate, and how much CPU your simulation uses. A room ticking 30 times a second with a heavy simulation costs the same per hour as one ticking 5 times with a light one. More players in a room cost nothing extra either, apart from their messages.
@@ -105,6 +107,8 @@ The estimator's examples are the size of a new game, where everything fits insid
 
 **Total: about {{ dollars(Math.round(rts.bill.total)) }} a month**, or {{ dollars(rts.perMatch * 1000) }} for each thousand matches beyond that. Nearly all of it is rooms being awake for their matches.
 
+**With `turnClock = "players"`** the same rooms sleep between turns. A match's {{ n(rtsAsleep.messagesPerMatch) }} messages, most of them requests for turns, keep its room awake for about {{ n(rtsAsleep.secondsAwake) }} of its 1,800 seconds: {{ dollars(rtsAsleep.bill.awake) }} for time awake and {{ dollars(rtsAsleep.bill.messages) }} for messages. **Total: about {{ dollars(Math.round(rtsAsleep.bill.total)) }} a month.**
+
 ### A card game
 
 {{ n(grown("cards").matchesPerDay) }} matches a day in event mode: two players, ten minutes, a move every twenty seconds each, on a turn clock.
@@ -145,6 +149,7 @@ Where the line falls depends on the game, and the estimator works it out for you
 | | Costs less than a ${{ server.low }} server up to | Less than a ${{ server.high }} one up to |
 | --- | --- | --- |
 | RTS matches, lockstep | {{ about(cheaperUpTo(game("rts"), server.low)) }} matches a day | {{ about(cheaperUpTo(game("rts"), server.high)) }} |
+| RTS matches, lockstep with the players' clock | {{ about(cheaperUpTo({ ...game("rts"), runs: "asked" }, server.low)) }} matches a day | {{ about(cheaperUpTo({ ...game("rts"), runs: "asked" }, server.high)) }} |
 | Arena sessions, state sync | {{ about(cheaperUpTo(game("arena"), server.low)) }} sessions a day | {{ about(cheaperUpTo(game("arena"), server.high)) }} |
 | Co-op runs, state sync | {{ about(cheaperUpTo(game("coop"), server.low)) }} runs a day | {{ about(cheaperUpTo(game("coop"), server.high)) }} |
 | Auto-battler, event mode | {{ about(cheaperUpTo(game("rounds"), server.low)) }} matches a day | {{ about(cheaperUpTo(game("rounds"), server.high)) }} |
@@ -191,14 +196,30 @@ Above that rate, tick. A ticking room saves on a schedule however much is going 
 - **Use the time you have paid for.** Tick rate and CPU are not billed, so a busier simulation costs nothing more.
 - **Leave `saveIntervalMs` alone** unless you have a reason. A save is one row, so at five seconds saving is a tenth of the room's cost.
 
-### Lockstep: orders, not clicks
+### Lockstep: let the room sleep
 
-A lockstep room writes one row for each turn with an order in it, before any player is sent that turn, so the recording can never disagree with what the players saw. At the RTS example's rate that is about 3,000 rows a match, which the plan's 50 million a month cover up to roughly 500 matches a day. Past that each thousand matches add about $3 in rows.
+A lockstep room does no simulating, yet with its own timer it is awake for the whole match just to close turns, most of them empty. Give the clock to the players and it sleeps between turns:
+
+```ts
+export class Skirmish extends LockstepRoom<Order> {
+  protected override turnClock = "players" as const;
+}
+```
+
+One player's client then asks for each turn as it falls due, and the room wakes for a moment to close it. The room still decides how many turns are due, so nobody can hurry the game, and orders take effect as soon as they did. [The lockstep guide](./lockstep#letting-the-room-sleep-between-turns) says what else changes.
+
+| The RTS example, {{ n(grown("rts").matchesPerDay) }} matches a day | A month |
+| --- | --- |
+| Lockstep, the room keeping time | {{ dollars(Math.round(rts.bill.total)) }} |
+| State sync, the room running the simulation | {{ dollars(Math.round(rtsStateSync.bill.total)) }} |
+| Lockstep, the players' clients keeping time | {{ dollars(Math.round(rtsAsleep.bill.total)) }} |
+
+The last figure rests on one assumption that cannot be checked from outside Cloudflare: that a request for turns keeps the room awake for about a hundredth of a second, as Cloudflare's own pricing examples assume for a message. At twice that it would be about {{ dollars(Math.round(rtsAsleepSlower.bill.total)) }}.
+
+Whichever clock you use, a turn with an order in it is one row in the recording, written before any player is sent that turn. At the example's rate that is about 3,000 rows a match, which the plan's 50 million a month cover up to roughly 500 matches a day. So:
 
 - **Send decisions.** Selecting, hovering and camera moves stay on the screen. Only what changes the game goes to the room.
 - **Make one order say more.** "These twelve units attack there" is one order, not twelve. A queue of waypoints is one order.
-
-What lockstep costs is the same as state sync: the room being awake for the match, {{ dollars(Math.round(rts.bill.total)) }} a month in the example against {{ dollars(Math.round(rtsStateSync.bill.total)) }}. A lockstep room ticks to close its turns even while nobody gives an order. Closing turns by the clock instead, so that the room sleeps between orders as in event mode, would bring the same example to about {{ dollars(rtsAsleep.bill.total) }} a month. Tickflare does not do that yet.
 
 ### Small things
 

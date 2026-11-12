@@ -85,3 +85,8 @@ and closes the socket with code 1000. Connect to `/rooms/<room>` next.
 ## Lockstep
 
 A [lockstep](../guide/lockstep) room uses the same frames. Its view is `{ seed, turn, entries, desync }`, delivered as patches, one per turn. Inputs are commands of the form `{ "k": "i", "d": <input> }`; simulation hashes are `{ "k": "h", "n": <turn>, "h": "<hash>" }`. The recording is a JSON `Replay` served at `/rooms/<roomId>/replay`.
+
+A room with [`turnClock = "players"`](../guide/lockstep#letting-the-room-sleep-between-turns) says so in its view, `{ seed, turn, entries, desync, "clock": "players" }`, and works differently in two ways:
+
+- **It closes turns when asked.** A client asks with the command `{ "k": "t" }`. The room closes the turns that are due by its own clock, which may be none, and acks the command either way. Ask once a turn while your requests are the ones being answered; otherwise ask when no turns have arrived for a turn and a half, plus four tenths of a turn for each connected player whose id sorts before yours.
+- **Turns arrive as messages**, not in the view: `{ "t": "msg", "d": { "tickflare": "turns", "n": <first turn>, "c": <how many>, "e": [<entries>], "b": "<player>" } }`. Turns `n` to `n + c - 1` are closed; all are empty but the last, which has the entries `e`. `b` is the player whose request closed them, and is missing when they were closed for a player coming or going. A message may overlap turns you already have: apply the ones after your latest. If `n` is past the turn after your latest, load the recording again. State frames from such a room carry a turn number that is a checkpoint; take turns only from messages.

@@ -2,7 +2,7 @@
 /**
  * What a game costs a month on Cloudflare, from the visitor's own numbers:
  * matches a day, players, length and how much they send. It shows the same
- * game in each of the three modes, where the money goes, and what the usual
+ * game in each mode, where the money goes, and what the usual
  * alternatives would charge.
  */
 import { computed, reactive } from "vue";
@@ -33,6 +33,7 @@ const runs: { id: Runs; what: string }[] = [
   { id: "event", what: "Rooms sleep between moves" },
   { id: "sync", what: "Rooms run for the whole match" },
   { id: "lockstep", what: "Rooms run, and record the turns" },
+  { id: "asked", what: "Rooms sleep between turns" },
 ];
 
 /** Whatever is typed, the sums get a sensible number. */
@@ -104,7 +105,12 @@ const insight = computed(() => {
   }
   const asleep = estimate({ ...clean.value, runs: "event" }).bill.total;
   if (mode === "lockstep") {
-    return `Most of this is ${count(roomsAwake)} rooms awake around the clock, on average. A lockstep room ticks to close its turns for as long as the match lasts, whether or not anyone gives an order.`;
+    const asleep = estimate({ ...clean.value, runs: "asked" }).bill.total;
+    return `Most of this is ${count(roomsAwake)} rooms awake around the clock, on average: a lockstep room keeps time for as long as the match lasts. Let the players' clients keep time instead and it sleeps between turns, for ${dollars(asleep)}.`;
+  }
+  if (mode === "asked") {
+    const share = Math.round((result.value.secondsAwake / (clean.value.matchMinutes * 60)) * 100);
+    return `The rooms are awake only to answer: about ${share}% of a match here. The rest is requests for turns, ten a second from one player's client, and they are cheap.`;
   }
   if (roomMessagesAMinute < breakEvenMovesAMinute && asleep < bill.total * 0.8) {
     return `Most of this is ${count(roomsAwake)} rooms awake around the clock, on average. A room here gets only ${inRoom}: a game that can run on moves and timers, with no tick, would cost ${dollars(asleep)}.`;
@@ -359,7 +365,7 @@ input:hover {
 
 @media (min-width: 760px) {
   .runs {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
