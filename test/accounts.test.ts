@@ -176,6 +176,18 @@ describe("names and email addresses", () => {
   });
 });
 
+describe("the session cookie", () => {
+  it("can be made SameSite=Strict", async () => {
+    const accounts = new Accounts(env.DB, { secret: TEST_SECRET, sameSite: "Strict" });
+    const response = await accounts.route(new Request(`${BASE}/api/accounts/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: freshName(), password: PASSWORD }),
+    }));
+    expect(response!.headers.get("Set-Cookie")).toContain("SameSite=Strict");
+  });
+});
+
 describe("custom name rules", () => {
   it("decide which names are allowed, and uniqueness still ignores case", async () => {
     const accounts = new Accounts(env.DB, {

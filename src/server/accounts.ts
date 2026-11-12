@@ -28,6 +28,13 @@ export interface AccountsOptions {
   prefix?: string;
   /** The session cookie's name. Default "tf_session". */
   cookie?: string;
+  /**
+   * The session cookie's SameSite. "Lax" (the default) keeps players signed in
+   * when they follow a link to your game; "Strict" does not send the cookie on
+   * that first page load. A cookie set for an allowed origin of its own is
+   * "None" either way, or it could not be used there.
+   */
+  sameSite?: "Lax" | "Strict";
   /** How long a session lasts since it was last used, in milliseconds. Default 30 days. */
   sessionTtlMs?: number;
   /** How long a guest token lasts, in seconds. A guest renews it, keeping their id, before then. Default 30 days. */
@@ -191,6 +198,7 @@ export class Accounts {
   readonly #secret: string;
   readonly #prefix: string;
   readonly #cookie: string;
+  readonly #sameSite: "Lax" | "Strict";
   readonly #sessionTtl: number;
   readonly #guestTtl: number;
   readonly #joinTtl: number;
@@ -209,6 +217,7 @@ export class Accounts {
     this.#secret = options.secret;
     this.#prefix = (options.prefix ?? "/api/accounts").replace(/\/+$/, "");
     this.#cookie = options.cookie ?? "tf_session";
+    this.#sameSite = options.sameSite ?? "Lax";
     this.#sessionTtl = options.sessionTtlMs ?? 30 * DAY_MS;
     this.#guestTtl = options.guestTtlSeconds ?? 30 * 24 * 60 * 60;
     this.#joinTtl = options.joinTokenTtlSeconds ?? 10 * 60;
@@ -1017,13 +1026,13 @@ export class Accounts {
     const secure = new URL(request.url).protocol === "https:" ? "; Secure" : "";
     // A page on an allowed origin of its own can only use the cookie if it is sent cross-site.
     const origin = request.headers.get("Origin");
-    const crossSite = secure && origin !== null && this.#origins.has(origin) ? "None" : "Lax";
+    const crossSite = secure && origin !== null && this.#origins.has(origin) ? "None" : this.#sameSite;
     return `${this.#cookie}=${token}; Path=/; HttpOnly; SameSite=${crossSite}; Max-Age=${Math.floor(this.#sessionTtl / 1000)}${secure}`;
   }
 
   #clearCookie(request: Request): string {
     const secure = new URL(request.url).protocol === "https:" ? "; Secure" : "";
-    return `${this.#cookie}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secure}`;
+    return `${this.#cookie}=; Path=/; HttpOnly; SameSite=${this.#sameSite}; Max-Age=0${secure}`;
   }
 }
 
