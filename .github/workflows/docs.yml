@@ -55,5 +55,11 @@ jobs:
           url=$(grep -oE 'https://[a-z0-9.-]+\.workers\.dev' deploy.log | head -1)
           if [ -n "$url" ]; then
             echo "Docs deployed to $url" >> "$GITHUB_STEP_SUMMARY"
-            curl -fsS -o /dev/null "$url/guide/getting-started"
+            # A Worker's first deploy can take a little while to answer on workers.dev.
+            for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
+              if curl -fsS -o /dev/null "$url/guide/getting-started"; then exit 0; fi
+              sleep 10
+            done
+            echo "::error::$url/guide/getting-started does not answer."
+            exit 1
           fi
