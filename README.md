@@ -242,6 +242,8 @@ Options are plain fields you override: `maxPlayers` (default unlimited), `maxMes
 | `this.saveNow()` | While ticking, writes what this hook changes to storage as soon as it returns instead of at the next save interval. For hooks that also write to the room's database themselves |
 | `this.send(playerId, message)` | Sends one player a message outside the state. The client gets it in `onMessage` |
 | `this.broadcast(message)` | Sends every connected player a message |
+| `this.defer(task)` | Runs `task` after the event, outside the hook: for D1, other Durable Objects, `fetch`. Dropped if the hook is refused |
+| `this.act(hook)` | Runs `hook` as a hook from code that is not one, such as the end of a deferred task. Resolves to `{ ok }` or `{ ok: false, reason }` |
 
 Timers and seats cover the usual table manners. A turn clock, with the deadline in the state so clients can show a countdown:
 
@@ -268,7 +270,21 @@ Messages are for what does not belong in the state: an event to hear about once,
 this.send(player.id, { type: "hit", by: attacker.id });
 ```
 
-They go out when the event that sent them is over, after the state frame it caused (in a ticking room, after the tick's patch), and are dropped for players who are not connected and when the hook that sent them is refused. A player the same hook removes still hears them before the connection closes. Nothing is sent again on reconnect, unlike the state: send what a returning player needs from `onReconnect`.
+Hooks are synchronous, so anything that waits on the outside world happens after them:
+
+```ts
+protected override onLeave(player: Player): void {
+  this.state.owed.push(player.id);
+  this.defer(async () => {
+    await this.env.DB.prepare("UPDATE players SET left = left + 1 WHERE id = ?").bind(player.id).run();
+    await this.act(() => this.state.owed.splice(this.state.owed.indexOf(player.id), 1));
+  });
+}
+```
+
+A deferred task is not saved: keep what is still owed in the state, as here, and a timer that tries again, if it must happen even across a restart.
+
+Messages go out when the event that sent them is over, after the state frame it caused (in a ticking room, after the tick's patch), and are dropped for players who are not connected and when the hook that sent them is refused. A player the same hook removes still hears them before the connection closes. Nothing is sent again on reconnect, unlike the state: send what a returning player needs from `onReconnect`.
 
 ### State sync
 

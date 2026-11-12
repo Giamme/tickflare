@@ -397,6 +397,30 @@ export class EdgeRoom extends TestRoom {
         this.state.total += 5;
         this.movePlayer(player.id, c.to!, { n: BigInt(1) });
         return;
+      case "edge:later":
+        this.state.log.push("asked");
+        this.defer(async () => {
+          await scheduler.wait(20);
+          const outcome = await this.act(() => {
+            this.state.log.push("later");
+          });
+          await this.act(() => {
+            this.state.log.push(`outcome:${outcome.ok}`);
+          });
+        });
+        return;
+      case "edge:laterThenReject":
+        this.defer(() => this.act(() => void this.state.log.push("never")));
+        return reject("changed_my_mind");
+      case "edge:actRejects":
+        this.defer(async () => {
+          const outcome = await this.act(() => {
+            this.state.total += 1000;
+            reject("not_now");
+          });
+          await this.act(() => void this.state.log.push(`refused:${outcome.ok ? "" : outcome.reason}`));
+        });
+        return;
       case "edge:scribble": {
         // A hook that keeps something in the room's database itself, then changes its mind.
         const sql = this.ctx.storage.sql;

@@ -144,6 +144,8 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
   #signals: Signal[] = [];
   /** Messages for players, as frames, waiting for the end of the event. `to` null is everyone. */
   #mail: { to: string | null; frame: string }[] = [];
+  /** Work for after the event, from `defer`. */
+  #deferred: (() => unknown)[] = [];
   /** Messages for other rooms that are committed and waiting to go out. */
   #outgoing = new SignalSender();
   #flushing = false;
@@ -385,6 +387,32 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
   /** `send` to every player who is connected. */
   protected broadcast(message: unknown): void {
     this.#mail.push({ to: null, frame: messageFrame(message) });
+  }
+
+  /**
+   * Run `task` once this event is over, outside the hook: for talking to the
+   * world, which hooks cannot do because they are synchronous. Writing to
+   * D1, calling another Durable Object, `fetch`. Dropped if the hook is
+   * refused. Not awaited by anything and not retried: failures are logged.
+   * To change the state with what comes back, use `act`; to be sure it gets
+   * done across restarts, keep what is owed in the state and a timer that
+   * tries again.
+   */
+  protected defer(task: () => unknown): void {
+    this.#deferred.push(task);
+  }
+
+  /**
+   * Run `hook` like any other hook, from code that is not one: the end of a
+   * deferred task, a promise that resolved, an RPC method of your own. Its
+   * changes are committed and sent, or all taken back if it throws or calls
+   * `reject()`, which is what the returned outcome reports.
+   */
+  protected async act(hook: () => void): Promise<{ ok: true } | { ok: false; reason: string }> {
+    this.#load();
+    const outcome = this.#apply(hook);
+    await this.#finish();
+    return outcome;
   }
 
   /**
@@ -771,6 +799,13 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
 
     if (afterEvent) this.#stalled = false;
     this.#syncLoop();
+
+    for (const task of this.#deferred.splice(0)) {
+      const running = Promise.resolve()
+        .then(task)
+        .catch((err) => console.error("[tickflare] deferred task failed:", err));
+      this.ctx.waitUntil(running);
+    }
   }
 
   /**
@@ -967,6 +1002,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     if (this.#suspect || this.#reading > 0) this.#undoDrift();
     const removedBefore = this.#removed.length;
     const mailBefore = this.#mail.length;
+    const deferredBefore = this.#deferred.length;
     this.#finished.length = 0;
     this.#moved.length = 0;
     this.#signals.length = 0;
@@ -1028,6 +1064,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
       this.#restore();
       this.#removed.length = removedBefore;
       this.#mail.length = mailBefore;
+      this.#deferred.length = deferredBefore;
       this.#finished.length = 0;
       this.#moved.length = 0;
       this.#signals.length = 0;
