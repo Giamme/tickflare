@@ -1,0 +1,129 @@
+<script setup lang="ts">
+import { ref } from "vue";
+import { withBase } from "vitepress";
+import RoomDemo from "./RoomDemo.vue";
+
+const install = "npm install github:Giamme/tickflare";
+const copied = ref(false);
+
+async function copy(): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(install);
+    copied.value = true;
+    setTimeout(() => (copied.value = false), 1800);
+  } catch {
+    // No clipboard (an insecure origin, an old browser): the command is on screen to select.
+  }
+}
+</script>
+
+<template>
+  <section class="tf-hero">
+    <div class="tf-hero-text">
+      <h1 class="tf-headline">Multiplayer rooms that run on Cloudflare.</h1>
+      <p class="tf-sub">
+        Each room is one Durable Object. You write the rules in TypeScript; Tickflare keeps every
+        player's connection, seat and view of the game in step, and saves each move before anyone sees it.
+      </p>
+      <div class="tf-actions">
+        <a class="tf-button" :href="withBase('/guide/getting-started')">Get started</a>
+        <a class="tf-button tf-quiet" :href="withBase('/guide/introduction')">How it works</a>
+        <div class="tf-install">
+          <code>{{ install }}</code>
+          <button type="button" class="tf-copy" @click="copy">{{ copied ? "Copied" : "Copy" }}</button>
+        </div>
+      </div>
+    </div>
+    <RoomDemo />
+  </section>
+</template>
+
+<style scoped>
+.tf-hero {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 40px 24px 24px;
+}
+
+@media (min-width: 640px) {
+  .tf-hero {
+    padding: 56px 48px 32px;
+  }
+}
+
+@media (min-width: 960px) {
+  .tf-hero {
+    padding: 64px 64px 40px;
+  }
+}
+
+.tf-hero-text {
+  max-width: 64rem;
+}
+
+.tf-headline {
+  margin: 0;
+  font-family: var(--tf-display);
+  font-variation-settings: "CASL" 0.6;
+  font-weight: 820;
+  font-size: clamp(40px, 6vw, 72px);
+  line-height: 1.02;
+  letter-spacing: -0.025em;
+  color: var(--tf-ink);
+  text-wrap: balance;
+}
+
+.tf-sub {
+  margin: 20px 0 0;
+  max-width: 40rem;
+  font-size: 18px;
+  line-height: 1.6;
+  color: var(--tf-slate);
+}
+
+.tf-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-top: 28px;
+}
+
+.tf-install {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 4px 4px 14px;
+  border-radius: 10px;
+  background: var(--tf-paper);
+  max-width: 100%;
+}
+
+.tf-install code {
+  font-family: var(--vp-font-family-mono);
+  font-size: 14px;
+  color: var(--tf-ink);
+  background: none;
+  white-space: nowrap;
+  overflow-x: auto;
+}
+
+.tf-copy {
+  flex: none;
+  padding: 6px 12px;
+  border-radius: 7px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--tf-slate);
+}
+
+.tf-copy:hover {
+  color: var(--tf-ink);
+  background: var(--vp-c-bg);
+}
+
+.tf-copy:focus-visible {
+  outline: 2px solid var(--tf-flare);
+  outline-offset: 2px;
+}
+</style>

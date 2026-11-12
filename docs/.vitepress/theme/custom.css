@@ -1,0 +1,255 @@
+/*
+ * Tickflare's look: cool paper and blue-black ink, one signal colour (the
+ * flare) for what changes, and Recursive for headings, set slightly casual.
+ */
+:root {
+  --tf-ink: #182033;
+  --tf-slate: #5a6478;
+  --tf-paper: #f3f5f9;
+  --tf-line: #d6dce7;
+  --tf-wire: #9aa6bd;
+  --tf-flare: #ff4f36;
+  --tf-flare-text: #c9361d;
+  --tf-display: "Recursive Variable", var(--vp-font-family-base);
+
+  --vp-c-brand-1: #c9361d;
+  --vp-c-brand-2: #b32d16;
+  --vp-c-brand-3: #c9361d;
+  --vp-c-brand-soft: rgba(255, 79, 54, 0.12);
+  --vp-button-brand-bg: #c9361d;
+  --vp-button-brand-hover-bg: #b32d16;
+  --vp-button-brand-active-bg: #9c2510;
+  --vp-c-text-1: #182033;
+}
+
+.dark {
+  --tf-ink: #e7eaf1;
+  --tf-slate: #a3acbd;
+  --tf-paper: #1f2129;
+  --tf-line: #323746;
+  --tf-wire: #59647b;
+  --tf-flare: #ff6a52;
+  --tf-flare-text: #ff8a75;
+
+  --vp-c-brand-1: #ff8a75;
+  --vp-c-brand-2: #ff6a52;
+  --vp-c-brand-3: #c9361d;
+  --vp-c-brand-soft: rgba(255, 106, 82, 0.16);
+  --vp-c-text-1: #e7eaf1;
+}
+
+.vp-doc h1,
+.vp-doc h2,
+.vp-doc h3 {
+  font-family: var(--tf-display);
+  font-variation-settings: "CASL" 0.35;
+  letter-spacing: -0.01em;
+}
+
+.vp-doc h1 {
+  font-weight: 760;
+}
+
+.VPNavBarTitle .title {
+  font-family: var(--tf-display);
+  font-variation-settings: "CASL" 0.5;
+  font-weight: 760;
+}
+
+/* ---- Home page ---------------------------------------------------------------------------- */
+
+.tf-home {
+  --tf-measure: 38rem;
+}
+
+/* The home content is plain markdown; these give its sections room and shape. */
+.tf-home h2 {
+  margin: 0 0 12px;
+  padding-top: 0;
+  border-top: 0;
+  font-size: clamp(26px, 3.4vw, 34px);
+  line-height: 1.15;
+  font-weight: 760;
+  font-variation-settings: "CASL" 0.5;
+}
+
+.tf-home .tf-section {
+  padding: 72px 0 8px;
+}
+
+.tf-home .tf-lede {
+  max-width: var(--tf-measure);
+  color: var(--tf-slate);
+  font-size: 17px;
+  line-height: 1.6;
+  margin: 0 0 28px;
+}
+
+.tf-home .tf-section > h3 {
+  margin: 48px 0 0;
+  font-size: 20px;
+  font-weight: 720;
+}
+
+/* Run it: a real sequence, so it is numbered. Each step is a row: number, what to do, the command. */
+.tf-home .tf-steps {
+  counter-reset: step;
+  list-style: none;
+  padding: 0;
+  margin: 16px 0 0;
+}
+
+.tf-home .tf-steps > li {
+  counter-increment: step;
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr);
+  column-gap: 16px;
+  align-items: baseline;
+  margin: 0;
+  padding: 16px 0;
+  border-top: 1px solid var(--tf-line);
+}
+
+.tf-home .tf-steps > li:last-child {
+  border-bottom: 1px solid var(--tf-line);
+}
+
+@media (min-width: 900px) {
+  .tf-home .tf-steps > li {
+    grid-template-columns: 36px minmax(0, 5fr) minmax(0, 7fr);
+    column-gap: 24px;
+  }
+}
+
+.tf-home .tf-steps > li::before {
+  content: counter(step);
+  grid-row: span 2;
+  font-family: var(--tf-display);
+  font-variation-settings: "CASL" 1;
+  font-weight: 800;
+  font-size: 26px;
+  line-height: 1;
+  color: var(--tf-flare-text);
+}
+
+.tf-home .tf-steps > li > p {
+  margin: 0;
+  font-weight: 600;
+}
+
+.tf-home .tf-steps div[class*="language-"] {
+  margin: 8px 0 0;
+}
+
+@media (min-width: 900px) {
+  .tf-home .tf-steps div[class*="language-"] {
+    margin: 0;
+  }
+}
+
+/* Recipes: what to add next, as rows of explanation beside code. */
+.tf-home .tf-recipe {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px 40px;
+  padding: 28px 0;
+  border-top: 1px solid var(--tf-line);
+}
+
+.tf-home .tf-recipe:last-of-type {
+  border-bottom: 1px solid var(--tf-line);
+}
+
+@media (min-width: 900px) {
+  .tf-home .tf-recipe {
+    grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+    align-items: start;
+  }
+}
+
+.tf-home .tf-recipe h3 {
+  margin: 0 0 6px;
+  font-size: 20px;
+  font-weight: 720;
+}
+
+.tf-home .tf-recipe p {
+  margin: 0 0 8px;
+  color: var(--tf-slate);
+}
+
+.tf-home .tf-recipe div[class*="language-"] {
+  margin: 0;
+}
+
+.tf-home .tf-closing {
+  margin-top: 72px;
+  padding: 40px 0 0;
+  border-top: 2px solid var(--tf-ink);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px 40px;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.tf-home .tf-closing p {
+  margin: 0;
+  max-width: var(--tf-measure);
+  font-family: var(--tf-display);
+  font-variation-settings: "CASL" 0.5;
+  font-size: 22px;
+  line-height: 1.35;
+  font-weight: 600;
+  color: var(--tf-ink);
+}
+
+.tf-home .tf-closing a.tf-button {
+  text-decoration: none;
+}
+
+.tf-button {
+  display: inline-block;
+  text-decoration: none !important;
+  padding: 10px 20px;
+  border-radius: 999px;
+  font-weight: 600;
+  font-size: 15px;
+  line-height: 1.4;
+  background: var(--vp-button-brand-bg);
+  color: #fff !important;
+  transition: background-color 0.15s;
+}
+
+.tf-button:hover {
+  background: var(--vp-button-brand-hover-bg);
+}
+
+.tf-button.tf-quiet {
+  background: transparent;
+  color: var(--tf-ink) !important;
+  box-shadow: inset 0 0 0 1.5px var(--tf-line);
+}
+
+.tf-button.tf-quiet:hover {
+  box-shadow: inset 0 0 0 1.5px var(--tf-ink);
+}
+
+.tf-button:focus-visible {
+  outline: 2px solid var(--tf-flare);
+  outline-offset: 3px;
+}
+
+.tf-home .tf-closing-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+/* VitePress lets code run to the screen's edges on phones; inside a step or a recipe it stays in its column. */
+.tf-home .tf-steps div[class*="language-"],
+.tf-home .tf-recipe div[class*="language-"] {
+  margin-left: 0;
+  margin-right: 0;
+  border-radius: 8px;
+}
