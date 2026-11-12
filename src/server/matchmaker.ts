@@ -1,6 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { CloseCode, PING, PONG, type MatchFound } from "../protocol.js";
-import { HINT_HEADER, PLAYER_HEADER } from "./gateway.js";
+import { HINT_HEADER, PLAYER_HEADER, type RoomNamespace } from "./gateway.js";
+import type { RoomCall } from "./room.js";
 
 interface Waiting {
   player: string;
@@ -37,6 +38,12 @@ export abstract class Matchmaker<Env = Cloudflare.Env> extends DurableObject<Env
    */
   protected maxWaitMs = 0;
 
+  /**
+   * Where the rooms for matches are: the Durable Object namespace of your
+   * `Room` class. `protected override rooms = this.env.ROOMS;`
+   */
+  protected rooms: RoomNamespace | undefined;
+
   /** A pass over the queue is under way. */
   #matching = false;
   /** Someone arrived or the wait ran out during that pass, so the queue needs another look. */
@@ -50,19 +57,24 @@ export abstract class Matchmaker<Env = Cloudflare.Env> extends DurableObject<Env
   }
 
   /**
-   * Set the room up for these players. Typically:
-   *
-   *     const stub = this.env.ROOMS.get(this.env.ROOMS.idFromName(roomId), { locationHint });
-   *     await stub.reserve(roomId, players);
-   *
-   * `locationHint` is where most of the players are; passing it to `get`
-   * places the new room near them.
+   * Set the room up for these players. The default creates it in `rooms`,
+   * near `locationHint` (where most of the players are), and closes it to
+   * everyone else. Override it to do more first, such as writing down the
+   * match, and call `super.reserveRoom` from yours. If it throws, the players
+   * keep waiting and the match is tried again shortly.
    */
-  protected abstract reserveRoom(
+  protected async reserveRoom(
     roomId: string,
     players: string[],
     locationHint: DurableObjectLocationHint | undefined,
-  ): Promise<void>;
+  ): Promise<void> {
+    const rooms = this.rooms;
+    if (!rooms) throw new TypeError("a matchmaker needs `rooms` to be set");
+    const stub = rooms.get(rooms.idFromName(roomId), locationHint ? { locationHint } : undefined) as unknown as {
+      tickflare(call: RoomCall): Promise<unknown>;
+    };
+    await stub.tickflare({ op: "reserve", roomId, players });
+  }
 
   override async fetch(request: Request): Promise<Response> {
     if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {

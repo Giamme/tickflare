@@ -98,7 +98,7 @@ describe("lockstep seats", () => {
     await until(() => p1.tick >= 2);
     p2.ws.close(1000, "bye");
 
-    const stream = () => [...p1.history.values()].flatMap((view) => view.entries.map((e) => `${e.p}:${e.e}`));
+    const stream = () => [...p1.history.values()].flatMap((view) => view.entries.map((e) => `${e.player}:${e.event}`));
     await until(() => stream().includes("p2:leave"), "the leave");
     expect(stream()).toEqual(["p1:join", "p2:join", "p2:disconnect", "p2:leave"]);
   });

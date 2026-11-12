@@ -70,8 +70,8 @@ describe("finished matches", () => {
     const replay = (await object!.json()) as Replay<{ type: "add"; n: number }>;
     expect(replay.seed).toBe(p1.state!.seed);
     expect(replay.turns.flatMap(([, entries]) => entries)).toEqual([
-      { p: "p1", e: "join" },
-      { p: "p1", i: { type: "add", n: 9 } },
+      { player: "p1", event: "join" },
+      { player: "p1", input: { type: "add", n: 9 } },
     ]);
   });
 });

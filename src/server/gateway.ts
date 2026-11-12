@@ -19,10 +19,13 @@ const PLAYER_NAME = /^[^\p{Cc}]{1,64}$/u;
  */
 export type Authenticated = string | { id: string; name?: string };
 
-/** The part of a Durable Object namespace the gateway needs. `env.ROOMS` fits. */
+/**
+ * The part of a Durable Object namespace Tickflare needs to reach rooms and
+ * matchmakers. Any namespace binding fits, e.g. `env.ROOMS`.
+ */
 export interface RoomNamespace {
   idFromName(name: string): DurableObjectId;
-  get(id: DurableObjectId): { fetch(request: Request): Promise<Response> };
+  get(id: DurableObjectId, options?: DurableObjectNamespaceGetDurableObjectOptions): { fetch(request: Request): Promise<Response> };
 }
 
 export interface RouteOptions {
@@ -103,8 +106,8 @@ function identityHeaders(request: Request, identity: { id: string; name?: string
 }
 
 export interface MatchmakerRouteOptions {
-  /** Durable Object namespace of your `Matchmaker` class, e.g. `env.MATCHMAKER`. */
-  matchmaker: RoomNamespace;
+  /** Durable Object namespace of your `Matchmaker` class, e.g. `env.MATCHMAKERS`. Each queue is one object in it. */
+  matchmakers: RoomNamespace;
   /** URL prefix queues live under. Defaults to `/matchmaking`. */
   prefix?: string;
   /** Same contract as for rooms: the player's id (or `{ id, name }`), or a `Response` to refuse. `queue` is the queue name. */
@@ -139,7 +142,7 @@ export async function routeToMatchmaker(
   if (hint) headers.set(HINT_HEADER, hint);
   else headers.delete(HINT_HEADER);
 
-  const stub = options.matchmaker.get(options.matchmaker.idFromName(queue));
+  const stub = options.matchmakers.get(options.matchmakers.idFromName(queue));
   return stub.fetch(new Request(request, { headers }));
 }
 

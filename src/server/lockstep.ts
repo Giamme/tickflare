@@ -81,9 +81,9 @@ export abstract class LockstepRoom<Input, Env = Cloudflare.Env> extends Room<
 
   protected onCommand(player: Player, command: LockstepCommand<Input>): void {
     if (command.k === "i") {
-      const waiting = this.state.pending.filter((entry) => entry.p === player.id && entry.i !== undefined);
+      const waiting = this.state.pending.filter((entry) => entry.player === player.id && entry.input !== undefined);
       if (waiting.length >= this.maxInputsPerTurn) reject("too_many_inputs");
-      this.state.pending.push({ p: player.id, i: command.d });
+      this.state.pending.push({ player: player.id, input: command.d });
       return;
     }
 
@@ -106,23 +106,23 @@ export abstract class LockstepRoom<Input, Env = Cloudflare.Env> extends Room<
   }
 
   protected override onJoin(player: Player): void {
-    this.state.pending.push({ p: player.id, e: "join" });
+    this.state.pending.push({ player: player.id, event: "join" });
   }
 
   /** Every way of losing a seat ends here, so every simulation hears about it. */
   protected override removePlayer(playerId: string, reason?: string): void {
     if (this.players.some((player) => player.id === playerId)) {
-      this.state.pending.push({ p: playerId, e: "leave" });
+      this.state.pending.push({ player: playerId, event: "leave" });
     }
     super.removePlayer(playerId, reason);
   }
 
   protected override onDisconnect(player: Player): void {
-    this.state.pending.push({ p: player.id, e: "disconnect" });
+    this.state.pending.push({ player: player.id, event: "disconnect" });
   }
 
   protected override onReconnect(player: Player): void {
-    this.state.pending.push({ p: player.id, e: "reconnect" });
+    this.state.pending.push({ player: player.id, event: "reconnect" });
   }
 
   /** Closes the turn: whatever arrived since the last one becomes this turn's entries. */
@@ -173,7 +173,7 @@ export abstract class LockstepRoom<Input, Env = Cloudflare.Env> extends Room<
       .map((row): [number, TurnEntry<Input>[]] => [row.n, JSON.parse(row.entries) as TurnEntry<Input>[]]);
     const last = turns[turns.length - 1]?.[0] ?? 0;
     return {
-      v: 1,
+      v: 2,
       seed: this.state.seed,
       turnRate: this.tickRate,
       turn: Math.max(this.state.turn, last),

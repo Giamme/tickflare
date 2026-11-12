@@ -57,6 +57,7 @@ const COMMANDS = [
 export class TestRoom extends Room<TestState, TestCommand> {
   protected override maxPlayers = 2;
   protected override matchQueue = this.env.MATCHES;
+  protected override rooms = this.env.ROOMS;
   protected override maxMessageLength = 256;
 
   protected initialState(): TestState {
@@ -170,19 +171,10 @@ export class TestRoom extends Room<TestState, TestCommand> {
     }
   }
 
-  protected override async relay(roomId: string, data: unknown): Promise<boolean> {
-    const rooms = this.env.ROOMS;
-    return rooms.get(rooms.idFromName(roomId)).hear(this.roomId!, data);
-  }
-
   protected override onSignal(fromRoomId: string, data: unknown): void {
     this.state.log.push(`heard:${fromRoomId}:${(data as { text: string }).text}`);
   }
 
-  protected override async handOver(roomId: string, playerId: string, carry: unknown): Promise<void> {
-    const rooms = this.env.ROOMS;
-    await rooms.get(rooms.idFromName(roomId)).arrive(roomId, playerId, carry);
-  }
 
   protected override onArrive(player: Player, carry: unknown): void {
     this.state.log.push(`arrive:${player.id}:${JSON.stringify(carry)}`);
@@ -303,14 +295,7 @@ export class TurnRoom extends LockstepRoom<TurnInput> {
 
 /** Pairs players and reserves a TestRoom for each pair. */
 export class TestMatchmaker extends Matchmaker {
-  protected async reserveRoom(
-    roomId: string,
-    players: string[],
-    locationHint: DurableObjectLocationHint | undefined,
-  ): Promise<void> {
-    const rooms = this.env.ROOMS;
-    await rooms.get(rooms.idFromName(roomId), { locationHint }).reserve(roomId, players);
-  }
+  protected override rooms = this.env.ROOMS;
 }
 
 /** Waits for four players, but starts with two or more once the first has waited 150 ms. */
@@ -371,6 +356,7 @@ function whoIs(request: Request): string | Response {
 export class EdgeRoom extends TestRoom {
   protected override maxPlayers = 4;
   protected override matchBucket = this.env.REPLAYS;
+  protected override rooms = this.env.EDGE;
 
   protected override parseCommand(raw: unknown): TestCommand {
     const type = (raw as { type?: unknown } | null)?.type;
@@ -441,8 +427,7 @@ export class EdgeRoom extends TestRoom {
   protected override async handOver(roomId: string, playerId: string, carry: unknown): Promise<void> {
     await scheduler.wait(100);
     if (roomId.startsWith("nowhere-")) throw new Error("that room cannot be reached");
-    const rooms = this.env.EDGE;
-    await rooms.get(rooms.idFromName(roomId)).arrive(roomId, playerId, carry);
+    await super.handOver(roomId, playerId, carry);
   }
 }
 
@@ -508,14 +493,14 @@ export default {
       (await routeToRoom(request, { rooms: env.ROOMS, authenticate: whoIs })) ??
       (await routeToRoom(request, { rooms: env.TICKS, prefix: "/ticks", authenticate: whoIs })) ??
       (await routeToRoom(request, { rooms: env.TURNS, prefix: "/turns", authenticate: whoIs })) ??
-      (await routeToMatchmaker(request, { matchmaker: env.MATCHMAKER, authenticate: whoIs })) ??
+      (await routeToMatchmaker(request, { matchmakers: env.MATCHMAKER, authenticate: whoIs })) ??
       (await routeToRoom(request, { rooms: env.AWAY, prefix: "/away", authenticate: whoIs })) ??
-      (await routeToMatchmaker(request, { matchmaker: env.PATIENT, prefix: "/patient", authenticate: whoIs })) ??
+      (await routeToMatchmaker(request, { matchmakers: env.PATIENT, prefix: "/patient", authenticate: whoIs })) ??
       (await routeToRoom(request, { rooms: env.EDGE, prefix: "/edge", authenticate: whoIs })) ??
       (await routeToRoom(request, { rooms: env.LAZY, prefix: "/lazy", authenticate: whoIs })) ??
       (await routeToRoom(request, { rooms: env.HALF, prefix: "/half", authenticate: whoIs })) ??
-      (await routeToMatchmaker(request, { matchmaker: env.SLOW, prefix: "/slow", authenticate: whoIs })) ??
-      (await routeToMatchmaker(request, { matchmaker: env.FLAKY, prefix: "/flaky", authenticate: whoIs })) ??
+      (await routeToMatchmaker(request, { matchmakers: env.SLOW, prefix: "/slow", authenticate: whoIs })) ??
+      (await routeToMatchmaker(request, { matchmakers: env.FLAKY, prefix: "/flaky", authenticate: whoIs })) ??
       (await routeToRoom(request, {
         rooms: env.ROOMS,
         prefix: "/secure",

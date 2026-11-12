@@ -65,6 +65,8 @@ interface Env {
  */
 export class Arena extends Room<ArenaState, ArenaCommand, Env> {
   protected override tickRate = 20;
+  // Neighbouring arenas are rooms of this same class: where dots are handed over and signals go.
+  protected override rooms = this.env.ROOMS;
   protected override maxPlayers = 16;
   // A dot whose player stays away this long is taken out, through onLeave.
   protected override seatTimeoutMs = AWAY_MS;
@@ -174,21 +176,11 @@ export class Arena extends Room<ArenaState, ArenaCommand, Env> {
     }
   }
 
-  protected override async relay(roomId: string, data: unknown): Promise<boolean> {
-    const rooms = this.env.ROOMS;
-    return rooms.get(rooms.idFromName(roomId)).hear(this.roomId!, data);
-  }
-
   protected override onSignal(fromRoomId: string, data: unknown): void {
     const dots = (data as { dots?: Record<string, Ghost> } | null)?.dots ?? {};
     const ghosts = (this.state.ghosts ??= {});
     if (Object.keys(dots).length === 0) delete ghosts[fromRoomId];
     else ghosts[fromRoomId] = { at: this.tick, dots };
-  }
-
-  protected override async handOver(roomId: string, playerId: string, carry: unknown): Promise<void> {
-    const rooms = this.env.ROOMS;
-    await rooms.get(rooms.idFromName(roomId)).arrive(roomId, playerId, carry);
   }
 
   protected override onArrive(player: Player, carry: unknown): void {

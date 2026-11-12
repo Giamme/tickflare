@@ -1,6 +1,6 @@
 {
   "name": "tickflare",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "description": "Multiplayer game framework for Cloudflare Workers and Durable Objects",
   "license": "MIT",
@@ -29,6 +29,7 @@
     "dev:skirmish": "npm run build:example && wrangler dev --config examples/skirmish/wrangler.jsonc",
     "dev:ranked": "npm run build:example && wrangler dev --config examples/ranked/wrangler.jsonc",
     "build": "tsc -p tsconfig.build.json",
+    "prepare": "npm run build",
     "build:example": "esbuild src/client/index.ts --bundle --format=esm --outfile=examples/tic-tac-toe/public/tickflare-client.js && esbuild src/client/index.ts --bundle --format=esm --outfile=examples/arena/public/tickflare-client.js && esbuild src/client/index.ts --bundle --format=esm --outfile=examples/skirmish/public/tickflare-client.js && esbuild src/client/index.ts --bundle --format=esm --outfile=examples/ranked/public/tickflare-client.js",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"

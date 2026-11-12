@@ -15,8 +15,8 @@ const simulation = {
   step(sim: Sim, entries: TurnEntry<TurnInput>[], turn: number) {
     sim.turns += 1;
     for (const entry of entries) {
-      if (entry.i) sim.total += entry.i.n;
-      sim.trail += `${turn}:${entry.p}:${entry.e ?? entry.i?.n};`;
+      if (entry.input) sim.total += entry.input.n;
+      sim.trail += `${turn}:${entry.player}:${entry.event ?? entry.input?.n};`;
     }
   },
 };
@@ -38,7 +38,7 @@ async function replayOf(room: string): Promise<Replay<TurnInput>> {
 }
 
 const happened = (player: Awaited<ReturnType<typeof join>>) =>
-  [...player.history.values()].flatMap((view) => view.entries.map((entry) => `${view.turn}:${entry.p}:${entry.e ?? entry.i?.n}`));
+  [...player.history.values()].flatMap((view) => view.entries.map((entry) => `${view.turn}:${entry.player}:${entry.event ?? entry.input?.n}`));
 
 describe("lockstep", () => {
   it("cuts inputs into turns that every player receives in the same order", async () => {
@@ -91,7 +91,7 @@ describe("lockstep", () => {
     await until(() => happened(p1).length >= 5 && p1.tick >= 8, "the inputs and some quiet turns");
 
     const replay = await replayOf(room);
-    expect(replay).toMatchObject({ v: 1, seed: p1.state!.seed, turnRate: 50 });
+    expect(replay).toMatchObject({ v: 2, seed: p1.state!.seed, turnRate: 50 });
     // Only turns in which something happened are stored.
     expect(replay.turns.length).toBeLessThan(replay.turn);
     expect(replay.turns.every(([, entries]) => entries.length > 0)).toBe(true);

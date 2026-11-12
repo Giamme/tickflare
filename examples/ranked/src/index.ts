@@ -18,7 +18,7 @@ export default {
     const response =
       (await guestRoute(request, env.JOIN_SECRET)) ??
       (await routeToRoom(request, { rooms: env.ROOMS, authenticate })) ??
-      (await routeToMatchmaker(request, { matchmaker: env.LOBBY, authenticate }));
+      (await routeToMatchmaker(request, { matchmakers: env.LOBBY, authenticate }));
     if (response) return response;
 
     if (new URL(request.url).pathname === "/api/matches") {

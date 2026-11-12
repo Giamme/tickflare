@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { LockstepClient, RoomClient } from "../src/client/index.js";
+import { findMatch, LockstepClient, RoomClient, runReplay, type Replay } from "../src/client/index.js";
 import { PING, PONG } from "../src/protocol.js";
 
 /** A socket the test drives by hand: nothing happens on it unless the test says so. */
@@ -138,6 +138,28 @@ describe("RoomClient", () => {
     expect(seen).toEqual(["closed:1006:"]);
   });
 
+  it("tells listeners added with on() what it tells the options, until they stop listening", () => {
+    const fromOption: string[] = [];
+    const fromListener: string[] = [];
+    const client = new RoomClient<{ n: number }>("wss://tickflare.test/rooms/r", {
+      onState: (state) => fromOption.push(`state:${state.n}`),
+    });
+    const stop = client.on("state", (state, seq) => fromListener.push(`state:${state.n}@${seq}`));
+    client.on("message", (message) => fromListener.push(`message:${String(message)}`));
+    client.on("presence", (players) => fromListener.push(`presence:${players.length}`));
+    FakeSocket.all[0]!.welcome();
+    FakeSocket.all[0]!.receive({ t: "state", seq: 1, state: { n: 1 } });
+    FakeSocket.all[0]!.receive({ t: "msg", d: "hi" });
+    stop();
+    FakeSocket.all[0]!.receive({ t: "state", seq: 2, state: { n: 2 } });
+
+    expect(fromOption).toEqual(["state:undefined", "state:1", "state:2"]);
+    expect(fromListener).toEqual(["presence:0", "state:undefined@0", "state:1@1", "message:hi"]);
+    expect(client.state).toEqual({ n: 2 });
+    expect(client.seq).toBe(2);
+    client.close();
+  });
+
   it("follows a handover it is told about before it was ever welcomed", () => {
     const moved: string[] = [];
     const client = new RoomClient("wss://tickflare.test/rooms/old?token=t", { onMoved: (room) => moved.push(room) });
@@ -230,7 +252,7 @@ describe("RoomClient", () => {
         step: () => {},
         loadReplay: (url) => {
           loaded.push(url);
-          return Promise.resolve({ v: 1, seed: 1, turnRate: 10, turn: 0, turns: [] });
+          return Promise.resolve({ v: 2, seed: 1, turnRate: 10, turn: 0, turns: [] });
         },
       });
       await vi.advanceTimersByTimeAsync(0);
@@ -246,5 +268,53 @@ describe("RoomClient", () => {
       expect(askedFor).toEqual(["r", "r"]);
       client.close();
     });
+  });
+});
+
+describe("findMatch", () => {
+  beforeEach(() => {
+    FakeSocket.all = [];
+    vi.stubGlobal("WebSocket", FakeSocket);
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("asks the token source for a token for the queue it joins", async () => {
+    const askedFor: string[] = [];
+    const found = findMatch("wss://tickflare.test/matchmaking/ranked", {
+      token: (queue) => {
+        askedFor.push(queue);
+        return "t1";
+      },
+    });
+    await vi.waitFor(() => expect(FakeSocket.all).toHaveLength(1));
+    const socket = FakeSocket.all[0]!;
+    expect(socket.url).toBe("wss://tickflare.test/matchmaking/ranked?token=t1");
+    socket.receive({ t: "match", room: "m-1", players: ["p1", "p2"] });
+    socket.drop(1000, "matched");
+
+    await expect(found).resolves.toEqual({ t: "match", room: "m-1", players: ["p1", "p2"] });
+    expect(askedFor).toEqual(["ranked"]);
+  });
+
+  it("gives up on a queue that turns it away before it opens", async () => {
+    const found = findMatch("wss://tickflare.test/matchmaking/ranked");
+    await vi.waitFor(() => expect(FakeSocket.all).toHaveLength(1));
+    FakeSocket.all[0]!.refuse();
+    await expect(found).rejects.toThrow("Matchmaking ended without a match");
+  });
+});
+
+describe("runReplay", () => {
+  type Sim = { log: string[] };
+  const simulation = {
+    create: (): Sim => ({ log: [] }),
+    step: (sim: Sim, entries: { player: string; input?: number; event?: string }[], turn: number) => {
+      for (const entry of entries) sim.log.push(`${turn}:${entry.player}:${entry.event ?? entry.input}`);
+    },
+  };
+
+  it("reads recordings made before 0.1, whose entries were spelled { p, i, e }", () => {
+    const old = { v: 1, seed: 1, turnRate: 10, turn: 3, turns: [[1, [{ p: "a", e: "join" }]], [3, [{ p: "a", i: 7 }]]] };
+    expect(runReplay(old as unknown as Replay<number>, simulation).log).toEqual(["1:a:join", "3:a:7"]);
   });
 });

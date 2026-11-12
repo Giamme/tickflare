@@ -36,6 +36,26 @@ export {
 
 export type ConnectionStatus = "connecting" | "open" | "closed";
 
+/** Why a connection closed: the WebSocket close code and reason. */
+export interface CloseDetail {
+  code: number;
+  reason: string;
+}
+
+/** What a `RoomClient` reports, for `on(event, listener)`. Each is also an `on…` option. */
+export interface RoomClientEvents<View> {
+  /** See `RoomClientOptions.onState`. */
+  state(state: View, seq: number): void;
+  /** See `RoomClientOptions.onPresence`. */
+  presence(players: Player[]): void;
+  /** See `RoomClientOptions.onMessage`. */
+  message(message: unknown): void;
+  /** See `RoomClientOptions.onStatus`. */
+  status(status: ConnectionStatus, detail?: CloseDetail): void;
+  /** See `RoomClientOptions.onMoved`. */
+  moved(roomId: string): void;
+}
+
 export interface RoomClientOptions<View> {
   /**
    * The state changed, or was received for the first time after (re)connecting.
@@ -55,7 +75,7 @@ export interface RoomClientOptions<View> {
    * fine is being turned away before it reaches the room, most often because
    * the join token in its URL has expired: see `token`.
    */
-  onStatus?(status: ConnectionStatus, detail?: { code: number; reason: string }): void;
+  onStatus?(status: ConnectionStatus, detail?: CloseDetail): void;
   /**
    * Supplies the join token, instead of putting one in the URL. It is called
    * before every connection attempt (the first, every reconnect, and when the
@@ -102,16 +122,14 @@ const MAX_BACKOFF_MS = 5_000;
  * again, so there is nothing to replay.
  */
 export class RoomClient<View = unknown, Command = unknown> {
-  state: View | undefined;
-  seq = 0;
-  /** Simulation ticks the room has run. Stays 0 in event mode. */
-  tick = 0;
-  /** The room's simulation rate in ticks per second; 0 in event mode. */
-  tickRate = 0;
-  /** This player's id, as the server knows it. Set once connected. */
-  you: string | undefined;
-  players: Player[] = [];
-  status: ConnectionStatus = "connecting";
+  #state: View | undefined;
+  #seq = 0;
+  #tick = 0;
+  #tickRate = 0;
+  #you: string | undefined;
+  #players: Player[] = [];
+  #status: ConnectionStatus = "connecting";
+  #listeners = new Map<keyof RoomClientEvents<View>, Set<(...args: never[]) => void>>();
 
   #url: string;
   readonly #options: RoomClientOptions<View>;
@@ -129,6 +147,71 @@ export class RoomClient<View = unknown, Command = unknown> {
     this.#url = String(url);
     this.#options = options;
     this.#open();
+  }
+
+  /** The latest state the room sent: this player's view. Undefined until the first one arrives. */
+  get state(): View | undefined {
+    return this.#state;
+  }
+
+  /** The room's change counter for `state`. It goes up by one with every change. */
+  get seq(): number {
+    return this.#seq;
+  }
+
+  /** Simulation ticks the room has run. Stays 0 in event mode. */
+  get tick(): number {
+    return this.#tick;
+  }
+
+  /** The room's simulation rate in ticks per second; 0 in event mode. */
+  get tickRate(): number {
+    return this.#tickRate;
+  }
+
+  /** This player's id, as the server knows it. Set once connected. */
+  get you(): string | undefined {
+    return this.#you;
+  }
+
+  /** Everyone with a seat in the room, in join order. */
+  get players(): Player[] {
+    return this.#players;
+  }
+
+  get status(): ConnectionStatus {
+    return this.#status;
+  }
+
+  /**
+   * Listen for `state`, `presence`, `message`, `status` or `moved`, in
+   * addition to the `on…` options. Returns a function that stops listening,
+   * which suits UI frameworks:
+   *
+   *     useEffect(() => room.on("state", setState), [room]);
+   */
+  on<E extends keyof RoomClientEvents<View>>(event: E, listener: RoomClientEvents<View>[E]): () => void {
+    let listeners = this.#listeners.get(event);
+    if (!listeners) this.#listeners.set(event, (listeners = new Set()));
+    const added = listener as (...args: never[]) => void;
+    listeners.add(added);
+    return () => {
+      listeners.delete(added);
+    };
+  }
+
+  #emit<E extends keyof RoomClientEvents<View>>(event: E, ...args: Parameters<RoomClientEvents<View>[E]>): void {
+    const option = {
+      state: this.#options.onState,
+      presence: this.#options.onPresence,
+      message: this.#options.onMessage,
+      status: this.#options.onStatus,
+      moved: this.#options.onMoved,
+    }[event] as ((...a: Parameters<RoomClientEvents<View>[E]>) => void) | undefined;
+    option?.(...args);
+    for (const listener of this.#listeners.get(event) ?? []) {
+      (listener as unknown as (...a: Parameters<RoomClientEvents<View>[E]>) => void)(...args);
+    }
   }
 
   /**
@@ -164,7 +247,7 @@ export class RoomClient<View = unknown, Command = unknown> {
 
   #request(frame: (id: number) => ClientMessage<Command>): Promise<void> {
     const socket = this.#socket;
-    if (!socket || this.status !== "open") {
+    if (!socket || this.#status !== "open") {
       return Promise.reject(new CommandRejected("not_connected"));
     }
     const id = this.#nextId++;
@@ -229,7 +312,7 @@ export class RoomClient<View = unknown, Command = unknown> {
       const next = new URL(this.#url);
       next.pathname = next.pathname.replace(/[^/]+\/?$/, reason);
       this.#url = next.toString();
-      this.#options.onMoved?.(reason);
+      this.#emit("moved", reason);
       this.#open();
       return;
     }
@@ -249,27 +332,27 @@ export class RoomClient<View = unknown, Command = unknown> {
     switch (message.t) {
       case "welcome": {
         this.#attempt = 0;
-        this.you = message.you;
-        this.players = message.players;
-        this.tick = message.tick;
-        this.tickRate = message.tickRate;
+        this.#you = message.you;
+        this.#players = message.players;
+        this.#tick = message.tick;
+        this.#tickRate = message.tickRate;
         this.#startPing();
         this.#setStatus("open");
-        this.#options.onPresence?.(this.players);
+        this.#emit("presence", this.#players);
         this.#setState(message.state, message.seq);
         break;
       }
       case "state":
-        if (message.tick !== undefined) this.tick = message.tick;
+        if (message.tick !== undefined) this.#tick = message.tick;
         this.#setState(message.state, message.seq);
         break;
       case "patch":
-        this.tick = message.tick;
-        this.#setState(applyPatch(this.state as View, message.p), message.seq);
+        this.#tick = message.tick;
+        this.#setState(applyPatch(this.#state as View, message.p), message.seq);
         break;
       case "presence":
-        this.players = message.players;
-        this.#options.onPresence?.(this.players);
+        this.#players = message.players;
+        this.#emit("presence", this.#players);
         break;
       case "ack":
         this.#settle(message.id)?.resolve();
@@ -281,15 +364,15 @@ export class RoomClient<View = unknown, Command = unknown> {
         console.warn(`[tickflare] server could not read a frame: ${message.reason}`);
         break;
       case "msg":
-        this.#options.onMessage?.(message.d);
+        this.#emit("message", message.d);
         break;
     }
   }
 
   #setState(state: View, seq: number): void {
-    this.state = state;
-    this.seq = seq;
-    this.#options.onState?.(state, seq);
+    this.#state = state;
+    this.#seq = seq;
+    this.#emit("state", state, seq);
   }
 
   #settle(id: number) {
@@ -326,9 +409,9 @@ export class RoomClient<View = unknown, Command = unknown> {
     this.#pingTimer = undefined;
   }
 
-  #setStatus(status: ConnectionStatus, detail?: { code: number; reason: string }): void {
-    if (this.status === status && !detail) return;
-    this.status = status;
-    this.#options.onStatus?.(status, detail);
+  #setStatus(status: ConnectionStatus, detail?: CloseDetail): void {
+    if (this.#status === status && !detail) return;
+    this.#status = status;
+    this.#emit("status", status, detail);
   }
 }

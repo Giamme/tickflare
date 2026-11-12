@@ -10,7 +10,7 @@ import {
 } from "../protocol.js";
 import { DeltaSender } from "./delta.js";
 import { MAX_CLOSE_REASON, readFrame, refuse } from "./frames.js";
-import { NAME_HEADER, PLAYER_HEADER, ROOM_HEADER } from "./gateway.js";
+import { NAME_HEADER, PLAYER_HEADER, ROOM_HEADER, type RoomNamespace } from "./gateway.js";
 import { RateLimiter } from "./limiter.js";
 import { SignalSender, type Signal } from "./signals.js";
 import { RoomStorage, type OutboxEntry } from "./storage.js";
@@ -25,6 +25,12 @@ export class Rejection extends Error {
     this.reason = reason;
   }
 }
+
+/** What one room or matchmaker asks of another over RPC. @internal */
+export type RoomCall =
+  | { op: "arrive"; roomId: string; playerId: string; carry: unknown }
+  | { op: "signal"; from: string | null; data: unknown }
+  | { op: "reserve"; roomId: string; players: string[] };
 
 /** Refuse what the current hook was asked to do. Everything the hook changed is rolled back. */
 export function reject(reason: string): never {
@@ -106,6 +112,13 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
    * binding: `protected override matchBucket = this.env.REPLAYS;`
    */
   protected matchBucket: R2Bucket | undefined;
+
+  /**
+   * Where the other rooms are, for `movePlayer` and `signal`: the Durable
+   * Object namespace they live in, usually this room's own.
+   * `protected override rooms = this.env.ROOMS;`
+   */
+  protected rooms: RoomNamespace | undefined;
 
   /** Simulation rate in ticks per second. 0, the default, is event mode: no tick loop. */
   protected tickRate = 0;
@@ -313,14 +326,14 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
    * reconnects there by itself. `carry` (JSON) is delivered to the other
    * room's `onArrive`: put in it whatever the player takes along. Remove
    * their part of this room's state yourself. Call from inside a hook, and
-   * implement `handOver`.
+   * set `rooms`.
    *
    * A player who is not connected at that moment is sent on when they next
    * connect here.
    */
   protected movePlayer(playerId: string, toRoomId: string, carry?: unknown): void {
-    if (this.handOver === Room.prototype.handOver) {
-      throw new TypeError("movePlayer() needs handOver() to be implemented");
+    if (!this.rooms && this.handOver === Room.prototype.handOver) {
+      throw new TypeError("movePlayer() needs `rooms` to be set");
     }
     const seat = this.#roster.indexOf(playerId);
     if (seat === -1) return;
@@ -330,15 +343,12 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
   }
 
   /**
-   * Deliver a player to another room. Typically:
-   *
-   *     const rooms = this.env.ROOMS;
-   *     await rooms.get(rooms.idFromName(roomId)).arrive(roomId, playerId, carry);
-   *
-   * If it throws, the handover is tried again on this room's next event.
+   * Deliver a player to another room. The default reaches it through
+   * `rooms`; override it only if rooms live in more than one namespace. If it
+   * throws, the handover is tried again on this room's next event.
    */
-  protected handOver(_roomId: string, _playerId: string, _carry: unknown): Promise<void> {
-    return Promise.reject(new TypeError("handOver() is not implemented"));
+  protected async handOver(roomId: string, playerId: string, carry: unknown): Promise<void> {
+    await this.#roomStub(roomId).tickflare({ op: "arrive", roomId, playerId, carry });
   }
 
   /**
@@ -350,12 +360,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     this.onJoin(player);
   }
 
-  /**
-   * Called by another room, over RPC, to announce a player it is handing
-   * over. The player is admitted when they connect, even if the room is full
-   * or reserved.
-   */
-  async arrive(roomId: string, playerId: string, carry: unknown): Promise<void> {
+  async #arrive(roomId: string, playerId: string, carry: unknown): Promise<void> {
     this.#load();
     this.#learnRoomId(roomId);
     this.#store.atomically(() => {
@@ -419,38 +424,56 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
    * Send a message to another room, which receives it in `onSignal`. It goes
    * out once after this hook has committed. It is not saved and not retried:
    * use it for things that are replaced by the next one anyway, such as a
-   * snapshot of what is near a border. Call from inside a hook, and implement
-   * `relay`.
+   * snapshot of what is near a border. Call from inside a hook, and set
+   * `rooms`.
    *
    * With `onlyIfWatched`, a room that reports nobody connected is left alone
    * for two seconds at a time, so an empty neighbour is not kept awake.
    */
   protected signal(roomId: string, data: unknown, options: { onlyIfWatched?: boolean } = {}): void {
-    if (this.relay === Room.prototype.relay) {
-      throw new TypeError("signal() needs relay() to be implemented");
+    if (!this.rooms && this.relay === Room.prototype.relay) {
+      throw new TypeError("signal() needs `rooms` to be set");
     }
     this.#signals.push({ to: roomId, data: data ?? null, onlyIfWatched: options.onlyIfWatched === true });
   }
 
   /**
-   * Deliver a signal to another room and return what its `hear` returns.
-   * Typically:
-   *
-   *     const rooms = this.env.ROOMS;
-   *     return rooms.get(rooms.idFromName(roomId)).hear(this.roomId!, data);
+   * Deliver a signal to another room, resolving to whether anyone is
+   * connected there. The default reaches it through `rooms`; override it only
+   * if rooms live in more than one namespace.
    */
-  protected relay(_roomId: string, _data: unknown): Promise<boolean> {
-    return Promise.reject(new TypeError("relay() is not implemented"));
+  protected async relay(roomId: string, data: unknown): Promise<boolean> {
+    const watched = await this.#roomStub(roomId).tickflare({ op: "signal", from: this.roomId, data });
+    return watched === true;
   }
 
   /** Another room sent this one a message with `signal`. */
   protected onSignal(_fromRoomId: string, _data: unknown): void {}
 
   /**
-   * Called by another room, over RPC, to deliver a signal. Returns whether
-   * anyone is connected here to see its effect.
+   * How rooms and matchmakers reach each other over RPC: handing a player
+   * over, delivering a signal, reserving a room for a match. Reserved for
+   * Tickflare: don't call it, and don't name a method of your own `tickflare`.
+   * @internal
    */
-  async hear(fromRoomId: string, data: unknown): Promise<boolean> {
+  async tickflare(call: RoomCall): Promise<unknown> {
+    switch (call.op) {
+      case "arrive":
+        return this.#arrive(call.roomId, call.playerId, call.carry);
+      case "signal":
+        return this.#hear(call.from ?? "", call.data);
+      case "reserve":
+        return this.#reserve(call.roomId, call.players);
+    }
+  }
+
+  #roomStub(roomId: string): { tickflare(call: RoomCall): Promise<unknown> } {
+    const rooms = this.rooms;
+    if (!rooms) throw new TypeError("reaching another room needs `rooms` to be set");
+    return rooms.get(rooms.idFromName(roomId)) as unknown as { tickflare(call: RoomCall): Promise<unknown> };
+  }
+
+  async #hear(fromRoomId: string, data: unknown): Promise<boolean> {
     this.#load();
     this.#apply(() => this.onSignal(fromRoomId, data));
     await this.#finish();
@@ -458,11 +481,10 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
   }
 
   /**
-   * Called by a matchmaker, over RPC, before a match's players arrive. It
-   * creates the room where the matchmaker asked for it and closes it to
-   * everyone but `playerIds`.
+   * A matchmaker is about to send a match's players here: the room is created
+   * where the matchmaker asked for it and closed to everyone but `playerIds`.
    */
-  async reserve(roomId: string, playerIds: string[]): Promise<void> {
+  async #reserve(roomId: string, playerIds: string[]): Promise<void> {
     this.#load();
     this.#learnRoomId(roomId);
     this.#invited = [...playerIds];

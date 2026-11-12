@@ -76,18 +76,18 @@
         },
         step(sim, entries) {
           for (const entry of entries) {
-            if (entry.e === "join") {
+            if (entry.event === "join") {
               const cx = 60 + Math.floor(sim.random() * (SIZE - 120));
               const cy = 60 + Math.floor(sim.random() * (SIZE - 120));
               const hue = Math.floor(sim.random() * 360);
-              sim.squads[entry.p] = { hue, away: false, units: formation(cx, cy).map((at) => ({ ...at, px: at.x, py: at.y, tx: at.x, ty: at.y })) };
-            } else if (entry.e === "leave") {
-              delete sim.squads[entry.p];
-            } else if (entry.e === "disconnect" || entry.e === "reconnect") {
-              if (sim.squads[entry.p]) sim.squads[entry.p].away = entry.e === "disconnect";
-            } else if (entry.i && sim.squads[entry.p]) {
-              const targets = formation(entry.i.x, entry.i.y);
-              sim.squads[entry.p].units.forEach((unit, n) => {
+              sim.squads[entry.player] = { hue, away: false, units: formation(cx, cy).map((at) => ({ ...at, px: at.x, py: at.y, tx: at.x, ty: at.y })) };
+            } else if (entry.event === "leave") {
+              delete sim.squads[entry.player];
+            } else if (entry.event === "disconnect" || entry.event === "reconnect") {
+              if (sim.squads[entry.player]) sim.squads[entry.player].away = entry.event === "disconnect";
+            } else if (entry.input && sim.squads[entry.player]) {
+              const targets = formation(entry.input.x, entry.input.y);
+              sim.squads[entry.player].units.forEach((unit, n) => {
                 unit.tx = targets[n].x;
                 unit.ty = targets[n].y;
               });

@@ -56,7 +56,7 @@ describe("a lockstep room that is torn down", () => {
     const response = await exports.default.fetch(`https://tickflare.test/turns/${room}/replay?player=p1`);
     const replay = (await response.json()) as Replay<TurnInput>;
     const joins = replay.turns.flatMap(([turn, entries]) =>
-      entries.filter((entry) => entry.e === "join").map((entry) => `${turn}:${entry.p}`),
+      entries.filter((entry) => entry.event === "join").map((entry) => `${turn}:${entry.player}`),
     );
     expect(joins).toHaveLength(1);
   });

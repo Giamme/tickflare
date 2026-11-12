@@ -14,15 +14,7 @@ export interface Env {
 /** Pairs waiting players and reserves a room for each pair, near where they are. */
 export class Lobby extends Matchmaker<Env> {
   protected override matchSize = 2;
-
-  protected async reserveRoom(
-    roomId: string,
-    players: string[],
-    locationHint: DurableObjectLocationHint | undefined,
-  ): Promise<void> {
-    const rooms = this.env.ROOMS;
-    await rooms.get(rooms.idFromName(roomId), { locationHint }).reserve(roomId, players);
-  }
+  protected override rooms = this.env.ROOMS;
 }
 
 /** The tic-tac-toe of the first example, with every finished game reported. */

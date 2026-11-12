@@ -5,7 +5,7 @@ import {
   type Simulation,
   type TurnEntry,
 } from "../lockstep.js";
-import { RoomClient, type ConnectionStatus } from "./index.js";
+import { RoomClient, type CloseDetail, type ConnectionStatus } from "./index.js";
 import { TurnPacer } from "./pacer.js";
 import { roomIn, withFreshToken, type TokenSource } from "./token.js";
 
@@ -30,7 +30,7 @@ export interface LockstepClientOptions<Input, Sim> extends Simulation<Input, Sim
   onReady?(sim: Sim, turn: number): void;
   /** Two players' simulations differed at `turn`. */
   onDesync?(turn: number): void;
-  onStatus?(status: ConnectionStatus, detail?: { code: number; reason: string }): void;
+  onStatus?(status: ConnectionStatus, detail?: CloseDetail): void;
   /**
    * Supplies the join token, instead of putting one in the URL: see
    * `RoomClientOptions.token`. Also asked before the recording is loaded.
@@ -49,12 +49,9 @@ export interface LockstepClientOptions<Input, Sim> extends Simulation<Input, Sim
  * up in exactly the same state as everyone else.
  */
 export class LockstepClient<Input = unknown, Sim = unknown> {
-  /** The simulation. Undefined until the first catch-up finishes. */
-  sim: Sim | undefined;
-  /** The turn the simulation is at. */
-  turn = 0;
-  /** True once the simulation has caught up with the room. */
-  ready = false;
+  #sim: Sim | undefined;
+  #turn = 0;
+  #ready = false;
 
   readonly #room: RoomClient<LockstepView<Input>, unknown>;
   readonly #options: LockstepClientOptions<Input, Sim>;
@@ -83,7 +80,7 @@ export class LockstepClient<Input = unknown, Sim = unknown> {
     this.#room = new RoomClient<LockstepView<Input>, unknown>(url, {
       onStatus: (status, detail) => {
         if (status !== "open") {
-          this.ready = false;
+          this.#ready = false;
           this.#pacer?.clear();
         }
         if (status === "open") this.#needsSync = true;
@@ -92,6 +89,21 @@ export class LockstepClient<Input = unknown, Sim = unknown> {
       token: options.token,
       onState: (view) => this.#receive(view),
     });
+  }
+
+  /** The simulation. Undefined until the first catch-up finishes. */
+  get sim(): Sim | undefined {
+    return this.#sim;
+  }
+
+  /** The turn the simulation is at. */
+  get turn(): number {
+    return this.#turn;
+  }
+
+  /** True once the simulation has caught up with the room. */
+  get ready(): boolean {
+    return this.#ready;
   }
 
   get status(): ConnectionStatus {
@@ -126,14 +138,14 @@ export class LockstepClient<Input = unknown, Sim = unknown> {
       this.#buffer.clear();
       void this.#catchUp();
     }
-    if (!this.ready) {
+    if (!this.#ready) {
       this.#buffer.set(view.turn, view.entries);
     } else if (view.turn === this.#received + 1) {
       this.#received = view.turn;
       this.#pacer?.push({ turn: view.turn, entries: view.entries });
     } else if (view.turn > this.#received + 1) {
       // A turn went missing. Start over from the recording.
-      this.ready = false;
+      this.#ready = false;
       this.#pacer?.clear();
       this.#buffer.clear();
       void this.#catchUp();
@@ -154,28 +166,28 @@ export class LockstepClient<Input = unknown, Sim = unknown> {
     }
     if (id !== this.#syncId) return;
 
-    this.sim = runReplay(replay, this.#options);
-    this.turn = replay.turn;
+    this.#sim = runReplay(replay, this.#options);
+    this.#turn = replay.turn;
     // Turns that arrived while the recording was loading continue where it ends.
-    for (let turn = this.turn + 1; this.#buffer.has(turn); turn++) {
+    for (let turn = this.#turn + 1; this.#buffer.has(turn); turn++) {
       this.#advance(this.#buffer.get(turn)!, turn, false);
     }
     this.#buffer.clear();
-    this.#received = this.turn;
+    this.#received = this.#turn;
     this.#pacer?.clear();
     this.#pacer = new TurnPacer(
       1000 / (this.#room.tickRate || 10),
       this.#options.bufferTurns ?? 1,
       ({ turn, entries }) => this.#advance(entries, turn, true),
     );
-    this.ready = true;
-    this.#options.onReady?.(this.sim, this.turn);
+    this.#ready = true;
+    this.#options.onReady?.(this.#sim, this.#turn);
   }
 
   #advance(entries: TurnEntry<Input>[], turn: number, live: boolean): void {
-    const sim = this.sim as Sim;
+    const sim = this.#sim as Sim;
     this.#options.step(sim, entries, turn);
-    this.turn = turn;
+    this.#turn = turn;
     const { hash, hashEvery = 20 } = this.#options;
     // Only live turns are reported: hashes of old turns have nobody left to be compared with.
     if (live && hash && turn % hashEvery === 0) {

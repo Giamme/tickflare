@@ -6,12 +6,12 @@
 
 /** One thing that happened in a turn: a player's input, or a player coming or going. */
 export interface TurnEntry<Input = unknown> {
-  /** Player id. */
-  p: string;
-  /** The input, as returned by the room's `parseInput`. */
-  i?: Input;
-  /** Set instead of `i` when the player joined, left, dropped or came back. */
-  e?: "join" | "leave" | "disconnect" | "reconnect";
+  /** Who it was. */
+  player: string;
+  /** Their input, as the room's `parseInput` returned it. */
+  input?: Input;
+  /** Set instead of `input` when the player joined, left, dropped or came back. */
+  event?: "join" | "leave" | "disconnect" | "reconnect";
 }
 
 /** What clients see of a lockstep room. */
@@ -28,7 +28,8 @@ export interface LockstepView<Input = unknown> {
 
 /** Everything needed to run a match again: the seed and every turn in which something happened. */
 export interface Replay<Input = unknown> {
-  v: 1;
+  /** Format version. Recordings made before 0.1 are version 1; `runReplay` reads both. */
+  v: 2;
   seed: number;
   /** Turns per second. */
   turnRate: number;
@@ -51,17 +52,24 @@ export function runReplay<Input, Sim>(
   upTo = replay.turn,
 ): Sim {
   const sim = simulation.create(replay.seed);
+  const legacy = (replay as { v: number }).v === 1;
   let next = 0;
   for (let turn = 1; turn <= upTo; turn++) {
     const recorded = replay.turns[next];
     if (recorded && recorded[0] === turn) {
-      simulation.step(sim, recorded[1], turn);
+      simulation.step(sim, legacy ? recorded[1].map(fromVersion1<Input>) : recorded[1], turn);
       next += 1;
     } else {
       simulation.step(sim, [], turn);
     }
   }
   return sim;
+}
+
+/** Version 1 recordings spelled entries `{ p, i, e }`. */
+function fromVersion1<Input>(entry: unknown): TurnEntry<Input> {
+  const { p, i, e } = entry as { p: string; i?: Input; e?: TurnEntry["event"] };
+  return e === undefined ? { player: p, input: i } : { player: p, event: e };
 }
 
 /**
