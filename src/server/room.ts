@@ -142,6 +142,8 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
   #moved: { player: string; to: string; carry: unknown }[] = [];
   /** Messages for other rooms sent by the current hook, not yet committed. */
   #signals: Signal[] = [];
+  /** Messages for players, as frames, waiting for the end of the event. `to` null is everyone. */
+  #mail: { to: string | null; frame: string }[] = [];
   /** Messages for other rooms that are committed and waiting to go out. */
   #outgoing = new SignalSender();
   #flushing = false;
@@ -360,6 +362,29 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
       this.#store.removeForward(playerId);
     });
     await this.#finish();
+  }
+
+  /**
+   * Send a message to one player, outside the state: an event they should
+   * hear about once ("you were hit", a result with more in it than an ack),
+   * or a stream you keep in step yourself. The client receives it in
+   * `onMessage`.
+   *
+   * Messages go out when the event that sent them is over, in the order they
+   * were sent: after the state frame that event caused, or in a ticking room
+   * after the tick's patch. A message sent while handling a command can so
+   * arrive before the next tick shows the command's effect. A message to a
+   * player who is not connected is dropped, and so is everything a hook sent
+   * if that hook is refused. Unlike the state, nothing is sent again on
+   * reconnect: send what a returning player needs from `onReconnect`.
+   */
+  protected send(playerId: string, message: unknown): void {
+    this.#mail.push({ to: playerId, frame: messageFrame(message) });
+  }
+
+  /** `send` to every player who is connected. */
+  protected broadcast(message: unknown): void {
+    this.#mail.push({ to: null, frame: messageFrame(message) });
   }
 
   /**
@@ -709,6 +734,8 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
    * players, move the alarm, and start or stop the simulation.
    */
   async #finish(afterEvent = true): Promise<void> {
+    // Before anyone removed is disconnected, so they hear why.
+    if (this.#mail.length > 0) this.#deliverMail();
     if (this.#removed.length > 0 || this.#presenceStale) {
       this.#presenceStale = false;
       for (const { id, reason } of this.#removed.splice(0)) {
@@ -939,6 +966,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
   #apply(hook: () => void, durable = false): Outcome {
     if (this.#suspect || this.#reading > 0) this.#undoDrift();
     const removedBefore = this.#removed.length;
+    const mailBefore = this.#mail.length;
     this.#finished.length = 0;
     this.#moved.length = 0;
     this.#signals.length = 0;
@@ -999,6 +1027,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     } catch (err) {
       this.#restore();
       this.#removed.length = removedBefore;
+      this.#mail.length = mailBefore;
       this.#finished.length = 0;
       this.#moved.length = 0;
       this.#signals.length = 0;
@@ -1069,6 +1098,26 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     }
   }
 
+  #deliverMail(): void {
+    const mail = this.#mail.splice(0);
+    let everyone: { ws: WebSocket; id: string }[] | undefined;
+    for (const { to, frame } of mail) {
+      const sockets =
+        to === null
+          ? (everyone ??= this.#seatedSockets()).map(({ ws }) => ws)
+          : this.#roster.includes(to) || this.#removed.some((seat) => seat.id === to)
+            ? this.ctx.getWebSockets(to).filter((ws) => ws.readyState === SOCKET_OPEN)
+            : [];
+      for (const ws of sockets) {
+        try {
+          ws.send(frame);
+        } catch {
+          // Socket is closing.
+        }
+      }
+    }
+  }
+
   /** Open sockets of players who still hold a seat. */
   #seatedSockets(): { ws: WebSocket; id: string }[] {
     const sockets: { ws: WebSocket; id: string }[] = [];
@@ -1098,6 +1147,13 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     }
     return next;
   }
+}
+
+function messageFrame(message: unknown): string {
+  const frame = JSON.stringify({ t: "msg", d: message ?? null });
+  // `undefined` and functions vanish in JSON; a cycle or a BigInt throws on its own.
+  if (frame === undefined) throw new TypeError("A message must be JSON-serializable");
+  return frame;
 }
 
 function isThenable(value: unknown): value is PromiseLike<unknown> {

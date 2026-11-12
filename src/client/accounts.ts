@@ -168,6 +168,20 @@ export class AccountClient {
     this.#setAccount(result.account);
   }
 
+  /** Takes another name. */
+  async rename(name: string): Promise<Account> {
+    const account = await this.#request<Account>("POST", "/name", { name });
+    this.account = account;
+    return account;
+  }
+
+  /** Sets the email address, or removes it with null. Needs the password. */
+  async setEmail(password: string, email: string | null): Promise<Account> {
+    const account = await this.#request<Account>("POST", "/email", { password, email });
+    this.account = account;
+    return account;
+  }
+
   /** Deletes the account and everything stored with it. */
   async deleteAccount(password: string): Promise<void> {
     await this.#request("DELETE", "/me", { password });

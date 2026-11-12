@@ -57,7 +57,9 @@ export type ServerMessage<View = unknown> =
   /** The command or leave was refused and the state is unchanged. */
   | { t: "reject"; id: number; reason: string }
   /** The frame could not be understood at all. */
-  | { t: "error"; reason: string };
+  | { t: "error"; reason: string }
+  /** A message the room sent this player with `send` or `broadcast`. */
+  | { t: "msg"; d: unknown };
 
 /** WebSocket close codes the room uses. The client does not reconnect after these. */
 export const CloseCode = {

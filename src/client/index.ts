@@ -45,6 +45,8 @@ export interface RoomClientOptions<View> {
   onState?(state: View, seq: number): void;
   /** Someone joined, dropped or came back. */
   onPresence?(players: Player[]): void;
+  /** A message the room sent with `send` or `broadcast`. */
+  onMessage?(message: unknown): void;
   /**
    * `closed` carries the close code and reason, e.g. when the room was full
    * or the seat was removed. So does `connecting` when it follows a
@@ -271,6 +273,9 @@ export class RoomClient<View = unknown, Command = unknown> {
         break;
       case "error":
         console.warn(`[tickflare] server could not read a frame: ${message.reason}`);
+        break;
+      case "msg":
+        this.#options.onMessage?.(message.d);
         break;
     }
   }

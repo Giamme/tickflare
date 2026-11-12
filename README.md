@@ -204,9 +204,10 @@ await accounts(env).setData(winner, "rating", newRating);
 - Data is JSON per key, up to 64 KiB per key and 100 keys per player by default. Keys not listed in `data` are private and only your server writes them. Stats are numbers only your server writes, and every stat is a leaderboard: `GET /api/accounts/leaderboards/wins`. Guests can have data and stats too; leaderboards and profiles only list accounts.
 - `GET /export` gives a player everything stored about them, matches recorded by `recordMatches` included; `DELETE /me` with their password deletes their account, data and stats.
 - Moving from another service: `importAccount` takes an account with its id and its old password hash, and `verifyImportedPassword` checks that hash when they first sign in, after which it is replaced with one of these.
+- `rename`, `setEmail` and `statsOf` (stats of many players at once, for your own leaderboards and lists) are there for server code too.
 - The tables are prefixed `tickflare_` and created on first use (`ACCOUNTS_SCHEMA` has the SQL).
 
-The whole API, under `/api/accounts`: `POST /guest`, `POST /register`, `POST /login`, `POST /logout`, `GET /me`, `DELETE /me`, `POST /password`, `GET /export`, `POST /token` (a join token with the player's name, for clients that connect without the cookie), `GET|PUT|DELETE /data/:key`, `GET /players/:id`, `GET /leaderboards/:stat?limit=&offset=`. Errors are `{ error, message }` with a code such as `name_taken` or `invalid_credentials`.
+The whole API, under `/api/accounts`: `POST /guest`, `POST /register`, `POST /login`, `POST /logout`, `GET /me`, `DELETE /me`, `POST /password`, `POST /name`, `POST /email`, `GET /export`, `POST /token` (a join token with the player's name, for clients that connect without the cookie), `GET|PUT|DELETE /data/:key`, `GET /players/:id`, `GET /leaderboards/:stat?limit=&offset=`. Errors are `{ error, message }` with a code such as `name_taken` or `invalid_credentials`.
 
 Not included, on purpose: email verification and password reset (they need an email sender), analytics events and remote config.
 
@@ -239,6 +240,8 @@ Options are plain fields you override: `maxPlayers` (default unlimited), `maxMes
 | `this.clearTimer(name)` | Cancels a timer |
 | `this.removePlayer(playerId, reason?)` | Takes a seat away and closes that player's connection. `onLeave` is not called |
 | `this.saveNow()` | While ticking, writes what this hook changes to storage as soon as it returns instead of at the next save interval. For hooks that also write to the room's database themselves |
+| `this.send(playerId, message)` | Sends one player a message outside the state. The client gets it in `onMessage` |
+| `this.broadcast(message)` | Sends every connected player a message |
 
 Timers and seats cover the usual table manners. A turn clock, with the deadline in the state so clients can show a countdown:
 
@@ -258,6 +261,14 @@ protected override onLeave(player: Player): void {
 ```
 
 Set `seatTimeoutMs` in any real-time room. Without it a seat is kept until the player leaves, which suits a game played over days but lets closed tabs fill a room for good.
+
+Messages are for what does not belong in the state: an event to hear about once, a result with more in it than an ack, or a stream you keep in step yourself, such as what one player can see.
+
+```ts
+this.send(player.id, { type: "hit", by: attacker.id });
+```
+
+They go out when the event that sent them is over, after the state frame it caused (in a ticking room, after the tick's patch), and are dropped for players who are not connected and when the hook that sent them is refused. A player the same hook removes still hears them before the connection closes. Nothing is sent again on reconnect, unlike the state: send what a returning player needs from `onReconnect`.
 
 ### State sync
 

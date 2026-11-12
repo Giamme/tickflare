@@ -40,12 +40,17 @@ export type TestCommand =
   | { type: "move"; to: string; gold: number }
   | { type: "moveThenReject"; to: string }
   | { type: "signal"; to: string; text: string; quiet?: boolean }
-  | { type: "signalThenReject"; to: string };
+  | { type: "signalThenReject"; to: string }
+  | { type: "tell"; to: string; text: string }
+  | { type: "shout"; text: string }
+  | { type: "tellThenReject"; to: string }
+  | { type: "kickWithNote"; id: string };
 
 const COMMANDS = [
   "add", "secret", "noop", "half", "boom", "async",
   "timer", "timerThenReject", "cancel", "kick", "kickThenReject", "lock",
   "finish", "finishThenReject", "move", "moveThenReject", "signal", "signalThenReject",
+  "tell", "shout", "tellThenReject", "kickWithNote",
 ];
 
 /** A room that exercises every kernel feature; not a game. */
@@ -148,6 +153,20 @@ export class TestRoom extends Room<TestState, TestCommand> {
       case "signalThenReject":
         this.signal(command.to, { text: "never sent" });
         reject("changed_my_mind");
+      case "tell":
+        this.state.total += 1;
+        this.send(command.to, { from: player.id, text: command.text });
+        return;
+      case "shout":
+        this.broadcast({ from: player.id, text: command.text });
+        return;
+      case "tellThenReject":
+        this.send(command.to, { text: "never sent" });
+        reject("changed_my_mind");
+      case "kickWithNote":
+        this.send(command.id, { text: "you are out" });
+        this.removePlayer(command.id, "kicked");
+        return;
     }
   }
 
@@ -308,6 +327,7 @@ export const TEST_SECRET = "test-secret-0123456789";
 export class NameRoom extends TestRoom {
   protected override onJoin(player: Player): void {
     this.state.log.push(`join:${player.id}:${player.name ?? "-"}`);
+    this.send(player.id, { hello: player.name ?? player.id });
   }
 
   protected override onReconnect(player: Player): void {
@@ -460,6 +480,7 @@ export default {
       (await routeToRoom(request, { rooms: env.NAMES, prefix: "/named", authenticate: accounts.authenticate })) ??
       (await routeToRoom(request, { rooms: env.NAMES, prefix: "/members", authenticate: accounts.requireAccount })) ??
       (await routeToRoom(request, { rooms: env.NAMES, prefix: "/tokens", authenticate: tokenAuth({ secret: TEST_SECRET }) })) ??
+      (await routeToRoom(request, { rooms: env.NAMES, prefix: "/greet", authenticate: whoIs })) ??
       (await routeToRoom(request, { rooms: env.ROOMS, authenticate: whoIs })) ??
       (await routeToRoom(request, { rooms: env.TICKS, prefix: "/ticks", authenticate: whoIs })) ??
       (await routeToRoom(request, { rooms: env.TURNS, prefix: "/turns", authenticate: whoIs })) ??

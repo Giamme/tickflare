@@ -152,6 +152,30 @@ describe("signing up and in", () => {
   });
 });
 
+describe("names and email addresses", () => {
+  it("can be changed: a new name if it is free, an email address with the password", async () => {
+    const account = await register();
+    const other = await register();
+    const taken = await call("POST", "/name", { session: account.session, body: { name: other.name.toUpperCase() } });
+    expect(taken.status).toBe(409);
+
+    const next = freshName();
+    const renamed = await call("POST", "/name", { session: account.session, body: { name: next } });
+    expect(await renamed.json()).toMatchObject({ id: account.id, name: next });
+    expect((await call("POST", "/login", { body: { name: next, password: PASSWORD } })).status).toBe(200);
+    expect((await call("POST", "/login", { body: { name: account.name, password: PASSWORD } })).status).toBe(401);
+    // The old name is free again.
+    await register(account.name);
+
+    const noPassword = await call("POST", "/email", { session: account.session, body: { password: "nope nope", email: "a@b.co" } });
+    expect(noPassword.status).toBe(403);
+    const email = await call("POST", "/email", { session: account.session, body: { password: PASSWORD, email: "a@b.co" } });
+    expect(await email.json()).toMatchObject({ email: "a@b.co" });
+    const cleared = await call("POST", "/email", { session: account.session, body: { password: PASSWORD, email: null } });
+    expect(await cleared.json()).toMatchObject({ email: null });
+  });
+});
+
 describe("guests", () => {
   it("get an id and a token, renew it for the same id, and keep the id when they register", async () => {
     const guest = (await (await call("POST", "/guest")).json()) as { id: string; token: string };
@@ -286,6 +310,8 @@ describe("stats and leaderboards", () => {
     await accounts.addStats("guest-without-account", { [stat]: 999 });
 
     expect(await accounts.stats(a.id)).toEqual({ [stat]: 15 });
+    const several = await accounts.statsOf([a.id, b.id, "nobody", a.id], [stat]);
+    expect(Object.fromEntries(several)).toEqual({ [a.id]: { [stat]: 15 }, [b.id]: { [stat]: 30 } });
     const board = await (await call("GET", `/leaderboards/${stat}`)).json();
     expect(board).toEqual({
       stat,

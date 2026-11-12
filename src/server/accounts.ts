@@ -276,6 +276,8 @@ export class Accounts {
    *     GET    /me               your account, data and stats
    *     DELETE /me               { password }: delete your account and everything in it
    *     POST   /password         { current, next }: change it and sign out everywhere else
+   *     POST   /name             { name }: take another name
+   *     POST   /email            { password, email }: set or (with null) remove the email address
    *     GET    /export           everything stored about you, as a JSON download
    *     POST   /token            { scope? }: a short-lived join token for a room or queue
    *     GET    /data/:key        PUT /data/:key { value }   DELETE /data/:key
@@ -384,6 +386,21 @@ export class Accounts {
       await this.setPassword(account.id, stringField(body, "next"));
       // Every session ends, this one included; it is replaced with a fresh one.
       return this.#signedIn(request, account.id, 200);
+    }
+    if (path === "/name" && method === "POST") {
+      this.#checkOrigin(request);
+      const account = await this.#requireAccount(request);
+      const body = await readJson(request);
+      await this.rename(account.id, stringField(body, "name"));
+      return json(await this.ownAccount(account.id));
+    }
+    if (path === "/email" && method === "POST") {
+      this.#checkOrigin(request);
+      const account = await this.#requireAccount(request);
+      const body = await readJson(request);
+      await this.#checkPassword(account.id, stringField(body, "password"));
+      await this.setEmail(account.id, typeof body.email === "string" ? body.email : null);
+      return json(await this.ownAccount(account.id));
     }
     if (path === "/export" && method === "GET") {
       const account = await this.#requireAccount(request);
@@ -497,6 +514,32 @@ export class Accounts {
     }
     await this.#db.prepare("DELETE FROM tickflare_sign_in_failures WHERE key = ?").bind(keys[0]).run();
     return { id: row.id, name: row.name, guest: false };
+  }
+
+  /** Gives an account another name, if nobody has it. Sessions and join tokens issued later carry the new one. */
+  async rename(accountId: string, name: string): Promise<Identity> {
+    await this.migrate();
+    const normalized = normalizeName(name);
+    try {
+      const result = await this.#db
+        .prepare("UPDATE tickflare_accounts SET name = ?, name_key = ? WHERE id = ?")
+        .bind(normalized, nameKey(normalized), accountId)
+        .run();
+      if (result.meta.changes === 0) throw new AccountError(404, "not_found", "No such account.");
+    } catch (error) {
+      if (String(error).includes("UNIQUE")) throw new AccountError(409, "name_taken", "That name is taken.");
+      throw error;
+    }
+    return { id: accountId, name: normalized, guest: false };
+  }
+
+  /** Sets the email address, or removes it with null. */
+  async setEmail(accountId: string, email: string | null): Promise<void> {
+    await this.migrate();
+    await this.#db
+      .prepare("UPDATE tickflare_accounts SET email = ? WHERE id = ?")
+      .bind(normalizeEmail(email), accountId)
+      .run();
   }
 
   /** Sets a new password and ends every session of the account. */
@@ -706,6 +749,30 @@ export class Accounts {
       .bind(playerId)
       .all<{ stat: string; value: number }>();
     return Object.fromEntries(rows.results.map((row) => [row.stat, row.value]));
+  }
+
+  /** Several players' stats at once, by player id. `stats` limits it to those stats. Players without any are left out. */
+  async statsOf(playerIds: readonly string[], stats?: readonly string[]): Promise<Map<string, Record<string, number>>> {
+    await this.migrate();
+    stats?.forEach(checkStat);
+    const result = new Map<string, Record<string, number>>();
+    const unique = [...new Set(playerIds)];
+    // D1 binds at most 100 parameters per statement.
+    const room = 100 - (stats?.length ?? 0);
+    for (let start = 0; start < unique.length; start += room) {
+      const chunk = unique.slice(start, start + room);
+      const filter = stats ? ` AND stat IN (${stats.map(() => "?").join(",")})` : "";
+      const rows = await this.#db
+        .prepare(`SELECT player, stat, value FROM tickflare_player_stats WHERE player IN (${chunk.map(() => "?").join(",")})${filter}`)
+        .bind(...chunk, ...(stats ?? []))
+        .all<{ player: string; stat: string; value: number }>();
+      for (const row of rows.results) {
+        let entry = result.get(row.player);
+        if (!entry) result.set(row.player, (entry = {}));
+        entry[row.stat] = row.value;
+      }
+    }
+    return result;
   }
 
   /** The players with the highest value of a stat. Players without an account are not listed. */
