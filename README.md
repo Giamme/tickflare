@@ -8,7 +8,9 @@ Each room is one Durable Object: a single-threaded, authoritative server with it
 
 It is aimed at turn-based, card, co-op, `.io`-style and strategy games. Games that need UDP and rollback netcode (shooters, fighting games, sim racing) are out of scope.
 
-**[Read the documentation](docs/guide/introduction.md)** · [Getting started](docs/guide/getting-started.md) · [API reference](docs/README.md) · [Changelog](CHANGELOG.md)
+**[Read the documentation](docs/guide/introduction.md)** · [Getting started](docs/guide/getting-started.md) · [Changelog](CHANGELOG.md)
+
+The guides read fine on GitHub. The API reference is generated from the doc comments, so it is only on the built site: `npm run docs:dev` serves it locally.
 
 ## A room
 
