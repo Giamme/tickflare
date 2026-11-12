@@ -1,0 +1,13 @@
+{
+  "name": "arena",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-01",
+  "assets": { "directory": "./public" },
+  "durable_objects": {
+    "bindings": [{ "name": "ROOMS", "class_name": "Arena" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Arena"] }],
+  "d1_databases": [{ "binding": "DB", "database_name": "arena" }],
+  // For local development only. Use `wrangler secret put JOIN_SECRET` for a deployed Worker.
+  "vars": { "JOIN_SECRET": "local-development-only-secret" }
+}

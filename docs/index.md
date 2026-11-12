@@ -8,127 +8,25 @@ titleTemplate: Multiplayer rooms on Cloudflare
 
 <div class="tf-home">
 
-<section class="tf-section">
+<section class="tf-code">
 
-## The code behind the demo
+:::: details See the code for this demo
 
-<p class="tf-lede">The demo above is this counter. A room with its rules, a Worker that lets players in, and a page. Nothing else: no servers to run, no database to set up by hand.</p>
+The real thing is about as long as the demo is small: a room with its rules, a Worker that lets players in, and a page. No servers to run and no database to set up by hand.
 
 ::: code-group
 
-```ts [src/counter.ts]
-import { Room, reject, type Player } from "tickflare";
+<<< @/snippets/arena/src/arena.ts [src/arena.ts]
 
-interface State {
-  count: number;
-  lastBy: string | null;
-}
+<<< @/snippets/arena/src/index.ts [src/index.ts]
 
-type Command = { type: "increment" };
+<<< @/snippets/arena/public/index.html [public/index.html]
 
-export class Counter extends Room<State, Command> {
-  protected override maxPlayers = 8;
-  // A player whose tab closes keeps their seat for a minute.
-  protected override seatTimeoutMs = 60_000;
-
-  protected initialState(): State {
-    return { count: 0, lastBy: null };
-  }
-
-  // Everything a client sends is untrusted. Check it here.
-  protected parseCommand(raw: unknown): Command {
-    if ((raw as { type?: unknown } | null)?.type === "increment") return { type: "increment" };
-    return reject("invalid_command");
-  }
-
-  protected onCommand(player: Player, _command: Command): void {
-    if (this.state.lastBy === player.id) reject("wait_for_someone_else");
-    this.state.count += 1;
-    this.state.lastBy = player.id;
-  }
-}
-```
-
-```ts [src/index.ts]
-import { Accounts, routeToRoom } from "tickflare";
-export { Counter } from "./counter";
-
-interface Env {
-  ROOMS: DurableObjectNamespace;
-  DB: D1Database;
-  JOIN_SECRET: string;
-}
-
-export default {
-  async fetch(request, env): Promise<Response> {
-    const accounts = new Accounts(env.DB, { secret: env.JOIN_SECRET });
-    return (
-      // Guest identities, sign-up and sign-in, under /api/accounts.
-      (await accounts.route(request)) ??
-      // WebSockets on /rooms/<room id>, let in only with a valid identity.
-      (await routeToRoom(request, { rooms: env.ROOMS, authenticate: accounts.authenticate })) ??
-      new Response("Not found", { status: 404 })
-    );
-  },
-} satisfies ExportedHandler<Env>;
-```
-
-```html [public/index.html]
-<!doctype html>
-<meta charset="utf-8" />
-<title>Counter</title>
-<p><button id="add" disabled>+1</button> <span id="count">…</span></p>
-<p id="who"></p>
-<script type="module">
-  import { AccountClient, RoomClient } from "./tickflare-client.js";
-
-  const accounts = new AccountClient();
-  const scheme = location.protocol === "https:" ? "wss" : "ws";
-  const room = new RoomClient(`${scheme}://${location.host}/rooms/lobby`, {
-    // Asked for a join token before every connection attempt.
-    token: accounts.tokenSource,
-  });
-
-  room.on("state", (state) => {
-    document.querySelector("#count").textContent = state.count;
-  });
-  room.on("presence", (players) => {
-    const online = players.filter((player) => player.connected).length;
-    document.querySelector("#who").textContent = `${online} online`;
-  });
-  room.on("status", (status) => {
-    document.querySelector("#add").disabled = status !== "open";
-  });
-
-  document.querySelector("#add").addEventListener("click", async () => {
-    try {
-      await room.send({ type: "increment" });
-    } catch (error) {
-      alert(error.reason); // e.g. wait_for_someone_else
-    }
-  });
-</script>
-```
-
-```jsonc [wrangler.jsonc]
-{
-  "name": "counter",
-  "main": "src/index.ts",
-  "compatibility_date": "2026-11-01",
-  "assets": { "directory": "./public" },
-  "durable_objects": {
-    "bindings": [{ "name": "ROOMS", "class_name": "Counter" }]
-  },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Counter"] }],
-  "d1_databases": [{ "binding": "DB", "database_name": "counter" }],
-  // For local development only. Use `wrangler secret put JOIN_SECRET` for a deployed Worker.
-  "vars": { "JOIN_SECRET": "local-development-only-secret" }
-}
-```
+<<< @/snippets/arena/wrangler.jsonc [wrangler.jsonc]
 
 :::
 
-### Run it
+To run it yourself:
 
 <ol class="tf-steps">
 <li>
@@ -161,6 +59,8 @@ npx wrangler dev
 </li>
 </ol>
 
+::::
+
 </section>
 
 <section class="tf-section">
@@ -177,7 +77,7 @@ npx wrangler dev
 
 ## Add what your game needs
 
-<p class="tf-lede">Each of these is a few lines on top of the counter, and has a guide of its own.</p>
+<p class="tf-lede">Each of these is a few lines on top of a room like the arena, and has a guide of its own.</p>
 
 <div class="tf-recipe">
 <div>

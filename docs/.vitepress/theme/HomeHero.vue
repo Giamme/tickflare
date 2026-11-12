@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref } from "vue";
 import { withBase } from "vitepress";
-import RoomDemo from "./RoomDemo.vue";
+import ArenaDemo from "./ArenaDemo.vue";
 
 const install = "npm install github:Giamme/tickflare";
 const copied = ref(false);
@@ -34,7 +34,7 @@ async function copy(): Promise<void> {
         </div>
       </div>
     </div>
-    <RoomDemo />
+    <ArenaDemo />
   </section>
 </template>
 

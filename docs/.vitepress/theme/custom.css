@@ -85,12 +85,6 @@
   margin: 0 0 28px;
 }
 
-.tf-home .tf-section > h3 {
-  margin: 48px 0 0;
-  font-size: 20px;
-  font-weight: 720;
-}
-
 /* Run it: a real sequence, so it is numbered. Each step is a row: number, what to do, the command. */
 .tf-home .tf-steps {
   counter-reset: step;
@@ -252,4 +246,75 @@
   margin-left: 0;
   margin-right: 0;
   border-radius: 8px;
+}
+
+/* The demo's code: closed until asked for. */
+.tf-home .tf-code {
+  margin-top: 8px;
+}
+
+.tf-home .tf-code details.details {
+  margin: 0;
+  padding: 0;
+  background: none;
+  border: 0;
+}
+
+.tf-home .tf-code details.details > summary {
+  display: flex;
+  width: fit-content;
+  margin: 0 auto;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 18px;
+  border-radius: 999px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--tf-ink);
+  box-shadow: inset 0 0 0 1.5px var(--tf-line);
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+.tf-home .tf-code details.details > summary::-webkit-details-marker {
+  display: none;
+}
+
+.tf-home .tf-code details.details > summary::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: translateY(-2px) rotate(45deg);
+  transition: transform 0.2s;
+}
+
+.tf-home .tf-code details.details[open] > summary::before {
+  transform: translateY(2px) rotate(225deg);
+}
+
+.tf-home .tf-code details.details > summary:hover {
+  box-shadow: inset 0 0 0 1.5px var(--tf-ink);
+}
+
+.tf-home .tf-code details.details > summary:focus-visible {
+  outline: 2px solid var(--tf-flare);
+  outline-offset: 3px;
+}
+
+.tf-home .tf-code details.details[open] > summary {
+  margin-bottom: 24px;
+}
+
+.tf-home .tf-code details.details > p {
+  color: var(--tf-slate);
+  max-width: var(--tf-measure);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tf-home .tf-code details.details > summary::before {
+    transition: none;
+  }
 }
