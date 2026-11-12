@@ -2,12 +2,22 @@
 export const PLAYER_HEADER = "x-tickflare-player";
 /** Header the gateway uses to tell a room the id it is known by. */
 export const ROOM_HEADER = "x-tickflare-room";
+/** Header the gateway uses to tell a room the player's name, URI-encoded. Never trusted from the client. */
+export const NAME_HEADER = "x-tickflare-name";
 /** Header the gateway uses to tell a matchmaker roughly where a player is. */
 export const HINT_HEADER = "x-tickflare-hint";
 
 const ROOM_ID = /^[A-Za-z0-9_-]{1,64}$/;
 /** Visible ASCII without spaces: safe as a header value and as a WebSocket tag. */
 const PLAYER_ID = /^[\x21-\x7E]{1,128}$/;
+/** Up to 64 characters without control characters. */
+const PLAYER_NAME = /^[^\p{Cc}]{1,64}$/u;
+
+/**
+ * Who `authenticate` found: a player id, or a player id with a display name.
+ * A name reaches the room's hooks as `player.name`.
+ */
+export type Authenticated = string | { id: string; name?: string };
 
 /** The part of a Durable Object namespace the gateway needs. `env.ROOMS` fits. */
 export interface RoomNamespace {
@@ -21,12 +31,13 @@ export interface RouteOptions {
   /** URL prefix rooms live under. Defaults to `/rooms`. */
   prefix?: string;
   /**
-   * Work out who is connecting. Return the player's id, or a `Response` to
-   * refuse the connection. This is the only place identity is established:
-   * rooms trust whatever id this returns. `roomId` is the room being opened.
-   * `tokenAuth` gives you one that checks signed join tokens.
+   * Work out who is connecting. Return the player's id (or `{ id, name }`),
+   * or a `Response` to refuse the connection. This is the only place
+   * identity is established: rooms trust whatever this returns. `roomId` is
+   * the room being opened. `tokenAuth` gives you one that checks signed join
+   * tokens, and `Accounts.authenticate` one that also knows signed-in players.
    */
-  authenticate(request: Request, roomId: string): string | Response | Promise<string | Response>;
+  authenticate(request: Request, roomId: string): Authenticated | Response | Promise<Authenticated | Response>;
 }
 
 /**
@@ -53,31 +64,42 @@ export async function routeToRoom(
     return new Response("Expected a WebSocket upgrade", { status: 426 });
   }
 
-  const identity = await options.authenticate(request, roomId);
+  const identity = checkIdentity(await options.authenticate(request, roomId));
   if (identity instanceof Response) return identity;
-  const refused = refuseIdentity(identity);
-  if (refused) return refused;
 
-  // Overwrites anything the client sent under the same names.
-  const headers = new Headers(request.headers);
-  headers.set(PLAYER_HEADER, identity);
+  const headers = identityHeaders(request, identity);
   headers.set(ROOM_HEADER, roomId);
 
   const stub = options.rooms.get(options.rooms.idFromName(roomId));
   return stub.fetch(new Request(request, { headers }));
 }
 
-/** The answer for something `authenticate` returned that cannot be a player id, or undefined if it can. */
-function refuseIdentity(identity: unknown): Response | undefined {
+/** What `authenticate` returned, as an id and maybe a name, or the answer for something that cannot be a player. */
+function checkIdentity(identity: unknown): { id: string; name?: string } | Response {
+  if (identity instanceof Response) return identity;
+  const id = typeof identity === "object" && identity !== null ? (identity as { id?: unknown }).id : identity;
+  const name = typeof identity === "object" && identity !== null ? (identity as { name?: unknown }).name : undefined;
   // An `authenticate` that falls off its end returns undefined. That is nobody, not a player.
-  if (typeof identity !== "string") {
+  if (typeof id !== "string") {
     return new Response("Not authenticated", { status: 401 });
   }
   // "__proto__" would do damage as a key in a game's state.
-  if (!PLAYER_ID.test(identity) || identity === "__proto__") {
+  if (!PLAYER_ID.test(id) || id === "__proto__") {
     return new Response("Invalid player id", { status: 400 });
   }
-  return undefined;
+  if (name !== undefined && (typeof name !== "string" || !PLAYER_NAME.test(name))) {
+    return new Response("Invalid player name", { status: 400 });
+  }
+  return name === undefined ? { id } : { id, name };
+}
+
+/** The request's headers with the gateway's own: anything the client sent under the same names is replaced or dropped. */
+function identityHeaders(request: Request, identity: { id: string; name?: string }): Headers {
+  const headers = new Headers(request.headers);
+  headers.set(PLAYER_HEADER, identity.id);
+  if (identity.name === undefined) headers.delete(NAME_HEADER);
+  else headers.set(NAME_HEADER, encodeURIComponent(identity.name));
+  return headers;
 }
 
 export interface MatchmakerRouteOptions {
@@ -85,8 +107,8 @@ export interface MatchmakerRouteOptions {
   matchmaker: RoomNamespace;
   /** URL prefix queues live under. Defaults to `/matchmaking`. */
   prefix?: string;
-  /** Same contract as for rooms: the player's id, or a `Response` to refuse. `queue` is the queue name. */
-  authenticate(request: Request, queue: string): string | Response | Promise<string | Response>;
+  /** Same contract as for rooms: the player's id (or `{ id, name }`), or a `Response` to refuse. `queue` is the queue name. */
+  authenticate(request: Request, queue: string): Authenticated | Response | Promise<Authenticated | Response>;
 }
 
 /**
@@ -109,13 +131,10 @@ export async function routeToMatchmaker(
   if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
     return new Response("Expected a WebSocket upgrade", { status: 426 });
   }
-  const identity = await options.authenticate(request, queue);
+  const identity = checkIdentity(await options.authenticate(request, queue));
   if (identity instanceof Response) return identity;
-  const refused = refuseIdentity(identity);
-  if (refused) return refused;
 
-  const headers = new Headers(request.headers);
-  headers.set(PLAYER_HEADER, identity);
+  const headers = identityHeaders(request, identity);
   const hint = locationHintFor(request);
   if (hint) headers.set(HINT_HEADER, hint);
   else headers.delete(HINT_HEADER);

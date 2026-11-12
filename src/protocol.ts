@@ -16,6 +16,13 @@ export const PONG = "pong";
 export interface Player {
   id: string;
   connected: boolean;
+  /**
+   * The player's name, when the gateway's `authenticate` gave one (signed-in
+   * players with `Accounts` have one). Only set in the hooks that run for a
+   * connecting request: `onJoin`, `onReconnect`, `onArrive` and `onHttp`.
+   * Keep it in your state if you need it later.
+   */
+  name?: string;
 }
 
 /** `id` is chosen by the client and echoed back in the matching `ack` or `reject`. */

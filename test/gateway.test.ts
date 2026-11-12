@@ -37,6 +37,22 @@ describe("routeToRoom", () => {
     }
   });
 
+  it("takes an id with a name, and refuses names that are not text or too long", async () => {
+    const route = (identity: unknown) =>
+      routeToRoom(new Request(`https://tickflare.test/named/${freshRoom()}`, { headers: { Upgrade: "websocket" } }), {
+        rooms: env.NAMES,
+        prefix: "/named",
+        authenticate: () => identity as string,
+      });
+    expect((await route({ id: "ada", name: "Ada Lovelace ✨" }))!.status).toBe(101);
+    expect((await route({ id: "ada" }))!.status).toBe(101);
+    expect((await route({ name: "no id" }))!.status).toBe(401);
+    expect((await route({ id: "ada", name: 7 }))!.status).toBe(400);
+    expect((await route({ id: "ada", name: "x".repeat(65) }))!.status).toBe(400);
+    expect((await route({ id: "ada", name: "line\nbreak" }))!.status).toBe(400);
+    expect((await route({ id: "__proto__", name: "x" }))!.status).toBe(400);
+  });
+
   it("refuses a player id that would damage a game's state as a key", async () => {
     expect((await upgrade(`/rooms/${freshRoom()}?player=__proto__`)).status).toBe(400);
   });

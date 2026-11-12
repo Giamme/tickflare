@@ -144,7 +144,71 @@ const room = new RoomClient("wss://my-game.example/rooms/lobby", {
 - Keep the secret out of the repository: `wrangler secret put JOIN_SECRET`. It must be at least 16 characters.
 - The examples sign tokens for anonymous guests at `POST /api/guest` (see [`examples/shared`](examples/shared/src/guest.ts)), and a guest who presents a token that is still valid gets a new one for the same player. That is the place to plug in your own accounts.
 
-You can still write `authenticate` yourself, for example to read a session cookie. It receives the request and the room id, and returns the player id or a `Response` to refuse.
+You can still write `authenticate` yourself, for example to read a session cookie. It receives the request and the room id, and returns the player id (or `{ id, name }`) or a `Response` to refuse. A name reaches `onJoin`, `onReconnect`, `onArrive` and `onHttp` as `player.name`; put `name` in a join token and `tokenAuth` passes it on. For accounts that already do all of this, see below.
+
+### Accounts and player data
+
+`Accounts` is a small player backend on D1: accounts with a name and a password, sessions, guests who can sign up without losing what they earned, per-player data, stats and leaderboards, public profiles, and a player's right to download or delete everything about them.
+
+```ts
+import { Accounts, routeToRoom } from "tickflare";
+
+const accounts = (env: Env) =>
+  new Accounts(env.DB, {
+    secret: env.JOIN_SECRET,
+    data: {
+      avatar: { read: "public", write: "owner" }, // on the profile; players set it themselves
+      settings: { write: "owner" }, //               private; players set it themselves
+      rating: { read: "public" }, //                 on the profile; only your server sets it
+    },
+  });
+
+export default {
+  async fetch(request, env) {
+    const a = accounts(env);
+    return (
+      (await a.route(request)) ?? // the HTTP API, under /api/accounts
+      (await routeToRoom(request, { rooms: env.ROOMS, authenticate: a.authenticate })) ??
+      new Response("Not found", { status: 404 })
+    );
+  },
+} satisfies ExportedHandler<Env>;
+```
+
+```ts
+// In the browser.
+import { AccountClient, RoomClient } from "tickflare/client";
+
+const accounts = new AccountClient();
+await accounts.restore(); // signed in from an earlier visit?
+const room = new RoomClient(`wss://${location.host}/rooms/lobby`, { token: accounts.tokenSource });
+
+await accounts.register({ name: "Ada", password: "correct horse battery" }); // keeps the guest's id
+await accounts.setData("avatar", { hat: "red" });
+const top = await accounts.leaderboard("wins");
+```
+
+```ts
+// In a room or a queue consumer: what players cannot be trusted to write.
+await accounts(env).addStats(winner, { wins: 1, games: 1 });
+await accounts(env).maxStats(winner, { bestStreak: streak });
+await accounts(env).setData(winner, "rating", newRating);
+```
+
+- Rooms see signed-in players under their account id, with `player.name` set. Guests connect with a token from `POST /api/accounts/guest`, which `tokenSource` fetches, keeps in `localStorage` and renews for the same id. `a.requireAccount` in place of `a.authenticate` keeps guests out.
+- In the browser the session is an `HttpOnly` cookie the page's scripts never see, which the WebSocket connection carries too. Other clients get the session token in the response and send it as `Authorization: Bearer`; `AccountClient` does that outside browsers.
+- Passwords are hashed with PBKDF2-SHA256, 100,000 iterations, the most the Workers runtime allows. Sessions are stored as hashes, so a leaked database does not sign anyone in, and they last 30 days since last used. Changing the password ends every session.
+- Requests that would act as the player are refused from other sites' pages, cookie-carrying WebSocket connections included. If your pages are served from another origin, list it in `allowedOrigins`; it then gets CORS headers.
+- After ten failed sign-ins for a name, or fifty from one address, sign-ins are refused for up to fifteen minutes.
+- Names are 3 to 24 characters and unique regardless of case, spaces, dots, dashes and underscores. An email address is optional and only stored.
+- Data is JSON per key, up to 64 KiB per key and 100 keys per player by default. Keys not listed in `data` are private and only your server writes them. Stats are numbers only your server writes, and every stat is a leaderboard: `GET /api/accounts/leaderboards/wins`. Guests can have data and stats too; leaderboards and profiles only list accounts.
+- `GET /export` gives a player everything stored about them, matches recorded by `recordMatches` included; `DELETE /me` with their password deletes their account, data and stats.
+- Moving from another service: `importAccount` takes an account with its id and its old password hash, and `verifyImportedPassword` checks that hash when they first sign in, after which it is replaced with one of these.
+- The tables are prefixed `tickflare_` and created on first use (`ACCOUNTS_SCHEMA` has the SQL).
+
+The whole API, under `/api/accounts`: `POST /guest`, `POST /register`, `POST /login`, `POST /logout`, `GET /me`, `DELETE /me`, `POST /password`, `GET /export`, `POST /token` (a join token with the player's name, for clients that connect without the cookie), `GET|PUT|DELETE /data/:key`, `GET /players/:id`, `GET /leaderboards/:stat?limit=&offset=`. Errors are `{ error, message }` with a code such as `name_taken` or `invalid_credentials`.
+
+Not included, on purpose: email verification and password reset (they need an email sender), analytics events and remote config.
 
 ### Hooks
 
@@ -495,7 +559,8 @@ Close codes: `4000` replaced by a newer connection, `4001` room full, `4002` ref
 - Seeing across a border is a recipe built on `signal`, not something a room does by itself, and what arrives that way is a picture: a room cannot act on a neighbour's units.
 - Handover is for rooms in event mode and state sync. A lockstep client does not follow a move.
 - The matchmaker is first come, first served: no skill ratings.
-- Match history is one table keyed by match. There is no per-player index or leaderboard yet.
+- Match history is one table keyed by match, without a per-player index. Leaderboards are built from stats, not from matches.
+- Accounts have no password reset: a player who forgets theirs needs you to set a new one with `setPassword`.
 - What a room owes (a finished match, a handover) and could not deliver is tried again on the room's next event, not on a timer of its own. Delivery is at least once: after a crash at the wrong moment a handover or a match message can arrive twice.
 - A replay passes through a row of the room's database on its way to R2, so it is limited to 2 MB as well.
 - Rooms are never deleted. A room's storage, a lockstep recording included, stays until you remove it.

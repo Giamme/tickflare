@@ -20,10 +20,27 @@ export {
 export { cellOf, shardFor } from "../world.js";
 export { MATCHES_SCHEMA, recentMatches, recordMatches, type MatchRecord } from "./matches.js";
 export {
+  ACCOUNTS_SCHEMA,
+  AccountError,
+  Accounts,
+  hashPassword,
+  verifyPassword,
+  type AccountsOptions,
+  type DataPolicy,
+  type Identity,
+  type ImportedAccount,
+  type LeaderboardEntry,
+  type LeaderboardPage,
+  type OwnAccount,
+  type PublicProfile,
+} from "./accounts.js";
+export {
   locationHintFor,
   routeToMatchmaker,
   routeToRoom,
+  NAME_HEADER,
   PLAYER_HEADER,
+  type Authenticated,
   type MatchmakerRouteOptions,
   type RoomNamespace,
   type RouteOptions,

@@ -10,7 +10,7 @@ import {
 } from "../protocol.js";
 import { DeltaSender } from "./delta.js";
 import { MAX_CLOSE_REASON, readFrame, refuse } from "./frames.js";
-import { PLAYER_HEADER, ROOM_HEADER } from "./gateway.js";
+import { NAME_HEADER, PLAYER_HEADER, ROOM_HEADER } from "./gateway.js";
 import { RateLimiter } from "./limiter.js";
 import { SignalSender, type Signal } from "./signals.js";
 import { RoomStorage, type OutboxEntry } from "./storage.js";
@@ -461,10 +461,13 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     this.#load();
     const roomId = request.headers.get(ROOM_HEADER);
     if (roomId) this.#learnRoomId(roomId);
+    const name = nameFrom(request);
     if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
       this.#reading += 1;
       try {
-        return await this.onHttp(request, { id: playerId, connected: this.#isConnected(playerId) });
+        const player: Player = { id: playerId, connected: this.#isConnected(playerId) };
+        if (name !== undefined) player.name = name;
+        return await this.onHttp(request, player);
       } finally {
         // onHttp is for reading. Whatever it changed is not kept.
         this.#reading -= 1;
@@ -472,7 +475,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
         await this.#finish();
       }
     }
-    const response = this.#connect(playerId);
+    const response = this.#connect(playerId, name);
     await this.#finish();
     return response;
   }
@@ -523,11 +526,12 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     await this.#finish();
   }
 
-  #connect(playerId: string): Response {
+  #connect(playerId: string, name: string | undefined): Response {
     const pair = new WebSocketPair();
     const client = pair[0];
     const server = pair[1];
     const player: Player = { id: playerId, connected: true };
+    if (name !== undefined) player.name = name;
 
     if (!this.#roster.includes(playerId)) {
       const arrival = this.#store.arrival(playerId);
@@ -1098,4 +1102,15 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
 
 function isThenable(value: unknown): value is PromiseLike<unknown> {
   return typeof (value as { then?: unknown } | null | undefined)?.then === "function";
+}
+
+/** The name the gateway forwarded, if any. */
+function nameFrom(request: Request): string | undefined {
+  const header = request.headers.get(NAME_HEADER);
+  if (!header) return undefined;
+  try {
+    return decodeURIComponent(header);
+  } catch {
+    return undefined;
+  }
 }

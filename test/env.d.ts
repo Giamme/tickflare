@@ -2,7 +2,7 @@ declare namespace Cloudflare {
   interface GlobalProps {
     mainModule: typeof import("./worker");
     durableNamespaces: "TestRoom" | "TickRoom" | "TurnRoom" | "TestMatchmaker" | "AwayRoom" | "PatientMatchmaker"
-      | "EdgeRoom" | "LazyTickRoom" | "HalfRate" | "SlowLobby" | "FlakyLobby";
+      | "EdgeRoom" | "LazyTickRoom" | "HalfRate" | "SlowLobby" | "FlakyLobby" | "NameRoom";
   }
   interface Env {
     ROOMS: DurableObjectNamespace<import("./worker").TestRoom>;
@@ -16,6 +16,7 @@ declare namespace Cloudflare {
     HALF: DurableObjectNamespace<import("./worker").HalfRate>;
     SLOW: DurableObjectNamespace<import("./worker").SlowLobby>;
     FLAKY: DurableObjectNamespace<import("./worker").FlakyLobby>;
+    NAMES: DurableObjectNamespace<import("./worker").NameRoom>;
     MATCHES: Queue<import("../src/protocol.js").MatchResult>;
     DB: D1Database;
     REPLAYS: R2Bucket;

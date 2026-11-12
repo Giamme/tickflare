@@ -9,9 +9,16 @@
  * forged or altered without the secret.
  */
 
+import type { Authenticated } from "./gateway.js";
+
 export interface JoinTokenClaims {
   /** The player this token speaks for. */
   player: string;
+  /**
+   * The player's account name. Rooms see it as `player.name`. Leave it out
+   * for guests: `Accounts` takes a token with a name for a signed-in player.
+   */
+  name?: string;
   /** If set, the token only opens the room or matchmaking queue with this id. */
   scope?: string;
   /** Lifetime in seconds. Defaults to one hour. */
@@ -20,6 +27,7 @@ export interface JoinTokenClaims {
 
 export interface VerifiedJoinToken {
   player: string;
+  name?: string;
   scope?: string;
   /** Epoch seconds. */
   expiresAt: number;
@@ -27,6 +35,7 @@ export interface VerifiedJoinToken {
 
 interface Payload {
   p: string;
+  n?: string;
   s?: string;
   e: number;
 }
@@ -43,6 +52,7 @@ export async function createJoinToken(secret: string, claims: JoinTokenClaims): 
     p: claims.player,
     e: Math.floor(Date.now() / 1000) + (claims.expiresIn ?? 3600),
   };
+  if (claims.name !== undefined) payload.n = claims.name;
   if (claims.scope !== undefined) payload.s = claims.scope;
   const body = `${VERSION}.${toBase64Url(encoder.encode(JSON.stringify(payload)))}`;
   const signature = await crypto.subtle.sign("HMAC", await keyFor(secret), encoder.encode(body));
@@ -74,9 +84,10 @@ export async function verifyJoinToken(
     if (typeof payload.p !== "string" || typeof payload.e !== "number") return null;
     if (payload.e <= Date.now() / 1000) return null;
     if (payload.s !== undefined && payload.s !== scope) return null;
-    return payload.s === undefined
-      ? { player: payload.p, expiresAt: payload.e }
-      : { player: payload.p, scope: payload.s, expiresAt: payload.e };
+    const verified: VerifiedJoinToken = { player: payload.p, expiresAt: payload.e };
+    if (typeof payload.n === "string") verified.name = payload.n;
+    if (payload.s !== undefined) verified.scope = payload.s;
+    return verified;
   } catch {
     return null;
   }
@@ -96,14 +107,15 @@ export interface TokenAuthOptions {
  */
 export function tokenAuth(
   options: TokenAuthOptions,
-): (request: Request, scope: string) => Promise<string | Response> {
+): (request: Request, scope: string) => Promise<Authenticated | Response> {
   const param = options.param ?? "token";
   return async (request, scope) => {
     const bearer = /^Bearer (.+)$/.exec(request.headers.get("Authorization") ?? "")?.[1];
     const token = new URL(request.url).searchParams.get(param) ?? bearer;
     if (!token) return new Response("Missing join token", { status: 401 });
     const verified = await verifyJoinToken(options.secret, token, scope);
-    return verified ? verified.player : new Response("Invalid or expired join token", { status: 401 });
+    if (!verified) return new Response("Invalid or expired join token", { status: 401 });
+    return verified.name === undefined ? verified.player : { id: verified.player, name: verified.name };
   };
 }
 

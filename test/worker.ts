@@ -1,4 +1,5 @@
 import {
+  Accounts,
   LockstepRoom,
   Matchmaker,
   Room,
@@ -303,6 +304,37 @@ export class PatientMatchmaker extends TestMatchmaker {
 /** Signs the join tokens accepted under /secure. */
 export const TEST_SECRET = "test-secret-0123456789";
 
+/** TestRoom that writes down the names its players come with. */
+export class NameRoom extends TestRoom {
+  protected override onJoin(player: Player): void {
+    this.state.log.push(`join:${player.id}:${player.name ?? "-"}`);
+  }
+
+  protected override onReconnect(player: Player): void {
+    this.state.log.push(`back:${player.id}:${player.name ?? "-"}`);
+  }
+
+  protected override onHttp(_request: Request, player: Player): Response {
+    return Response.json({ id: player.id, name: player.name ?? null });
+  }
+}
+
+export function testAccounts(env: Cloudflare.Env): Accounts {
+  return new Accounts(env.DB, {
+    secret: TEST_SECRET,
+    allowedOrigins: ["https://allowed.test"],
+    data: {
+      avatar: { read: "public", write: "owner" },
+      settings: { write: "owner" },
+      rating: { read: "public" },
+    },
+    maxDataKeys: 4,
+    maxDataBytes: 1024,
+    // Accounts brought over from elsewhere carry "plain:<password>", which nobody should ever do.
+    verifyImportedPassword: (hash, password) => hash === `plain:${password}`,
+  });
+}
+
 function whoIs(request: Request): string | Response {
   const player = new URL(request.url).searchParams.get("player");
   return player ?? new Response("Who are you?", { status: 401 });
@@ -422,7 +454,12 @@ export class FlakyLobby extends TestMatchmaker {
 
 export default {
   async fetch(request, env): Promise<Response> {
+    const accounts = testAccounts(env);
     const response =
+      (await accounts.route(request)) ??
+      (await routeToRoom(request, { rooms: env.NAMES, prefix: "/named", authenticate: accounts.authenticate })) ??
+      (await routeToRoom(request, { rooms: env.NAMES, prefix: "/members", authenticate: accounts.requireAccount })) ??
+      (await routeToRoom(request, { rooms: env.NAMES, prefix: "/tokens", authenticate: tokenAuth({ secret: TEST_SECRET }) })) ??
       (await routeToRoom(request, { rooms: env.ROOMS, authenticate: whoIs })) ??
       (await routeToRoom(request, { rooms: env.TICKS, prefix: "/ticks", authenticate: whoIs })) ??
       (await routeToRoom(request, { rooms: env.TURNS, prefix: "/turns", authenticate: whoIs })) ??
