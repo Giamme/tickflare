@@ -205,6 +205,7 @@ await accounts(env).setData(winner, "rating", newRating);
 - `GET /export` gives a player everything stored about them, matches recorded by `recordMatches` included; `DELETE /me` with their password deletes their account, data and stats.
 - Moving from another service: `importAccount` takes an account with its id and its old password hash, and `verifyImportedPassword` checks that hash when they first sign in, after which it is replaced with one of these.
 - `rename`, `setEmail` and `statsOf` (stats of many players at once, for your own leaderboards and lists) are there for server code too.
+- `awardStats(key, awards)` writes several players' stats at once, all or nothing, and only once per key: give it the match id and a retried match result is not counted twice.
 - The tables are prefixed `tickflare_` and created on first use (`ACCOUNTS_SCHEMA` has the SQL).
 
 The whole API, under `/api/accounts`: `POST /guest`, `POST /register`, `POST /login`, `POST /logout`, `GET /me`, `DELETE /me`, `POST /password`, `POST /name`, `POST /email`, `GET /export`, `POST /token` (a join token with the player's name, for clients that connect without the cookie), `GET|PUT|DELETE /data/:key`, `GET /players/:id`, `GET /leaderboards/:stat?limit=&offset=`. Errors are `{ error, message }` with a code such as `name_taken` or `invalid_credentials`.

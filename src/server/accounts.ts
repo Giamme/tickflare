@@ -140,6 +140,10 @@ CREATE TABLE IF NOT EXISTS tickflare_player_stats (
   PRIMARY KEY (player, stat)
 );
 CREATE INDEX IF NOT EXISTS tickflare_player_stats_board ON tickflare_player_stats (stat, value DESC);
+CREATE TABLE IF NOT EXISTS tickflare_stat_awards (
+  key TEXT PRIMARY KEY,
+  awarded_at INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS tickflare_sign_in_failures (
   key TEXT PRIMARY KEY,
   failures INTEGER NOT NULL,
@@ -742,6 +746,38 @@ export class Accounts {
     await this.#writeStats(playerId, values, "MAX(value, excluded.value)");
   }
 
+  /**
+   * Writes several players' stats in one go, once per `key`: a match id, say.
+   * Calling it again with the same key changes nothing and returns false, so
+   * code that retries after a failure cannot count a result twice. Either all
+   * of it is written or none of it.
+   */
+  async awardStats(
+    key: string,
+    awards: readonly { player: string; add?: Record<string, number>; set?: Record<string, number>; max?: Record<string, number> }[],
+  ): Promise<boolean> {
+    await this.migrate();
+    if (typeof key !== "string" || key.length === 0 || key.length > 256) throw new AccountError(400, "invalid_key", "An award needs a key.");
+    const now = Date.now();
+    const statements = [this.#db.prepare("INSERT INTO tickflare_stat_awards (key, awarded_at) VALUES (?, ?)").bind(key, now)];
+    for (const award of awards) {
+      for (const [values, update] of [
+        [award.add, "value + excluded.value"],
+        [award.set, "excluded.value"],
+        [award.max, "MAX(value, excluded.value)"],
+      ] as const) {
+        for (const [stat, value] of Object.entries(values ?? {})) statements.push(this.#statStatement(award.player, stat, value, update, now));
+      }
+    }
+    try {
+      await this.#db.batch(statements);
+      return true;
+    } catch (error) {
+      if (String(error).includes("UNIQUE") && String(error).includes("tickflare_stat_awards")) return false;
+      throw error;
+    }
+  }
+
   async stats(playerId: string): Promise<Record<string, number>> {
     await this.migrate();
     const rows = await this.#db
@@ -821,17 +857,19 @@ export class Accounts {
   async #writeStats(playerId: string, values: Record<string, number>, update: string): Promise<void> {
     await this.migrate();
     const now = Date.now();
-    const statements = Object.entries(values).map(([stat, value]) => {
-      checkStat(stat);
-      if (!Number.isFinite(value)) throw new AccountError(400, "invalid_value", `${stat} must be a finite number.`);
-      return this.#db
-        .prepare(
-          `INSERT INTO tickflare_player_stats (player, stat, value, updated_at) VALUES (?, ?, ?, ?)
-           ON CONFLICT (player, stat) DO UPDATE SET value = ${update}, updated_at = excluded.updated_at`,
-        )
-        .bind(playerId, stat, value, now);
-    });
+    const statements = Object.entries(values).map(([stat, value]) => this.#statStatement(playerId, stat, value, update, now));
     if (statements.length > 0) await this.#db.batch(statements);
+  }
+
+  #statStatement(playerId: string, stat: string, value: number, update: string, now: number): D1PreparedStatement {
+    checkStat(stat);
+    if (!Number.isFinite(value)) throw new AccountError(400, "invalid_value", `${stat} must be a finite number.`);
+    return this.#db
+      .prepare(
+        `INSERT INTO tickflare_player_stats (player, stat, value, updated_at) VALUES (?, ?, ?, ?)
+         ON CONFLICT (player, stat) DO UPDATE SET value = ${update}, updated_at = excluded.updated_at`,
+      )
+      .bind(playerId, stat, value, now);
   }
 
   // --- Internals ---------------------------------------------------------------------------

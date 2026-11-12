@@ -327,6 +327,13 @@ describe("stats and leaderboards", () => {
     expect(await accounts.rank(stat, b.id)).toEqual({ rank: 1, value: 30 });
     expect(await accounts.rank(stat, freshName())).toBeNull();
     await expect(accounts.addStats(a.id, { [stat]: Number.NaN })).rejects.toMatchObject({ code: "invalid_value" });
+
+    // Awards count once per key, however often they are retried.
+    const award = [{ player: a.id, add: { [stat]: 5 }, set: { [`${stat}_last`]: 1 } }, { player: c.id, max: { [stat]: 100 } }];
+    expect(await accounts.awardStats(`match-${stat}`, award)).toBe(true);
+    expect(await accounts.awardStats(`match-${stat}`, award)).toBe(false);
+    expect(await accounts.stats(a.id)).toEqual({ [stat]: 20, [`${stat}_last`]: 1 });
+    expect((await accounts.stats(c.id))[stat]).toBe(100);
   });
 });
 
