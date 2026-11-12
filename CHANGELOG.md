@@ -2,8 +2,21 @@
 
 ## Unreleased
 
-- **Rooms write fewer rows.** The tables for timers and for the room's counters are now created without a second index, so setting a timer or saving a ticking room is billed as one row each instead of two. A ticking room's save goes from three rows to two, and a lockstep turn with an order in it from four to three. Rooms that already exist keep the tables they have and behave the same.
-- **Docs:** the home page has a live demo for each sync mode with the real code behind it, and a cost estimator for your own numbers. The costs guide now counts what rooms write to storage, which the first version left out: at a thousand players online around the clock that is about fifty dollars a month more than it said, and for lockstep at an RTS's rate of orders it is most of the bill. It also shows how the design of a game changes its bill.
+**Rooms write far fewer rows**, which is what Cloudflare bills storage by. Nothing changes in how rooms behave or in the API.
+
+| | Before | Now |
+| --- | --- | --- |
+| A lockstep turn with an order in it | 4 rows | 1 |
+| A save of a ticking room | 3 rows | 1 |
+| Setting a timer again | 3 rows | 1 |
+
+- **Lockstep** writes a turn to the recording as it closes, as before, but no longer saves the whole room with it. After a restart the room compares its saved state with the recording, and drops the orders that were waiting when it was last saved if the recording already has them. Orders are still recorded exactly once, and a turn is still in storage before any player is sent it.
+- **The tick counter** is kept in the room's own row instead of a row of its own. Rooms saved by 0.1.0 are picked up where they were.
+- **Timers:** only the timers that changed are written, instead of all of them, and the tables for timers and for the room's small values no longer keep a second index.
+
+For the costs guide's RTS example, 500 half-hour lockstep matches a day, this takes the bill from about $173 a month to $45.
+
+**Docs:** the home page has a live demo for each sync mode with the real code behind it, and a cost estimator for your own numbers whose examples fill in every setting. The costs guide now counts what rooms write to storage, which its first version left out, says how far each kind of game can grow before a rented server costs less, and shows how the design of a game changes its bill.
 
 ## 0.1.0
 

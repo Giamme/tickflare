@@ -1,26 +1,34 @@
 <script setup>
 import {
   PRICES_AS_OF,
+  breakEven,
   breakEvenMovesAMinute,
+  cheaperUpTo,
   dollars,
   estimate,
   millionMessages,
   millionMoves,
   presets,
   roomHour,
+  server,
   tickingHour,
 } from "../.vitepress/theme/costs";
 
 const game = (id) => presets.find((preset) => preset.id === id).game;
+/** The estimator's examples are the size of a new game. The worked examples are ten times that. */
+const grown = (id) => ({ ...game(id), matchesPerDay: game(id).matchesPerDay * 10 });
 const n = (value, digits = 0) => value.toLocaleString("en-US", { maximumFractionDigits: digits });
+const about = (value) => Number(value.toPrecision(2)).toLocaleString("en-US");
 
-const rts = estimate(game("rts"));
-const rtsFewerOrders = estimate({ ...game("rts"), messagesPerMinute: 4 });
-const rtsStateSync = estimate({ ...game("rts"), runs: "sync" });
-const cards = estimate(game("cards"));
-const arena = estimate(game("arena"));
-const battler = estimate(game("rounds"));
-const battlerTicking = estimate({ ...game("rounds"), runs: "sync" });
+const freeAtLaunch = presets.filter((preset) => estimate(preset.game).free).length;
+const rts = estimate(grown("rts"));
+const rtsAsleep = estimate({ ...grown("rts"), runs: "event" });
+const rtsStateSync = estimate({ ...grown("rts"), runs: "sync" });
+const cards = estimate(grown("cards"));
+const arena = estimate(grown("arena"));
+const battler = estimate(grown("rounds"));
+const battlerTicking = estimate({ ...grown("rounds"), runs: "sync" });
+const withClock = breakEven({ timerPerMove: true, saveEverySeconds: 5 });
 const alwaysOn = tickingHour * 730;
 </script>
 
@@ -36,13 +44,13 @@ All prices are published list prices in US dollars, read in {{ PRICES_AS_OF }}. 
 - **A room asleep costs nothing.** In event mode a room sleeps between moves, with its players still connected.
 - **A move in a sleeping room costs about {{ dollars(millionMoves) }} per million**, nearly all of it for saving the move before anyone sees it.
 - **Messages from players cost {{ dollars(millionMessages) }} per million.** Messages to players, and bandwidth, are free.
-- **The paid plan is $5 a month** and includes enough for a small game. Rooms and guests also run on Cloudflare's free plan.
+- **The paid plan is $5 a month** and includes enough for a new game: every example in the estimator below, a few hundred players a day each, costs $5, and {{ freeAtLaunch }} of the {{ presets.length }} fit Cloudflare's free plan.
 
-So a game played in sessions costs by the match: rooms exist while matches do, and an empty evening costs nothing.
+So a game played in sessions costs by the match: rooms exist while matches do, and an empty evening costs nothing. The estimator says how far each game can grow before a rented server would cost less in rent.
 
 ## Your own numbers
 
-Start from an example or type your own. The three boxes in the middle show the same game in each [sync mode](./sync-modes); pick one to see where the money goes.
+Start from an example or type your own; an example fills in every setting. The three boxes in the middle show the same game in each [sync mode](./sync-modes); pick one to see where the money goes.
 
 <CostEstimator />
 
@@ -76,43 +84,43 @@ Reading it for a game:
 - **A request** to a Durable Object is a connection being opened, a timer firing, or 20 messages from players. Cloudflare counts incoming WebSocket messages at 20 to a request.
 - **A GB-second** is one second awake at 1 GB. A room is billed as 128 MB, so an hour awake is 3,600 × 0.128 = 460.8 GB-s, or {{ dollars(roomHour) }}.
 - **Rows written** are the room saving. Measured with Wrangler's local runtime, a room writes:
-  - one row for an accepted move in event mode, and two more if the move sets a timer again, as a turn clock does;
-  - two rows for each save while ticking, every `saveIntervalMs` (five seconds by default);
-  - three rows for each lockstep turn that has something in it: the turn in the recording, and a save. Empty turns write nothing.
+  - one row for an accepted move in event mode, and one more if the move sets a timer again, as a turn clock does;
+  - one row for each save while ticking, every `saveIntervalMs` (five seconds by default);
+  - one row for each lockstep turn that has something in it, in the recording. Empty turns write nothing.
 - **A second awake costs the same as 1.6 rows.** That one comparison decides most of what follows.
 - **The free plan's daily time** is worth about 28 room-hours of real-time play a day. For games that tick, that runs out first; for event-mode games, the 100,000 rows a day do.
 - On the free plan a request gets 10 ms of CPU. Sign-up and sign-in hash a password, which can take longer, so plan on the paid plan if you use [accounts](./accounts). Rooms and guests are not affected.
 
 ## Three games, worked through
 
-Each of these is an example in the estimator above, so you can change one number and see what moves.
+The estimator's examples are the size of a new game, where everything fits inside what the plan includes. These are three of them at ten times that size, where the arithmetic shows.
 
 ### An RTS, played in matches
 
-{{ n(game("rts").matchesPerDay) }} matches a day in [lockstep](./lockstep): eight players, half an hour, each sending an order every five seconds. That is {{ n(rts.matches) }} matches a month, with {{ n(rts.averageOnline) }} players online on average and {{ n(rts.peakOnline) }} at the peak.
+{{ n(grown("rts").matchesPerDay) }} matches a day in [lockstep](./lockstep): eight players, half an hour, each sending an order every five seconds. That is {{ n(rts.matches) }} matches a month, with {{ n(rts.averageOnline) }} players online on average and {{ n(rts.peakOnline) }} at the peak.
 
 - **Time awake.** A room runs for the 1,800 seconds of its match: {{ n(rts.matches) }} × 1,800 × 0.128 = {{ n(rts.gbSeconds) }} GB-s. Less the 400,000 included, at $12.50 per million: **{{ dollars(rts.bill.awake) }}**.
-- **Saving.** A save every five seconds is 720 rows a match. The recording adds three rows for every turn with an order in it: with 1.6 orders a second arriving across ten turns, that is about one turn in seven. Together {{ n(rts.rowsPerMatch) }} rows a match, {{ n(rts.rowsWritten / 1e6, 1) }} million a month. Less the 50 million included, at $1 per million: **{{ dollars(rts.bill.storage) }}**.
+- **Saving.** A save every five seconds is 360 rows a match. The recording adds a row for every turn with an order in it: with 1.6 orders a second arriving across ten turns, that is about one turn in seven. Together {{ n(rts.rowsPerMatch) }} rows a match, {{ n(rts.rowsWritten / 1e6, 1) }} million a month, inside the 50 million included.
 - **Messages.** {{ n(rts.messagesPerMatch) }} a match, counting the hashes the clients report, at 20 to a request: **{{ dollars(rts.bill.messages) }}**.
 
-**Total: about {{ dollars(Math.round(rts.bill.total)) }} a month**, or {{ dollars(rts.perMatch * 1000) }} for each thousand matches beyond that. Two thirds of it is the recording, which is why the [design section](#designing-a-game-that-costs-less) below starts there.
+**Total: about {{ dollars(Math.round(rts.bill.total)) }} a month**, or {{ dollars(rts.perMatch * 1000) }} for each thousand matches beyond that. Nearly all of it is rooms being awake for their matches.
 
 ### A card game
 
-{{ n(game("cards").matchesPerDay) }} matches a day in event mode: two players, ten minutes, a move every twenty seconds each.
+{{ n(grown("cards").matchesPerDay) }} matches a day in event mode: two players, ten minutes, a move every twenty seconds each, on a turn clock.
 
 - **Time awake.** {{ n(cards.messagesPerMatch) }} moves a match at about 0.02 seconds each: the room is awake for {{ n(cards.secondsAwake, 1) }} seconds of its ten minutes. {{ n(cards.gbSeconds) }} GB-s a month, inside the 400,000 included.
-- **Saving.** Three rows a move with a turn clock: {{ n(cards.rowsWritten / 1e6, 1) }} million a month, inside the 50 million included.
+- **Saving.** Two rows a move, the move and the clock: {{ n(cards.rowsWritten / 1e6, 1) }} million a month, inside the 50 million included.
 - **Messages.** {{ n(cards.requests) }} requests a month, inside the million included.
 
-**Total: {{ dollars(cards.bill.total) }} a month**, the plan's base, and it stays there until about nine times as many matches. A thousand more matches cost {{ dollars(cards.perMatch * 1000) }}.
+**Total: {{ dollars(cards.bill.total) }} a month**, the plan's base, and it stays there up to about {{ about(cheaperUpTo(game("cards"), 5)) }} matches a day. A thousand more matches cost {{ dollars(cards.perMatch * 1000) }}.
 
 ### An arena, in hour-long sessions
 
-{{ n(game("arena").matchesPerDay) }} sessions a day in [state sync](./state-sync): ten players for an hour, each steering twice a second. That is {{ n(arena.averageOnline) }} players online on average, in {{ n(arena.roomsAwake) }} rooms.
+{{ n(grown("arena").matchesPerDay) }} sessions a day in [state sync](./state-sync): ten players for an hour, each steering twice a second. That is {{ n(arena.averageOnline) }} players online on average, in {{ n(arena.roomsAwake, 1) }} rooms.
 
 - **Time awake.** {{ n(arena.matches) }} room-hours a month: {{ n(arena.gbSeconds) }} GB-s. Less the 400,000 included: **{{ dollars(arena.bill.awake) }}**.
-- **Saving.** Two rows every five seconds: {{ n(arena.rowsWritten / 1e6, 1) }} million a month, inside the 50 million included.
+- **Saving.** A row every five seconds: {{ n(arena.rowsWritten / 1e6, 1) }} million a month, inside the 50 million included.
 - **Messages.** {{ n(arena.messagesPerMatch) }} a session, at 20 to a request; {{ n(arena.requests / 1e6, 1) }} million requests a month, less the million included: **{{ dollars(arena.bill.messages) }}**.
 
 **Total: about {{ dollars(Math.round(arena.bill.total)) }} a month.**
@@ -130,7 +138,19 @@ One difference runs through all of these. Cloudflare bills for the time rooms ar
 
 ## When a server is cheaper
 
-A room that never stops costs about {{ dollars(alwaysOn) }} a month on Cloudflare. A rented server at $7 to $24 a month costs the same as one to five such rooms. So if your game keeps many rooms running around the clock, and one server can hold them, renting servers is cheaper, and the gap grows with size. Both real-time examples above cost more than the one small server that could hold them.
+A room that never stops costs about {{ dollars(alwaysOn) }} a month on Cloudflare. A rented server at ${{ server.low }} to ${{ server.high }} a month costs the same as one to five such rooms. So if your game keeps many rooms running around the clock, and one server can hold them, renting servers is cheaper, and the gap grows with size.
+
+Where the line falls depends on the game, and the estimator works it out for yours. For the examples:
+
+| | Costs less than a ${{ server.low }} server up to | Less than a ${{ server.high }} one up to |
+| --- | --- | --- |
+| RTS matches, lockstep | {{ about(cheaperUpTo(game("rts"), server.low)) }} matches a day | {{ about(cheaperUpTo(game("rts"), server.high)) }} |
+| Arena sessions, state sync | {{ about(cheaperUpTo(game("arena"), server.low)) }} sessions a day | {{ about(cheaperUpTo(game("arena"), server.high)) }} |
+| Co-op runs, state sync | {{ about(cheaperUpTo(game("coop"), server.low)) }} runs a day | {{ about(cheaperUpTo(game("coop"), server.high)) }} |
+| Auto-battler, event mode | {{ about(cheaperUpTo(game("rounds"), server.low)) }} matches a day | {{ about(cheaperUpTo(game("rounds"), server.high)) }} |
+| Card game, event mode | {{ about(cheaperUpTo(game("cards"), server.low)) }} matches a day | {{ about(cheaperUpTo(game("cards"), server.high)) }} |
+
+Past those sizes the real-time games cost more than the one small server that could hold them: the two worked through above are about twice the price of a typical one.
 
 Cloudflare costs less when rooms are awake a small part of the time:
 
@@ -155,7 +175,7 @@ A room costs only while it runs, so the first thing is to run it only while ther
 
 ### Slow games: do not tick
 
-Below about **{{ breakEvenMovesAMinute }} moves a minute in a room**, a room that sleeps is cheaper than one that ticks, and the slower the game the bigger the difference. An auto-battler where eight players each make two decisions a minute costs {{ dollars(battler.bill.total) }} a month for {{ n(game("rounds").matchesPerDay) }} half-hour matches a day in event mode, and {{ dollars(Math.round(battlerTicking.bill.total)) }} if the room ticks through them.
+Below about **{{ breakEvenMovesAMinute }} moves a minute in a room**, or {{ withClock }} if every move sets a timer, a room that sleeps is cheaper than one that ticks, and the slower the game the bigger the difference. An auto-battler where eight players each make two decisions a minute costs {{ dollars(battler.bill.total) }} a month for {{ n(grown("rounds").matchesPerDay) }} half-hour matches a day in event mode, and {{ dollars(Math.round(battlerTicking.bill.total)) }} if the room ticks through them.
 
 This reaches further than turn-based games. Much of what looks continuous on screen is decided at a few moments: an order is given, a unit arrives, a wave spawns, a round ends. Send what will happen instead of where things are, let every screen animate it, and set a timer for the next moment the room has to decide something:
 
@@ -165,32 +185,25 @@ The room is awake for each order and each arrival, a few hundredths of a second 
 
 ### Fast games: tick, and let the room do the work
 
-Above that rate, tick. A ticking room saves every five seconds however much is going on, so its cost is flat: {{ dollars(tickingHour) }} an hour.
+Above that rate, tick. A ticking room saves on a schedule however much is going on, so its cost is flat: {{ dollars(tickingHour) }} an hour.
 
 - **Fill the rooms.** The room is billed, not the players. Ten players in one room cost a tenth of ten rooms.
 - **Use the time you have paid for.** Tick rate and CPU are not billed, so a busier simulation costs nothing more.
-- **Lengthen `saveIntervalMs`** if losing more than five seconds of a match to a rare restart is acceptable. At 15 seconds a room-hour costs {{ dollars(roomHour + (3600 / 15) * 2 * 1e-6) }}.
+- **Leave `saveIntervalMs` alone** unless you have a reason. A save is one row, so at five seconds saving is a tenth of the room's cost.
 
 ### Lockstep: orders, not clicks
 
-In lockstep every turn with an order in it is saved, so that a recording can never disagree with what the players saw. At the RTS example's rate, that is most of the bill:
-
-| The same {{ n(game("rts").matchesPerDay) }} matches a day | A month |
-| --- | --- |
-| Lockstep, an order every five seconds from each player | {{ dollars(Math.round(rts.bill.total)) }} |
-| Lockstep, an order every fifteen seconds | {{ dollars(Math.round(rtsFewerOrders.bill.total)) }} |
-| State sync, the room running the simulation | {{ dollars(Math.round(rtsStateSync.bill.total)) }} |
+A lockstep room writes one row for each turn with an order in it, before any player is sent that turn, so the recording can never disagree with what the players saw. At the RTS example's rate that is about 3,000 rows a match, which the plan's 50 million a month cover up to roughly 500 matches a day. Past that each thousand matches add about $3 in rows.
 
 - **Send decisions.** Selecting, hovering and camera moves stay on the screen. Only what changes the game goes to the room.
 - **Make one order say more.** "These twelve units attack there" is one order, not twelve. A queue of waypoints is one order.
-- **Consider state sync** if the unit count is modest. The room's CPU is not billed, the same matches cost a third as much, and you get hidden information. Lockstep earns its place with thousands of units, where sending their positions is the problem.
 
-This cost comes from how Tickflare records turns today, three rows for each turn with an order, and not from lockstep itself. Writing the recording with fewer rows is possible and is not built yet.
+What lockstep costs is the same as state sync: the room being awake for the match, {{ dollars(Math.round(rts.bill.total)) }} a month in the example against {{ dollars(Math.round(rtsStateSync.bill.total)) }}. A lockstep room ticks to close its turns even while nobody gives an order. Closing turns by the clock instead, so that the room sleeps between orders as in event mode, would bring the same example to about {{ dollars(rtsAsleep.bill.total) }} a month. Tickflare does not do that yet.
 
 ### Small things
 
 - **Batching messages** is not worth designing for. At {{ dollars(millionMessages) }} per million it matters only for very chatty games.
-- **Timers cost two rows** each time one is set again. A turn clock on every move triples what the move writes; a single deadline for the round does not.
+- **A timer costs a row** each time it is set again. A turn clock on every move doubles what the move writes; a single deadline for the round does not.
 - **Stored data** is 5 GB before it costs anything. Recordings of finished matches belong in R2, where `finishMatch` puts them.
 
 ## Sources

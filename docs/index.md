@@ -131,7 +131,7 @@ npx wrangler dev
 
 ## What it costs
 
-<p class="tf-lede">A room costs under a cent for each hour it runs, and nothing while it sleeps: between turns, between matches, or when it is empty. Bandwidth is free. So a game played in sessions is billed by the match, not by the server. Put in your own numbers.</p>
+<p class="tf-lede">A room costs under a cent for each hour it runs, and nothing while it sleeps: between turns, between matches, or when it is empty. Bandwidth is free. So a game played in sessions is billed by the match, not by the server: at the size of a new game that is $5 a month, or nothing. Pick an example or put in your own numbers.</p>
 
 <CostEstimator />
 

@@ -40,15 +40,16 @@ export const freePlan = {
 export const room = {
   /** How long handling one move keeps a sleeping room awake. Cloudflare's own examples use half this. */
   wakeSeconds: 0.02,
-  /** Rows an accepted move writes in a sleeping room: its state, and a timer set again. */
-  rowsPerMove: 3,
-  /** A ticking room saves every `saveIntervalMs`... */
+  /** Rows an accepted move writes in a sleeping room: its state... */
+  rowsPerMove: 1,
+  /** ...and one more if the move sets a timer again, as a turn clock does. */
+  rowsPerTimer: 1,
+  /** A ticking room saves every `saveIntervalMs`, five seconds unless you change it, and a save is one row. */
   saveEverySeconds: 5,
-  /** ...and a save is this many rows: the state and the tick counter. */
-  rowsPerSave: 2,
-  /** Lockstep turns a second, and the rows a turn with something in it writes: the turn, and a save. */
+  rowsPerSave: 1,
+  /** Lockstep turns a second, and the row a turn with something in it adds to the recording. */
   turnsPerSecond: 10,
-  rowsPerTurn: 3,
+  rowsPerTurn: 1,
   /** A lockstep client reports its hash once in this many turns. */
   hashEveryTurns: 20,
   /** Requests to the Worker for a player to get into a match: an identity, the connection, the odd retry. */
@@ -70,10 +71,15 @@ export const roomHour = 3600 * cloudflare.gb * perGbSecond;
 export const tickingHour = roomHour + (3600 / room.saveEverySeconds) * room.rowsPerSave * perRow;
 /** A million messages from players, as requests alone. */
 export const millionMessages = (1e6 / cloudflare.messagesPerRequest) * perRequest;
-/** A million moves in a sleeping room: the requests, the time awake to handle them, and the rows they write. */
-export const millionMoves = millionMessages + 1e6 * (room.wakeSeconds * cloudflare.gb * perGbSecond + room.rowsPerMove * perRow);
+/** One move in a sleeping room: the request, the time awake to handle it, and the rows it writes. */
+const perMove = (timer: boolean) =>
+  perRequest / cloudflare.messagesPerRequest + room.wakeSeconds * cloudflare.gb * perGbSecond + (room.rowsPerMove + (timer ? room.rowsPerTimer : 0)) * perRow;
+/** A million moves in a sleeping room. */
+export const millionMoves = 1e6 * perMove(false);
 /** Moves a minute in one room above which a ticking room is the cheaper way to run it. */
-export const breakEvenMovesAMinute = Math.round(((tickingHour / 3600) / (millionMoves / 1e6)) * 60);
+export const breakEven = (game: Pick<Game, "timerPerMove" | "saveEverySeconds">): number =>
+  Math.round(((cloudflare.gb * perGbSecond + (room.rowsPerSave * perRow) / game.saveEverySeconds) / perMove(game.timerPerMove)) * 60);
+export const breakEvenMovesAMinute = breakEven({ timerPerMove: false, saveEverySeconds: room.saveEverySeconds });
 
 /** How a room runs: asleep between moves, or ticking for the whole match. */
 export type Runs = "event" | "sync" | "lockstep";
@@ -87,6 +93,10 @@ export interface Game {
   matchMinutes: number;
   /** Messages one player sends in a minute: moves, inputs or orders. */
   messagesPerMinute: number;
+  /** Event mode: every move sets a timer again, as a turn clock does. */
+  timerPerMove: boolean;
+  /** Rooms that tick: seconds between saves, `saveIntervalMs`. */
+  saveEverySeconds: number;
   /** The busiest hour's players over the average. */
   peakFactor: number;
   /** Players one rented server holds at the peak. It depends entirely on the game. */
@@ -151,9 +161,9 @@ export function estimate(game: Game): Estimate {
   let messagesPerMatch = moves;
   if (!ticking) {
     secondsAwake = Math.min(matchSeconds, moves * room.wakeSeconds);
-    rowsPerMatch += moves * room.rowsPerMove;
+    rowsPerMatch += moves * (room.rowsPerMove + (game.timerPerMove ? room.rowsPerTimer : 0));
   } else {
-    rowsPerMatch += (matchSeconds / room.saveEverySeconds) * room.rowsPerSave;
+    rowsPerMatch += (matchSeconds / Math.max(1, game.saveEverySeconds)) * room.rowsPerSave;
     if (game.runs === "lockstep") {
       // A turn is recorded only if something arrived in it. Orders arrive when they like, so
       // the share of turns with one in them follows from how many arrive in a turn on average.
@@ -191,8 +201,11 @@ export function estimate(game: Game): Estimate {
   const options: Option[] = [
     {
       name: "Tickflare on Cloudflare",
-      low: bill.total,
-      note: free ? "This much play also fits Cloudflare's free plan." : "The whole bill: rooms, storage, bandwidth.",
+      low: free ? 0 : bill.total,
+      high: free ? bill.total : undefined,
+      note: free
+        ? "The whole bill. This much play fits Cloudflare's free plan; the paid plan is $5."
+        : "The whole bill: rooms, storage, bandwidth, and nothing to run.",
       ours: true,
     },
     {
@@ -252,6 +265,25 @@ export const server = { low: 7, high: 24 };
 /** Colyseus Cloud's starting price per server. */
 export const colyseusCloud = 15;
 
+/**
+ * The most matches a day at which this game still costs no more than
+ * `monthly` on Cloudflare, with everything else as given. Null if it never
+ * does, or always does.
+ */
+export function cheaperUpTo(game: Game, monthly: number): number | null {
+  const at = (matchesPerDay: number) => estimate({ ...game, matchesPerDay }).bill.total;
+  if (at(0) > monthly) return null;
+  let low = 0;
+  let high = 10_000_000;
+  if (at(high) <= monthly) return null;
+  while (high - low > 1) {
+    const middle = Math.floor((low + high) / 2);
+    if (at(middle) <= monthly) low = middle;
+    else high = middle;
+  }
+  return low;
+}
+
 export interface Preset {
   id: string;
   name: string;
@@ -259,38 +291,39 @@ export interface Preset {
   game: Game;
 }
 
-const assumed = { peakFactor: 3, playersPerServer: 750 };
+const assumed = { timerPerMove: false, saveEverySeconds: room.saveEverySeconds, peakFactor: 3, playersPerServer: 750 };
 
+/** Each is a game a few months after launch: a few hundred players a day. Every setting is filled in. */
 export const presets: Preset[] = [
   {
     id: "rts",
     name: "RTS matches",
-    about: "Eight players, half an hour, an order every five seconds each.",
-    game: { runs: "lockstep", matchesPerDay: 500, playersPerMatch: 8, matchMinutes: 30, messagesPerMinute: 12, ...assumed },
+    about: "50 matches a day. Eight players, half an hour, an order every five seconds each.",
+    game: { ...assumed, runs: "lockstep", matchesPerDay: 50, playersPerMatch: 8, matchMinutes: 30, messagesPerMinute: 12 },
   },
   {
     id: "cards",
     name: "Card game",
-    about: "Two players, ten minutes, a move every twenty seconds each.",
-    game: { runs: "event", matchesPerDay: 1000, playersPerMatch: 2, matchMinutes: 10, messagesPerMinute: 3, ...assumed },
+    about: "300 matches a day. Two players, ten minutes, a move every twenty seconds each, on a turn clock.",
+    game: { ...assumed, runs: "event", matchesPerDay: 300, playersPerMatch: 2, matchMinutes: 10, messagesPerMinute: 3, timerPerMove: true },
   },
   {
     id: "arena",
     name: "Arena sessions",
-    about: "Ten players for an hour, steering twice a second.",
-    game: { runs: "sync", matchesPerDay: 240, playersPerMatch: 10, matchMinutes: 60, messagesPerMinute: 120, ...assumed },
+    about: "25 sessions a day. Ten players for an hour, steering twice a second.",
+    game: { ...assumed, runs: "sync", matchesPerDay: 25, playersPerMatch: 10, matchMinutes: 60, messagesPerMinute: 120 },
   },
   {
     id: "coop",
     name: "Co-op runs",
-    about: "Four players, twenty minutes, an input a second each.",
-    game: { runs: "sync", matchesPerDay: 300, playersPerMatch: 4, matchMinutes: 20, messagesPerMinute: 60, ...assumed },
+    about: "80 runs a day. Four players, twenty minutes, an input a second each.",
+    game: { ...assumed, runs: "sync", matchesPerDay: 80, playersPerMatch: 4, matchMinutes: 20, messagesPerMinute: 60 },
   },
   {
     id: "rounds",
     name: "Auto-battler",
-    about: "Eight players, half an hour, two decisions a minute each; the fights play out on the screens.",
-    game: { runs: "event", matchesPerDay: 500, playersPerMatch: 8, matchMinutes: 30, messagesPerMinute: 2, ...assumed },
+    about: "60 matches a day. Eight players, half an hour, two decisions a minute each; the fights play out on the screens.",
+    game: { ...assumed, runs: "event", matchesPerDay: 60, playersPerMatch: 8, matchMinutes: 30, messagesPerMinute: 2 },
   },
 ];
 

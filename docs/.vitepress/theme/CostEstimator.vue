@@ -8,11 +8,13 @@
 import { computed, reactive } from "vue";
 import {
   PRICES_AS_OF,
-  breakEvenMovesAMinute,
+  breakEven,
+  cheaperUpTo,
   dollars,
   estimate,
   presets,
   runsNames,
+  server,
   type Game,
   type Runs,
 } from "./costs";
@@ -41,6 +43,8 @@ const clean = computed<Game>(() => {
   };
   const tidy = { ...game };
   for (const field of fields) tidy[field.key] = within(game[field.key], field.min, field.max, field.min);
+  tidy.timerPerMove = Boolean(game.timerPerMove);
+  tidy.saveEverySeconds = within(game.saveEverySeconds, 1, 3600, 5);
   tidy.peakFactor = within(game.peakFactor, 1, 50, 3);
   tidy.playersPerServer = within(game.playersPerServer, 1, 100_000, 750);
   return tidy;
@@ -64,17 +68,34 @@ const scale = computed(() => Math.max(...result.value.options.map((option) => op
 const width = (amount: number) => `${Math.max(0.6, (amount / scale.value) * 100)}%`;
 const count = (n: number) => (n >= 100 ? Math.round(n).toLocaleString("en-US") : n >= 10 ? n.toFixed(0) : Number(n.toFixed(1)).toString());
 
+/** How far the game can grow before a rented server costs less in rent. */
+const edge = computed(() => {
+  const total = result.value.bill.total;
+  const about = (matches: number) => Number(matches.toPrecision(2)).toLocaleString("en-US");
+  const cheapest = cheaperUpTo(clean.value, server.low);
+  const typical = cheaperUpTo(clean.value, server.high);
+  if (typical === null) return "At these settings it stays under the price of a rented server however many matches are played.";
+  if (total <= server.low && cheapest !== null) {
+    return `Less than the cheapest server we found (${dollars(server.low)} a month) up to about ${about(cheapest)} matches a day, and less than a typical one (${dollars(server.high)}) up to about ${about(typical)}.`;
+  }
+  if (total <= server.high) {
+    return `More than the cheapest server we found (${dollars(server.low)} a month) at this size, and less than a typical one (${dollars(server.high)}) up to about ${about(typical)} matches a day.`;
+  }
+  return `At this size a rented server costs less in rent: Cloudflare is the cheaper of the two up to about ${about(typical)} matches a day. What it adds beyond that is nothing to run, and rooms near every player.`;
+});
+
 /** Where the money goes for these numbers, and what would change it. */
 const insight = computed(() => {
   const { bill, roomMessagesAMinute, roomsAwake } = result.value;
   const { runs: mode } = clean.value;
   const beyond = bill.total - bill.base;
   const inRoom = `${count(roomMessagesAMinute)} ${roomMessagesAMinute === 1 ? "message" : "messages"} a minute`;
+  const breakEvenMovesAMinute = breakEven(clean.value);
   if (beyond < 0.5) return "All of this fits inside what the plan includes, so the bill is the plan itself.";
 
   if (mode === "event") {
     return roomMessagesAMinute > breakEvenMovesAMinute
-      ? `A sleeping room saves every move, and a room here gets ${inRoom}. Above about ${breakEvenMovesAMinute} a minute, a room that ticks and saves every five seconds costs less.`
+      ? `A sleeping room saves every move, and a room here gets ${inRoom}. Above about ${breakEvenMovesAMinute} a minute, a room that ticks and saves on a schedule costs less.`
       : `Nearly all of this is saving each move as it is made. The rooms are asleep the rest of the time.`;
   }
   if (mode === "lockstep" && bill.storage > bill.awake) {
@@ -82,6 +103,9 @@ const insight = computed(() => {
     return `Most of this is the recording: every turn with an order in it is saved. Orders that say more and come a third as often would bring it to ${dollars(lighter)}.`;
   }
   const asleep = estimate({ ...clean.value, runs: "event" }).bill.total;
+  if (mode === "lockstep") {
+    return `Most of this is ${count(roomsAwake)} rooms awake around the clock, on average. A lockstep room ticks to close its turns for as long as the match lasts, whether or not anyone gives an order.`;
+  }
   if (roomMessagesAMinute < breakEvenMovesAMinute && asleep < bill.total * 0.8) {
     return `Most of this is ${count(roomsAwake)} rooms awake around the clock, on average. A room here gets only ${inRoom}: a game that can run on moves and timers, with no tick, would cost ${dollars(asleep)}.`;
   }
@@ -91,7 +115,8 @@ const insight = computed(() => {
 
 <template>
   <div class="estimator">
-    <div class="pick" role="group" aria-label="Start from an example">
+    <p class="start">Start from an example, or type your own numbers. An example fills in every setting, the ones under "More settings" too.</p>
+    <div class="pick" role="group" aria-label="Examples">
       <button v-for="preset in presets" :key="preset.id" type="button" :aria-pressed="preset === chosen" @click="Object.assign(game, preset.game)">
         {{ preset.name }}
       </button>
@@ -130,6 +155,7 @@ const insight = computed(() => {
         <li v-for="part in parts" :key="part.kind"><i :class="part.kind" />{{ part.name }} <b>{{ dollars(part.amount) }}</b></li>
       </ul>
       <p class="insight">{{ insight }}</p>
+      <p class="edge">{{ edge }}</p>
     </div>
 
     <ul class="options" aria-label="The same game hosted other ways">
@@ -150,8 +176,18 @@ const insight = computed(() => {
     </ul>
 
     <details class="assume">
-      <summary>Two assumptions you can change</summary>
+      <summary>More settings</summary>
       <div class="fields">
+        <label>
+          <span class="label">Seconds between saves</span>
+          <input v-model.number="game.saveEverySeconds" type="number" inputmode="decimal" min="1" max="3600" step="any" />
+          <span class="hint">Rooms that tick: saveIntervalMs</span>
+        </label>
+        <label class="check">
+          <span class="label">A timer on every move</span>
+          <span class="box"><input v-model="game.timerPerMove" type="checkbox" /> {{ game.timerPerMove ? "Yes" : "No" }}</span>
+          <span class="hint">Rooms that sleep: a turn clock</span>
+        </label>
         <label>
           <span class="label">Peak over average</span>
           <input v-model.number="game.peakFactor" type="number" inputmode="decimal" min="1" max="50" step="any" />
@@ -194,6 +230,13 @@ summary:focus-visible {
 }
 
 /* ---- Examples to start from ---- */
+
+.start {
+  margin: 0 0 12px;
+  font-size: 14.5px;
+  line-height: 1.5;
+  color: var(--tf-slate);
+}
 
 .pick {
   display: flex;
@@ -277,6 +320,26 @@ input {
 
 input:hover {
   box-shadow: inset 0 0 0 1.5px var(--tf-wire);
+}
+
+.box {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 43px;
+  font-family: var(--tf-display);
+  font-variation-settings: "CASL" 0.6;
+  font-size: 18px;
+  font-weight: 650;
+  color: var(--tf-ink);
+}
+
+.box input {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  accent-color: var(--tf-ink);
+  box-shadow: none;
 }
 
 .hint {
@@ -465,6 +528,13 @@ input:hover {
   font-weight: 600;
   line-height: 1.45;
   color: var(--tf-ink);
+}
+
+.edge {
+  margin: 8px 0 0;
+  max-width: 46rem;
+  line-height: 1.55;
+  color: var(--tf-slate);
 }
 
 /* ---- Other ways to host it ---- */
