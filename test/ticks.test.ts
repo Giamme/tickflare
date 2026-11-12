@@ -10,11 +10,8 @@ const stubFor = (room: string) => env.TICKS.get(env.TICKS.idFromName(room));
 
 function saved(room: string): Promise<{ count: number; tick: number }> {
   return runInDurableObject(stubFor(room), (_instance, state) => {
-    const row = state.storage.sql.exec<{ state: string }>("SELECT state FROM tickflare_room").one();
-    const tick = state.storage.sql
-      .exec<{ value: string }>("SELECT value FROM tickflare_meta WHERE key = 'tick'")
-      .one();
-    return { count: (JSON.parse(row.state) as TickState).count, tick: Number(tick.value) };
+    const row = state.storage.sql.exec<{ state: string; tick: number }>("SELECT state, tick FROM tickflare_room").one();
+    return { count: (JSON.parse(row.state) as TickState).count, tick: row.tick };
   });
 }
 

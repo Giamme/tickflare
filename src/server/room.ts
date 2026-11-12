@@ -976,7 +976,8 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
       }
     }
     const meta = this.#store.meta();
-    this.#tick = Number(meta.get("tick") ?? 0);
+    // Rooms saved before the counter moved into the room's own row still have it here.
+    this.#tick = Math.max(room?.tick ?? 0, Number(meta.get("tick") ?? 0));
     this.#roomId = meta.get("room") ?? null;
     this.#invited = meta.has("invited") ? (JSON.parse(meta.get("invited")!) as string[]) : null;
     this.#outboxPending = this.#store.hasOutbox();
@@ -1032,8 +1033,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
   }
 
   #persist(seq: number, committed: Committed): void {
-    this.#store.writeRoom({ seq, state: committed.state, roster: committed.roster });
-    if (this.tickRate > 0) this.#store.setMeta("tick", String(this.#tick));
+    this.#store.writeRoom({ seq, state: committed.state, roster: committed.roster, tick: this.#tick });
   }
 
   /** Remembers the id this room is reached under, the first time it hears it. */

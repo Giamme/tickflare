@@ -5,6 +5,8 @@ export interface StoredRoom {
   seq: number;
   state: string;
   roster: string;
+  /** How many times the simulation has ticked. 0 in a room that does not tick. */
+  tick: number;
 }
 
 /** Something a committed hook promised to deliver: a finished match, or a player handed to another room. */
@@ -27,9 +29,9 @@ export interface Forward {
  * together by the runtime.
  *
  * Tables:
- *   tickflare_room      one row: seq, state, seats
+ *   tickflare_room      one row: seq, state, seats, tick counter
  *   tickflare_timers    named timers and when they fire
- *   tickflare_meta      small values by key (tick, room id, invited players)
+ *   tickflare_meta      small values by key (room id, invited players)
  *   tickflare_outbox    deliveries that are owed (finished matches, handovers)
  *   tickflare_arrivals  players another room has handed over, until they connect
  *   tickflare_forwards  players handed to another room, and where they went
@@ -46,9 +48,17 @@ export class RoomStorage {
          id INTEGER PRIMARY KEY CHECK (id = 1),
          seq INTEGER NOT NULL,
          state TEXT NOT NULL,
-         players TEXT NOT NULL
+         players TEXT NOT NULL,
+         tick INTEGER NOT NULL DEFAULT 0
        )`,
     );
+    // The tick counter used to be a row of its own in tickflare_meta, which made every save of a
+    // ticking room two rows. A room that was created before has no column for it yet.
+    try {
+      sql.exec("SELECT tick FROM tickflare_room LIMIT 0");
+    } catch {
+      sql.exec("ALTER TABLE tickflare_room ADD COLUMN tick INTEGER NOT NULL DEFAULT 0");
+    }
     // WITHOUT ROWID: a table keyed by text otherwise keeps a second index, and every write to it is
     // billed as two rows. These two are written on every save and every timer. A room that already
     // has its tables keeps them as they are; they behave the same.
@@ -81,19 +91,21 @@ export class RoomStorage {
 
   room(): StoredRoom | undefined {
     const row = this.#sql
-      .exec<{ seq: number; state: string; players: string }>(
-        "SELECT seq, state, players FROM tickflare_room WHERE id = 1",
+      .exec<{ seq: number; state: string; players: string; tick: number }>(
+        "SELECT seq, state, players, tick FROM tickflare_room WHERE id = 1",
       )
       .toArray()[0];
-    return row && { seq: row.seq, state: row.state, roster: row.players };
+    return row && { seq: row.seq, state: row.state, roster: row.players, tick: row.tick };
   }
 
+  /** One row, whatever changed: this is what a save costs. */
   writeRoom(room: StoredRoom): void {
     this.#sql.exec(
-      "INSERT OR REPLACE INTO tickflare_room (id, seq, state, players) VALUES (1, ?, ?, ?)",
+      "INSERT OR REPLACE INTO tickflare_room (id, seq, state, players, tick) VALUES (1, ?, ?, ?, ?)",
       room.seq,
       room.state,
       room.roster,
+      room.tick,
     );
   }
 
@@ -105,10 +117,15 @@ export class RoomStorage {
       .map((timer) => [timer.name, timer.fire_at]);
   }
 
+  /** Makes the stored timers match `timers`, writing only the ones that differ: reads are all but free, rows written are not. */
   replaceTimers(timers: Iterable<[name: string, firesAt: number]>): void {
-    this.#sql.exec("DELETE FROM tickflare_timers");
-    for (const [name, firesAt] of timers) {
-      this.#sql.exec("INSERT INTO tickflare_timers (name, fire_at) VALUES (?, ?)", name, firesAt);
+    const wanted = new Map(timers);
+    for (const [name, firesAt] of this.timers()) {
+      if (!wanted.has(name)) this.#sql.exec("DELETE FROM tickflare_timers WHERE name = ?", name);
+      else if (wanted.get(name) === firesAt) wanted.delete(name);
+    }
+    for (const [name, firesAt] of wanted) {
+      this.#sql.exec("INSERT OR REPLACE INTO tickflare_timers (name, fire_at) VALUES (?, ?)", name, firesAt);
     }
   }
 

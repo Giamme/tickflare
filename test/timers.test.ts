@@ -105,21 +105,26 @@ describe("timers", () => {
     expect(await runDurableObjectAlarm(stubFor(room))).toBe(false);
   });
 
-  it("is billed one row for setting a timer, and one for the tick counter a save writes", async () => {
-    const { room } = await twoPlayers();
-    // What Cloudflare bills as rows written. A table keyed by text with a row id of its own would make each of these two.
+  it("is billed one row for setting a timer again, and none for one that did not change", async () => {
+    const { room, p1 } = await twoPlayers();
+    p1.command({ type: "timer", name: "turn", ms: 60_000 });
+    await p1.next("ack");
+    p1.command({ type: "timer", name: "round", ms: 90_000 });
+    await p1.next("ack");
+
+    // What Cloudflare bills as rows written, for the statements the room uses.
     const rows = await runInDurableObject(stubFor(room), (_instance, state) => {
       const written = (query: string, ...bindings: (string | number)[]) => {
         const cursor = state.storage.sql.exec(query, ...bindings);
         cursor.toArray();
         return cursor.rowsWritten;
       };
+      const timers = state.storage.sql.exec<{ name: string; fire_at: number }>("SELECT name, fire_at FROM tickflare_timers").toArray();
       return {
-        timer: written("INSERT INTO tickflare_timers (name, fire_at) VALUES (?, ?)", "probe", 1),
-        counter: written("INSERT OR REPLACE INTO tickflare_meta (key, value) VALUES (?, ?)", "probe", "1"),
-        cleared: written("DELETE FROM tickflare_timers WHERE name = ?", "probe") + written("DELETE FROM tickflare_meta WHERE key = ?", "probe"),
+        kept: timers.map((timer) => timer.name).sort(),
+        setAgain: written("INSERT OR REPLACE INTO tickflare_timers (name, fire_at) VALUES (?, ?)", "turn", timers.find((t) => t.name === "turn")!.fire_at),
       };
     });
-    expect(rows).toEqual({ timer: 1, counter: 1, cleared: 2 });
+    expect(rows).toEqual({ kept: ["round", "turn"], setAgain: 1 });
   });
 });

@@ -54,7 +54,7 @@ export abstract class LockstepRoom<Input, Env = Cloudflare.Env> extends Room<
   /** Inputs one player may send within a single turn. More are refused. */
   protected maxInputsPerTurn = 32;
 
-  #caughtUp = false;
+  #resumed = false;
   /** The first hash reported for each recent turn, and who reported it. */
   #hashes = new Map<number, { hash: string; by: string }>();
 
@@ -92,7 +92,32 @@ export abstract class LockstepRoom<Input, Env = Cloudflare.Env> extends Room<
     return reject("invalid_command");
   }
 
+  /**
+   * Squares the saved state with the recording, once, before this instance
+   * adds anything to `pending`.
+   *
+   * A turn is written to the recording as it closes; the room itself is
+   * saved less often. So after a restart the recording can be ahead of the
+   * saved state. Whatever was waiting when that state was saved went into
+   * the first turn that closed after it: if the recording has a later turn,
+   * those entries are in it already, and are dropped here instead of being
+   * recorded twice.
+   */
+  #resume(): void {
+    if (this.#resumed) return;
+    this.#resumed = true;
+    const last = this.#turns()
+      .exec<{ n: number; entries: string }>("SELECT n, entries FROM tickflare_turns ORDER BY n DESC LIMIT 1")
+      .toArray()[0];
+    if (last && last.n > this.state.turn) {
+      this.state.turn = last.n; // Never reuse a number.
+      this.state.entries = JSON.parse(last.entries) as TurnEntry<Input>[];
+      this.state.pending = [];
+    }
+  }
+
   protected onCommand(player: Player, command: LockstepCommand<Input>): void {
+    this.#resume();
     if (command.k === "i") {
       const waiting = this.state.pending.filter((entry) => entry.player === player.id && entry.input !== undefined);
       if (waiting.length >= this.maxInputsPerTurn) reject("too_many_inputs");
@@ -119,34 +144,38 @@ export abstract class LockstepRoom<Input, Env = Cloudflare.Env> extends Room<
   }
 
   protected override onJoin(player: Player): void {
+    this.#resume();
     this.state.pending.push({ player: player.id, event: "join" });
   }
 
   /** Every way of losing a seat ends here, so every simulation hears about it. */
   protected override removePlayer(playerId: string, reason?: string): void {
     if (this.players.some((player) => player.id === playerId)) {
+      this.#resume();
       this.state.pending.push({ player: playerId, event: "leave" });
     }
     super.removePlayer(playerId, reason);
   }
 
   protected override onDisconnect(player: Player): void {
+    this.#resume();
     this.state.pending.push({ player: player.id, event: "disconnect" });
   }
 
   protected override onReconnect(player: Player): void {
+    this.#resume();
     this.state.pending.push({ player: player.id, event: "reconnect" });
   }
 
-  /** Closes the turn: whatever arrived since the last one becomes this turn's entries. */
+  /**
+   * Closes the turn: whatever arrived since the last one becomes this turn's
+   * entries. A turn with something in it is one row in the recording, written
+   * before any player is sent it; `#resume` is what lets the room itself be
+   * saved on its usual schedule instead of with every turn.
+   */
   protected override onTick(): void {
+    this.#resume();
     const state = this.state;
-    if (!this.#caughtUp) {
-      // After a crash the saved turn counter can be behind the recording. Never reuse a number.
-      const last = this.#turns().exec<{ n: number | null }>("SELECT MAX(n) AS n FROM tickflare_turns").one().n;
-      if (last !== null && last > state.turn) state.turn = last;
-      this.#caughtUp = true;
-    }
     state.turn += 1;
     state.entries = state.pending;
     state.pending = [];
@@ -156,8 +185,6 @@ export abstract class LockstepRoom<Input, Env = Cloudflare.Env> extends Room<
         state.turn,
         JSON.stringify(state.entries),
       );
-      // The recording and the room go to storage together, or a restart would record these entries twice.
-      this.saveNow();
     }
   }
 

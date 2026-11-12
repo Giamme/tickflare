@@ -60,6 +60,80 @@ describe("a lockstep room that is torn down", () => {
     );
     expect(joins).toHaveLength(1);
   });
+
+  it("has recorded an order once, though the room itself was not saved after it", async () => {
+    const room = freshRoom();
+    const p1 = await follow<LockstepView<TurnInput>>("/turns", room, "p1");
+    await until(() => p1.tick >= 3);
+    p1.send({ k: "i", d: { type: "add", n: 7 } });
+    await until(() => [...p1.history.values()].some((view) => view.entries.some((entry) => entry.input?.n === 7)), "the order's turn");
+    const orderedAt = [...p1.history.values()].find((view) => view.entries.some((entry) => entry.input?.n === 7))!.turn;
+
+    // The turn is in the recording; the room's own row still says what it said when p1 sat down.
+    const stub = env.TURNS.get(env.TURNS.idFromName(room));
+    await abortAllDurableObjects();
+    const stored = await runInDurableObject(stub, (_instance, state) => ({
+      saved: (JSON.parse(state.storage.sql.exec<{ state: string }>("SELECT state FROM tickflare_room").one().state) as { turn: number }).turn,
+      recorded: state.storage.sql.exec<{ n: number }>("SELECT MAX(n) AS n FROM tickflare_turns").one().n,
+    }));
+    expect(stored.saved).toBeLessThan(orderedAt);
+    expect(stored.recorded).toBe(orderedAt);
+
+    const back = await follow<LockstepView<TurnInput>>("/turns", room, "p1");
+    await until(() => back.state!.turn >= orderedAt + 5, "the turns after the order's");
+
+    const response = await exports.default.fetch(`https://tickflare.test/turns/${room}/replay?player=p1`);
+    const replay = (await response.json()) as Replay<TurnInput>;
+    const all = replay.turns.flatMap(([turn, entries]) => entries.map((entry) => `${turn}:${entry.event ?? `add ${entry.input?.n}`}`));
+    expect(all.filter((entry) => entry.endsWith(":join"))).toHaveLength(1);
+    expect(all.filter((entry) => entry.endsWith("add 7"))).toEqual([`${orderedAt}:add 7`]);
+    // No turn number is used twice: p1 coming back is recorded after the order, not over it.
+    const numbers = replay.turns.map(([turn]) => turn);
+    expect(numbers).toEqual([...new Set(numbers)].sort((a, b) => a - b));
+    expect(Number(all.find((entry) => entry.endsWith(":reconnect"))!.split(":")[0])).toBeGreaterThan(orderedAt);
+  });
+
+  it("writes one row for a turn with an order in it, and none for the room", async () => {
+    const room = freshRoom();
+    const p1 = await follow<LockstepView<TurnInput>>("/turns", room, "p1");
+    await until(() => p1.tick >= 3);
+    const stub = env.TURNS.get(env.TURNS.idFromName(room));
+    const seq = () => runInDurableObject(stub, (_instance, state) => state.storage.sql.exec<{ seq: number }>("SELECT seq FROM tickflare_room").one().seq);
+    const before = await seq();
+    p1.send({ k: "i", d: { type: "add", n: 1 } });
+    await until(() => [...p1.history.values()].some((view) => view.entries.some((entry) => entry.input?.n === 1)), "the order's turn");
+    // The room's row has not been written again: its sequence number is the one from before the order.
+    expect(await seq()).toBe(before);
+  });
+});
+
+describe("a room saved before the tick counter moved into its row", () => {
+  it("carries on from the counter it had", async () => {
+    const room = freshRoom();
+    const stub = env.TICKS.get(env.TICKS.idFromName(room));
+    const p1 = await follow<TickState>("/ticks", room, "p1");
+    await until(() => p1.tick >= 10);
+    p1.ws.close(1000, "bye");
+    await sleep(250);
+
+    const kept = await runInDurableObject(stub, (_instance, state) => {
+      const sql = state.storage.sql;
+      const now = {
+        column: sql.exec<{ tick: number }>("SELECT tick FROM tickflare_room").one().tick,
+        rows: sql.exec("SELECT 1 FROM tickflare_meta WHERE key = 'tick'").toArray().length,
+      };
+      // Put the room back the way 0.1.0 stored it.
+      sql.exec("ALTER TABLE tickflare_room DROP COLUMN tick");
+      sql.exec("INSERT OR REPLACE INTO tickflare_meta (key, value) VALUES ('tick', '5000')");
+      return now;
+    });
+    expect(kept.column).toBeGreaterThanOrEqual(10);
+    expect(kept.rows).toBe(0);
+
+    await abortAllDurableObjects();
+    const back = await follow<TickState>("/ticks", room, "p1");
+    expect(back.tick).toBeGreaterThanOrEqual(5000);
+  });
 });
 
 describe("a room woken by something other than a socket", () => {
