@@ -17,17 +17,33 @@ const PLAYER_NAME = /^[^\p{Cc}]{1,64}$/u;
  * Who `authenticate` found: a player id, or a player id with a display name.
  * A name reaches the room's hooks as `player.name`.
  */
-export type Authenticated = string | { id: string; name?: string };
+export type Authenticated =
+  | string
+  | {
+      /** The player id. */
+      id: string;
+      /** A display name, e.g. the account name. */
+      name?: string;
+    };
 
 /**
  * The part of a Durable Object namespace Tickflare needs to reach rooms and
  * matchmakers. Any namespace binding fits, e.g. `env.ROOMS`.
  */
 export interface RoomNamespace {
+  /** The id of the object with this name. */
   idFromName(name: string): DurableObjectId;
-  get(id: DurableObjectId, options?: DurableObjectNamespaceGetDurableObjectOptions): { fetch(request: Request): Promise<Response> };
+  /** A stub for the object with this id. */
+  get(
+    id: DurableObjectId,
+    options?: DurableObjectNamespaceGetDurableObjectOptions,
+  ): {
+    /** Sends the object a request. */
+    fetch(request: Request): Promise<Response>;
+  };
 }
 
+/** How `routeToRoom` finds rooms and decides who may connect. */
 export interface RouteOptions {
   /** Durable Object namespace of your `Room` class, e.g. `env.ROOMS`. */
   rooms: RoomNamespace;
@@ -105,6 +121,7 @@ function identityHeaders(request: Request, identity: { id: string; name?: string
   return headers;
 }
 
+/** How `routeToMatchmaker` finds queues and decides who may join them. */
 export interface MatchmakerRouteOptions {
   /** Durable Object namespace of your `Matchmaker` class, e.g. `env.MATCHMAKERS`. Each queue is one object in it. */
   matchmakers: RoomNamespace;

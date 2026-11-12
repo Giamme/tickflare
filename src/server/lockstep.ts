@@ -2,15 +2,28 @@ import type { LockstepView, Replay, TurnEntry } from "../lockstep.js";
 import type { Player } from "../protocol.js";
 import { Room, reject } from "./room.js";
 
-interface LockstepState<Input> extends LockstepView<Input> {
+/** What a lockstep room keeps: what clients see, and the inputs waiting for the next turn. */
+export interface LockstepState<Input> extends LockstepView<Input> {
   /** Inputs and events waiting for the next turn. Not sent to clients. */
   pending: TurnEntry<Input>[];
 }
 
-type LockstepCommand<Input> =
-  | { k: "i"; d: Input }
-  /** A client's hash of its simulation after turn `n`. */
-  | { k: "h"; n: number; h: string };
+/** What a `LockstepClient` sends: an input (`i`), or its simulation's hash after turn `n` (`h`). */
+export type LockstepCommand<Input> =
+  | {
+      /** An input. */
+      k: "i";
+      /** The input, before `parseInput`. */
+      d: Input;
+    }
+  | {
+      /** A hash of the client's simulation. */
+      k: "h";
+      /** The turn the simulation was at. */
+      n: number;
+      /** The hash. */
+      h: string;
+    };
 
 /** How many turns' worth of reported hashes are kept for comparison. */
 const HASHES_KEPT = 128;

@@ -77,6 +77,7 @@ export class TestRoom extends Room<TestState, TestCommand> {
   protected override onJoin(player: Player): void {
     if (player.id === "banned") reject("not_welcome");
     this.state.log.push(`join:${player.id}`);
+    if (this.invited) this.state.log.push(`invited:${this.invited.join(",")}`);
   }
 
   protected override onDisconnect(player: Player): void {

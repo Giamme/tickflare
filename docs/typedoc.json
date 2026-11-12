@@ -1,0 +1,45 @@
+{
+  "$schema": "https://typedoc.org/schema.json",
+  "entryPoints": [
+    "../src/server/index.ts",
+    "../src/client/index.ts"
+  ],
+  "tsconfig": "./tsconfig.json",
+  "out": "./api",
+  "plugin": [
+    "typedoc-plugin-markdown",
+    "typedoc-vitepress-theme"
+  ],
+  "docsRoot": ".",
+  "readme": "none",
+  "excludePrivate": true,
+  "excludeProtected": false,
+  "excludeInternal": true,
+  "excludeExternals": true,
+  "sort": [
+    "source-order"
+  ],
+  "entryFileName": "index",
+  "outputFileStrategy": "members",
+  "hidePageHeader": true,
+  "hideBreadcrumbs": true,
+  "useCodeBlocks": true,
+  "expandObjects": true,
+  "parametersFormat": "table",
+  "interfacePropertiesFormat": "table",
+  "classPropertiesFormat": "table",
+  "typeDeclarationFormat": "table",
+  "sidebar": {
+    "autoConfiguration": true,
+    "pretty": true,
+    "collapsed": true
+  },
+  "validation": {
+    "notExported": true,
+    "invalidLink": true,
+    "notDocumented": true
+  },
+  "treatValidationWarningsAsErrors": true,
+  "gitRevision": "main",
+  "sourceLinkTemplate": "https://github.com/Giamme/tickflare/blob/main/{path}#L{line}"
+}

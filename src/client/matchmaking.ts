@@ -1,6 +1,7 @@
 import { PING, type MatchFound } from "../protocol.js";
 import { roomIn, withFreshToken, type TokenSource } from "./token.js";
 
+/** How long to wait and how to authenticate. Both are optional. */
 export interface FindMatchOptions {
   /** Abort to stop waiting. The promise then rejects with the signal's reason. */
   signal?: AbortSignal;

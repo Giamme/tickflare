@@ -2,7 +2,7 @@
 
 ## 0.1.0
 
-The first version with documentation of its own, at the docs site built from [`docs/`](docs). The API had grown one roadmap step at a time; this release smooths the places where that showed. It breaks code written for 0.0 in the ways listed below, each a small change.
+The first version with documentation of its own, at the docs site built from [`docs/`](https://github.com/Giamme/tickflare/tree/main/docs). The API had grown one roadmap step at a time; this release smooths the places where that showed. It breaks code written for 0.0 in the ways listed below, each a small change.
 
 ### Upgrading from 0.0
 
@@ -23,7 +23,7 @@ protected override async relay(roomId: string, data: unknown) {
 protected override rooms = this.env.ROOMS;
 ```
 
-`handOver()` and `relay()` can still be overridden, for rooms spread over more than one namespace.
+For rooms spread over more than one namespace, override `roomsFor(roomId)` to return the right one.
 
 **Matchmakers** no longer implement `reserveRoom()`. Set `rooms` the same way:
 
@@ -54,7 +54,7 @@ Recordings are now format version 2. `runReplay` still reads version 1 recording
 
 **The RPC methods rooms call on each other**, `arrive()`, `hear()` and `reserve()`, are now one method, `tickflare()`. You only called them from the overrides that are no longer needed. Don't give a method of your own that name.
 
-**`RoomClient` and `LockstepClient` properties are read-only.** `state`, `seq`, `tick`, `tickRate`, `you`, `players` and `status` on `RoomClient`, and `sim`, `turn` and `ready` on `LockstepClient`, are getters now. Code that only read them is unaffected.
+**`RoomClient`, `LockstepClient` and `AccountClient` properties are read-only.** `state`, `seq`, `tick`, `tickRate`, `you`, `players` and `status` on `RoomClient`, and `sim`, `turn` and `ready` on `LockstepClient`, are getters now, as is `account` on `AccountClient`. Code that only read them is unaffected.
 
 ### New
 
@@ -62,4 +62,6 @@ Recordings are now format version 2. `runReplay` still reads version 1 recording
 - `findMatch` takes a `token` source, like `RoomClient` does.
 - `findMatch` gives up on a queue that turns it away before the socket opens, instead of waiting for ever under Node.
 - `CloseDetail` names the `{ code, reason }` that status callbacks receive.
+- A room's `invited` lists the players a matchmaker reserved it for, so it can start once they are all there.
+- Every protocol frame has a named type (`WelcomeFrame`, `PatchFrame`, …), and `act` resolves to the named `ActOutcome`.
 - `npm install github:Giamme/tickflare` builds the package on install.

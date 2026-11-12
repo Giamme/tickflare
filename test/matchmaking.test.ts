@@ -69,7 +69,10 @@ describe("matchmaker", () => {
     expect(await stranger.closed).toEqual({ code: CloseCode.JoinRejected, reason: "not_invited" });
 
     const seated = await connect(room, "a");
-    expect((await seated.next("welcome")).you).toBe("a");
+    const welcome = await seated.next("welcome");
+    expect(welcome.you).toBe("a");
+    // The room knows whom it was reserved for, so it can tell when everyone is there.
+    expect((welcome.state as { log: string[] }).log).toEqual(["join:a", "invited:a,b"]);
   });
 
   it("keeps separate queues apart", async () => {

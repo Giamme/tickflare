@@ -21,6 +21,7 @@ export interface DataPolicy {
   write?: "owner" | "server";
 }
 
+/** How `Accounts` behaves. Only `secret` is required. */
 export interface AccountsOptions {
   /** Signs guest and join tokens. The same secret `tokenAuth` uses. At least 16 characters. */
   secret: string;
@@ -71,41 +72,61 @@ export interface AccountsOptions {
 
 /** Who is behind a request. */
 export interface Identity {
+  /** The player id: the account's, or the guest's. */
   id: string;
   /** The account name, or undefined for a guest without an account. */
   name?: string;
+  /** True for a guest without an account. */
   guest: boolean;
 }
 
 /** What anyone may see of a player. */
 export interface PublicProfile {
+  /** The player id. */
   id: string;
+  /** The account name. */
   name: string;
+  /** When the account was made, in epoch milliseconds. */
   createdAt: number;
   /** The data keys whose policy is `read: "public"`. */
   data: Record<string, unknown>;
+  /** Every stat the player has. */
   stats: Record<string, number>;
 }
 
 /** What a player sees of their own account. */
 export interface OwnAccount {
+  /** The player id. */
   id: string;
+  /** The account name. */
   name: string;
+  /** The email address, if one was given. */
   email: string | null;
+  /** When the account was made, in epoch milliseconds. */
   createdAt: number;
+  /** Every data key the player has, private ones included. */
   data: Record<string, unknown>;
+  /** Every stat the player has. */
   stats: Record<string, number>;
 }
 
+/** One line of a leaderboard. */
 export interface LeaderboardEntry {
+  /** 1 for the highest value. Players with the same value share a rank. */
   rank: number;
+  /** The player id. */
   id: string;
+  /** The account name. */
   name: string;
+  /** The player's value of the stat. */
   value: number;
 }
 
+/** A page of a leaderboard, highest value first. */
 export interface LeaderboardPage {
+  /** The stat it ranks. */
   stat: string;
+  /** This page's lines. */
   entries: LeaderboardEntry[];
   /** Players with a value for this stat, in total. */
   total: number;
@@ -113,11 +134,15 @@ export interface LeaderboardPage {
 
 /** An account taken over from another service. See `Accounts.importAccount`. */
 export interface ImportedAccount {
+  /** The player id to keep, so references to it elsewhere stay valid. */
   id: string;
+  /** The account name. It must follow the name rules and be free. */
   name: string;
+  /** The email address, if there is one. */
   email?: string | null;
   /** A hash `verifyImportedPassword` understands. */
   passwordHash: string;
+  /** When the account was made, in epoch milliseconds. Defaults to now. */
   createdAt?: number;
 }
 
@@ -184,15 +209,29 @@ const ready = new WeakSet<D1Database>();
 
 /** Raised for requests that cannot be done. `status` is the HTTP status the API answers with. */
 export class AccountError extends Error {
-  constructor(
-    readonly status: number,
-    readonly code: string,
-    message: string,
-  ) {
+  /** The HTTP status the API answers with, e.g. 409. */
+  readonly status: number;
+  /** Machine-readable, e.g. `name_taken` or `invalid_credentials`. */
+  readonly code: string;
+
+  constructor(status: number, code: string, message: string) {
     super(message);
+    this.status = status;
+    this.code = code;
   }
 }
 
+/**
+ * A small player backend on D1: accounts with a name and a password,
+ * sessions, guests who can sign up without losing what they earned,
+ * per-player data, stats and leaderboards, public profiles, and a player's
+ * right to download or delete everything about them.
+ *
+ * Make one per request; it holds no state of its own beyond its options.
+ *
+ *     const accounts = new Accounts(env.DB, { secret: env.JOIN_SECRET });
+ *     return (await accounts.route(request)) ?? new Response("Not found", { status: 404 });
+ */
 export class Accounts {
   readonly #db: D1Database;
   readonly #secret: string;
@@ -706,6 +745,7 @@ export class Accounts {
 
   // --- Player data ----------------------------------------------------------------------
 
+  /** The value a player has under `key`, or undefined. Server code reads every key, whatever its policy. */
   async getData(playerId: string, key: string): Promise<unknown> {
     checkKey(key);
     await this.migrate();
@@ -742,6 +782,7 @@ export class Accounts {
     }
   }
 
+  /** Removes a player's value under `key`. Does nothing if there is none. */
   async deleteData(playerId: string, key: string): Promise<void> {
     checkKey(key);
     await this.migrate();
@@ -805,6 +846,7 @@ export class Accounts {
     }
   }
 
+  /** Every stat a player has. */
   async stats(playerId: string): Promise<Record<string, number>> {
     await this.migrate();
     const rows = await this.#db
@@ -866,7 +908,7 @@ export class Accounts {
   }
 
   /** A player's place on a leaderboard, or null if they have no value for that stat. */
-  async rank(stat: string, playerId: string): Promise<{ rank: number; value: number } | null> {
+  async rank(stat: string, playerId: string): Promise<Pick<LeaderboardEntry, "rank" | "value"> | null> {
     checkStat(stat);
     await this.migrate();
     const row = await this.#db
@@ -1045,6 +1087,7 @@ export async function hashPassword(password: string, iterations = PBKDF2_ITERATI
   return `pbkdf2$sha256$${iterations}$${toBase64Url(salt)}$${toBase64Url(hash)}`;
 }
 
+/** Whether `password` matches a hash made by `hashPassword`, in constant time. */
 export async function verifyPassword(stored: string, password: string): Promise<boolean> {
   const [scheme, digest, iterations, salt, hash] = stored.split("$");
   if (scheme !== "pbkdf2" || digest !== "sha256" || !iterations || !salt || !hash) return false;

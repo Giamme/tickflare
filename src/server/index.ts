@@ -1,5 +1,13 @@
-export { Room, Rejection, reject } from "./room.js";
-export { LockstepRoom } from "./lockstep.js";
+/**
+ * The server side: rooms, the gateway, join tokens, accounts, matchmaking,
+ * match results and the helpers for worlds split across rooms. Runs in a
+ * Cloudflare Worker.
+ *
+ * @packageDocumentation
+ * @module tickflare
+ */
+export { Room, Rejection, reject, type ActOutcome } from "./room.js";
+export { LockstepRoom, type LockstepCommand, type LockstepState } from "./lockstep.js";
 export {
   runReplay,
   seededRandom,
@@ -17,7 +25,7 @@ export {
   type TokenAuthOptions,
   type VerifiedJoinToken,
 } from "./tokens.js";
-export { cellOf, shardFor } from "../world.js";
+export { cellOf, shardFor, type Cell } from "../world.js";
 export { MATCHES_SCHEMA, recentMatches, recordMatches, type MatchRecord } from "./matches.js";
 export {
   ACCOUNTS_SCHEMA,
@@ -49,9 +57,19 @@ export { applyPatch, diff, type Patch } from "../patch.js";
 export {
   CloseCode,
   PROTOCOL_VERSION,
+  type AckFrame,
   type ClientMessage,
+  type CommandFrame,
+  type ErrorFrame,
+  type LeaveFrame,
   type MatchFound,
   type MatchResult,
+  type MessageFrame,
+  type PatchFrame,
   type Player,
+  type PresenceFrame,
+  type RejectFrame,
   type ServerMessage,
+  type StateFrame,
+  type WelcomeFrame,
 } from "../protocol.js";

@@ -23,21 +23,31 @@ export interface LockstepView<Input = unknown> {
   /** What happened in the latest turn, in the order every client must apply it. */
   entries: TurnEntry<Input>[];
   /** Set once two players reported different hashes for the same turn. */
-  desync: { turn: number } | null;
+  desync: {
+    /** The first turn two players' hashes differed on. */
+    turn: number;
+  } | null;
 }
 
 /** Everything needed to run a match again: the seed and every turn in which something happened. */
 export interface Replay<Input = unknown> {
   /** Format version. Recordings made before 0.1 are version 1; `runReplay` reads both. */
   v: 2;
+  /** The simulation's seed. */
   seed: number;
   /** Turns per second. */
   turnRate: number;
   /** The last turn of the recording. Turns missing from `turns` were empty. */
   turn: number;
+  /** Every turn in which something happened, in order, with what happened in it. */
   turns: [turn: number, entries: TurnEntry<Input>[]][];
 }
 
+/**
+ * A deterministic game: how to start it from a seed and how to advance it by
+ * one turn. Clients run it live with `LockstepClient`; `runReplay` runs it
+ * over a recording.
+ */
 export interface Simulation<Input, Sim> {
   /** Build the simulation at turn 0. Everything random must come from `seed`. */
   create(seed: number): Sim;

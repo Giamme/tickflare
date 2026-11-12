@@ -9,6 +9,7 @@ import { RoomClient, type CloseDetail, type ConnectionStatus } from "./index.js"
 import { TurnPacer } from "./pacer.js";
 import { roomIn, withFreshToken, type TokenSource } from "./token.js";
 
+/** The simulation to run, what to report and how to connect. `create` and `step` are required. */
 export interface LockstepClientOptions<Input, Sim> extends Simulation<Input, Sim> {
   /**
    * A fingerprint of the simulation. When given, it is sent to the room every
@@ -30,6 +31,7 @@ export interface LockstepClientOptions<Input, Sim> extends Simulation<Input, Sim
   onReady?(sim: Sim, turn: number): void;
   /** Two players' simulations differed at `turn`. */
   onDesync?(turn: number): void;
+  /** The connection's status changed: see `RoomClientOptions.onStatus`. */
   onStatus?(status: ConnectionStatus, detail?: CloseDetail): void;
   /**
    * Supplies the join token, instead of putting one in the URL: see
@@ -106,10 +108,12 @@ export class LockstepClient<Input = unknown, Sim = unknown> {
     return this.#ready;
   }
 
+  /** Where the connection stands. */
   get status(): ConnectionStatus {
     return this.#room.status;
   }
 
+  /** This player's id, as the server knows it. Set once connected. */
   get you(): string | undefined {
     return this.#room.you;
   }
@@ -119,10 +123,12 @@ export class LockstepClient<Input = unknown, Sim = unknown> {
     return this.#room.send({ k: "i", d: input });
   }
 
+  /** Give up the seat. Every simulation sees the player leave in the same turn. See `RoomClient.leave`. */
   leave(): Promise<void> {
     return this.#room.leave();
   }
 
+  /** Close the connection for good, keeping the seat. No reconnect follows. */
   close(): void {
     this.#pacer?.clear();
     this.#room.close();

@@ -1,0 +1,20 @@
+{
+  "name": "tickflare-docs",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "api": "typedoc && node -e \"require('node:fs').copyFileSync('.vitepress/api-index.md', 'api/index.md')\"",
+    "dev": "npm run api && vitepress dev",
+    "build": "npm run api && vitepress build",
+    "preview": "vitepress preview"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261110.1",
+    "typedoc": "^0.28.20",
+    "typedoc-plugin-markdown": "^4.14.1",
+    "typedoc-vitepress-theme": "^1.1.4",
+    "typescript": "~5.9.3",
+    "vitepress": "^1.6.4",
+    "wrangler": "^4.160.1"
+  }
+}

@@ -76,6 +76,7 @@ export abstract class Matchmaker<Env = Cloudflare.Env> extends DurableObject<Env
     await stub.tickflare({ op: "reserve", roomId, players });
   }
 
+  /** Durable Object entry point for players joining the queue. Tickflare's: don't override it. */
   override async fetch(request: Request): Promise<Response> {
     if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
       return new Response("Expected a WebSocket upgrade", { status: 426 });
@@ -106,6 +107,7 @@ export abstract class Matchmaker<Env = Cloudflare.Env> extends DurableObject<Env
     return new Response(null, { status: 101, webSocket: pair[0] });
   }
 
+  /** Durable Object entry point for players leaving the queue. Tickflare's: don't override it. */
   override webSocketClose(ws: WebSocket, code: number, reason: string): void {
     try {
       ws.close(code === 1005 || code === 1006 ? 1000 : code, reason);

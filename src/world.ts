@@ -13,8 +13,16 @@ export function shardFor(x: number, y: number, cellSize: number, world = "world"
   return `${world}_${Math.floor(x / cellSize)}_${Math.floor(y / cellSize)}`;
 }
 
+/** A cell of a world cut into squares: its column and row. */
+export interface Cell {
+  /** Column: 0 holds x from 0 up to `cellSize`, -1 the column before it. */
+  cx: number;
+  /** Row: 0 holds y from 0 up to `cellSize`, -1 the row before it. */
+  cy: number;
+}
+
 /** The cell a shard id stands for, or undefined if it is not one of `world`'s. */
-export function cellOf(shardId: string, world = "world"): { cx: number; cy: number } | undefined {
+export function cellOf(shardId: string, world = "world"): Cell | undefined {
   const match = /^(.*)_(-?\d+)_(-?\d+)$/.exec(shardId);
   if (!match || match[1] !== world) return undefined;
   return { cx: Number(match[2]), cy: Number(match[3]) };

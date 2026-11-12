@@ -32,7 +32,9 @@
     "prepare": "npm run build",
     "build:example": "esbuild src/client/index.ts --bundle --format=esm --outfile=examples/tic-tac-toe/public/tickflare-client.js && esbuild src/client/index.ts --bundle --format=esm --outfile=examples/arena/public/tickflare-client.js && esbuild src/client/index.ts --bundle --format=esm --outfile=examples/skirmish/public/tickflare-client.js && esbuild src/client/index.ts --bundle --format=esm --outfile=examples/ranked/public/tickflare-client.js",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "docs:dev": "npm --prefix docs install && npm --prefix docs run dev",
+    "docs:build": "npm --prefix docs ci && npm --prefix docs run build"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "^1.7.0",

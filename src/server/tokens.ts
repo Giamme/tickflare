@@ -11,6 +11,7 @@
 
 import type { Authenticated } from "./gateway.js";
 
+/** What a join token says. See `createJoinToken`. */
 export interface JoinTokenClaims {
   /** The player this token speaks for. */
   player: string;
@@ -25,11 +26,15 @@ export interface JoinTokenClaims {
   expiresIn?: number;
 }
 
+/** What a valid join token said. See `verifyJoinToken`. */
 export interface VerifiedJoinToken {
+  /** The player it speaks for. */
   player: string;
+  /** The account name, if it carried one. */
   name?: string;
+  /** The room or queue it is limited to, if any. */
   scope?: string;
-  /** Epoch seconds. */
+  /** When it stops working, in epoch seconds. */
   expiresAt: number;
 }
 
@@ -93,6 +98,7 @@ export async function verifyJoinToken(
   }
 }
 
+/** How `tokenAuth` checks tokens. */
 export interface TokenAuthOptions {
   /** The signing secret, e.g. `env.JOIN_SECRET`. At least 16 characters. */
   secret: string;

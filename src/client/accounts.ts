@@ -5,6 +5,7 @@ import type { TokenSource } from "./token.js";
  * that, the player's own data, profiles and leaderboards.
  */
 
+/** Where the accounts API is and how the session travels. Every option has a default. */
 export interface AccountClientOptions {
   /** Where the Worker is, e.g. "https://game.example.com". Defaults to the page's own origin. */
   baseUrl?: string;
@@ -27,52 +28,92 @@ export interface AccountClientOptions {
   fetch?: typeof fetch;
 }
 
+/** The signed-in player's own account, as `GET /me` returns it. */
 export interface Account {
+  /** The player id. A guest who registered keeps theirs. */
   id: string;
+  /** The account name. */
   name: string;
+  /** The email address, if one was given. */
   email: string | null;
+  /** When the account was made, in epoch milliseconds. */
   createdAt: number;
+  /** Every data key the player has, private ones included. */
   data: Record<string, unknown>;
+  /** Every stat the player has. */
   stats: Record<string, number>;
 }
 
+/** What anyone may see of a player. */
 export interface Profile {
+  /** The player id. */
   id: string;
+  /** The account name. */
   name: string;
+  /** When the account was made, in epoch milliseconds. */
   createdAt: number;
+  /** The data keys the game made public. */
   data: Record<string, unknown>;
+  /** Every stat the player has. */
   stats: Record<string, number>;
 }
 
+/** One line of a leaderboard. */
+export interface LeaderboardLine {
+  /** 1 for the highest value. Players with the same value share a rank. */
+  rank: number;
+  /** The player id. */
+  id: string;
+  /** The account name. */
+  name: string;
+  /** The player's value of the stat. */
+  value: number;
+}
+
+/** A page of a leaderboard, highest value first. */
 export interface Leaderboard {
+  /** The stat it ranks. */
   stat: string;
-  entries: { rank: number; id: string; name: string; value: number }[];
+  /** This page's lines. */
+  entries: LeaderboardLine[];
+  /** Players with a value for this stat, in total. */
   total: number;
 }
 
+/** A guest identity: a player id with a join token, before or instead of an account. */
 export interface Guest {
+  /** The guest's player id. */
   id: string;
+  /** A join token for `id`. */
   token: string;
+  /** When the token stops working, in epoch milliseconds. */
   expiresAt: number;
+  /** When the client renews it for the same id, in epoch milliseconds. */
   renewAt: number;
 }
 
 /** A request the accounts API refused. `code` is machine-readable, e.g. "name_taken" or "invalid_credentials". */
 export class AccountRequestError extends Error {
-  constructor(
-    readonly status: number,
-    readonly code: string,
-    message: string,
-  ) {
+  /** The HTTP status, e.g. 409. */
+  readonly status: number;
+  /** Machine-readable, e.g. `name_taken`. */
+  readonly code: string;
+
+  constructor(status: number, code: string, message: string) {
     super(message);
     this.name = "AccountRequestError";
+    this.status = status;
+    this.code = code;
   }
 }
 
 /** The part of `localStorage` the client uses. */
 export interface KeyValueStore {
+  /** The value under `key`, or null. */
   getItem(key: string): string | null;
+  /** Stores `value` under `key`. */
   setItem(key: string, value: string): void;
+  /** Removes `key`. */
   removeItem(key: string): void;
 }
 
@@ -80,9 +121,16 @@ const GUEST_KEY = "tickflare.guest";
 /** What a browser has, seen from code that is not typed for one. */
 const browser = globalThis as { document?: unknown; location?: { origin: string }; localStorage?: KeyValueStore };
 
+/**
+ * The client side of `Accounts`: a guest identity until the player signs up,
+ * sign-up and sign-in, the player's own data, profiles and leaderboards.
+ *
+ *     const accounts = new AccountClient();
+ *     await accounts.restore();
+ *     const room = new RoomClient(url, { token: accounts.tokenSource });
+ */
 export class AccountClient {
-  /** The signed-in account, once `restore`, `login` or `register` has found one. */
-  account: Account | null = null;
+  #account: Account | null = null;
 
   readonly #base: string;
   readonly #mode: "cookie" | "bearer";
@@ -104,14 +152,19 @@ export class AccountClient {
     this.#storage = options.storage !== undefined ? options.storage : (browser.localStorage ?? null);
   }
 
+  /** The signed-in account, once `restore`, `login` or `register` has found one. */
+  get account(): Account | null {
+    return this.#account;
+  }
+
   /** Whether someone is signed in. */
   get signedIn(): boolean {
-    return this.account !== null;
+    return this.#account !== null;
   }
 
   /** The player id to use: the account's, else the guest's, else undefined. */
   get playerId(): string | undefined {
-    return this.account?.id ?? this.#guest?.id ?? this.#storedGuest()?.id;
+    return this.#account?.id ?? this.#guest?.id ?? this.#storedGuest()?.id;
   }
 
   /** Calls `listener` whenever the signed-in account changes. Returns a function that stops it. */
@@ -145,6 +198,7 @@ export class AccountClient {
     return result.account;
   }
 
+  /** Signs in. Rejects with `AccountRequestError` (`invalid_credentials`, `too_many_attempts`) if it cannot. */
   async login(name: string, password: string): Promise<Account> {
     const result = await this.#request<{ account: Account; token: string }>("POST", "/login", { name, password });
     this.#setSession(result.token);
@@ -152,6 +206,7 @@ export class AccountClient {
     return result.account;
   }
 
+  /** Ends the session, on the server and here. */
   async logout(): Promise<void> {
     try {
       await this.#request("POST", "/logout");
@@ -171,14 +226,14 @@ export class AccountClient {
   /** Takes another name. */
   async rename(name: string): Promise<Account> {
     const account = await this.#request<Account>("POST", "/name", { name });
-    this.account = account;
+    this.#account = account;
     return account;
   }
 
   /** Sets the email address, or removes it with null. Needs the password. */
   async setEmail(password: string, email: string | null): Promise<Account> {
     const account = await this.#request<Account>("POST", "/email", { password, email });
-    this.account = account;
+    this.#account = account;
     return account;
   }
 
@@ -223,10 +278,11 @@ export class AccountClient {
    * or the guest's token for anyone else.
    */
   readonly tokenSource: TokenSource = async (room) => {
-    if (this.account) return this.joinToken(room);
+    if (this.#account) return this.joinToken(room);
     return (await this.guest()).token;
   };
 
+  /** The signed-in player's value under `key`, or undefined. */
   async getData<T = unknown>(key: string): Promise<T | undefined> {
     try {
       return (await this.#request<{ value: T }>("GET", `/data/${encodeURIComponent(key)}`)).value;
@@ -239,14 +295,15 @@ export class AccountClient {
   /** Stores a value under a key the game lets players write. */
   async setData(key: string, value: unknown): Promise<void> {
     await this.#request("PUT", `/data/${encodeURIComponent(key)}`, { value });
-    if (this.account) this.account = { ...this.account, data: { ...this.account.data, [key]: value } };
+    if (this.#account) this.#account = { ...this.#account, data: { ...this.#account.data, [key]: value } };
   }
 
+  /** Removes a value under a key the game lets players write. */
   async deleteData(key: string): Promise<void> {
     await this.#request("DELETE", `/data/${encodeURIComponent(key)}`);
-    if (this.account) {
-      const { [key]: _removed, ...data } = this.account.data;
-      this.account = { ...this.account, data };
+    if (this.#account) {
+      const { [key]: _removed, ...data } = this.#account.data;
+      this.#account = { ...this.#account, data };
     }
   }
 
@@ -260,6 +317,7 @@ export class AccountClient {
     }
   }
 
+  /** A page of the leaderboard for `stat`, highest first. */
   async leaderboard(stat: string, page: { limit?: number; offset?: number } = {}): Promise<Leaderboard> {
     const query = new URLSearchParams();
     if (page.limit !== undefined) query.set("limit", String(page.limit));
@@ -296,8 +354,8 @@ export class AccountClient {
   }
 
   #setAccount(account: Account | null): Account | null {
-    const changed = this.account?.id !== account?.id;
-    this.account = account;
+    const changed = this.#account?.id !== account?.id;
+    this.#account = account;
     if (changed) for (const listener of this.#listeners) listener(account);
     return account;
   }

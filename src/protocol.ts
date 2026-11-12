@@ -7,14 +7,19 @@
 
 import type { Patch } from "./patch.js";
 
+/** The protocol version a room announces in its `welcome` frame. */
 export const PROTOCOL_VERSION = 1;
 
+/** The keepalive a client sends, as a plain text frame. @internal */
 export const PING = "ping";
+/** The runtime's answer to `PING`, sent without waking the room. @internal */
 export const PONG = "pong";
 
 /** A seat in a room. A player keeps their seat while disconnected. */
 export interface Player {
+  /** The id the gateway's `authenticate` gave this player. */
   id: string;
+  /** Whether the player has a connection open right now. */
   connected: boolean;
   /**
    * The player's name, when the gateway's `authenticate` gave one (signed-in
@@ -25,41 +30,128 @@ export interface Player {
   name?: string;
 }
 
-/** `id` is chosen by the client and echoed back in the matching `ack` or `reject`. */
-export type ClientMessage<Command = unknown> =
-  | { t: "cmd"; id: number; data: Command }
-  /** Give up the seat. On `ack` the room closes the connection with `CloseCode.Removed`. */
-  | { t: "leave"; id: number };
+/** A command for the room. Answered with `ack` or `reject` carrying the same `id`. */
+export interface CommandFrame<Command = unknown> {
+  /** Frame type. */
+  t: "cmd";
+  /** Chosen by the client, unique per connection, echoed in the answer. */
+  id: number;
+  /** The command, as the room's `parseCommand` will receive it. */
+  data: Command;
+}
 
-export type ServerMessage<View = unknown> =
+/** Give up the seat. On `ack` the room closes the connection with `CloseCode.Removed`. */
+export interface LeaveFrame {
+  /** Frame type. */
+  t: "leave";
+  /** Chosen by the client, echoed in the answer. */
+  id: number;
+}
+
+/** Every frame a client sends, apart from the `ping` keepalive. */
+export type ClientMessage<Command = unknown> = CommandFrame<Command> | LeaveFrame;
+
+/** First frame on every connection, reconnects included. */
+export interface WelcomeFrame<View = unknown> {
+  /** Frame type. */
+  t: "welcome";
+  /** `PROTOCOL_VERSION`. */
+  v: number;
+  /** This player's id. */
+  you: string;
+  /** The room's change counter. Every later `state` or `patch` carries the next one. */
+  seq: number;
+  /** Ticks run so far; 0 in event mode. */
+  tick: number;
+  /** Ticks a second; 0 in event mode. */
+  tickRate: number;
+  /** This player's whole view. */
+  state: View;
+  /** Everyone with a seat, in join order. */
+  players: Player[];
+}
+
+/** The state changed: this player's whole view. */
+export interface StateFrame<View = unknown> {
+  /** Frame type. */
+  t: "state";
+  /** One more than the previous change. */
+  seq: number;
+  /** Set while the room is ticking. */
+  tick?: number;
+  /** This player's whole view. */
+  state: View;
+}
+
+/** The state changed during a tick: only what differs from what this player last received. */
+export interface PatchFrame {
+  /** Frame type. */
+  t: "patch";
+  /** One more than the previous change. */
+  seq: number;
+  /** The tick that made the change. */
+  tick: number;
+  /** Apply it with `applyPatch` to the view you have. */
+  p: Patch;
+}
+
+/** Someone joined, dropped or came back. */
+export interface PresenceFrame {
+  /** Frame type. */
+  t: "presence";
+  /** Everyone with a seat, in join order. */
+  players: Player[];
+}
+
+/** The command or leave with this `id` was applied. In event mode it follows the `state` frame it caused. */
+export interface AckFrame {
+  /** Frame type. */
+  t: "ack";
+  /** The `id` of the command or leave. */
+  id: number;
+  /** The change it made, or the current one if it changed nothing. */
+  seq: number;
+}
+
+/** The command or leave with this `id` was refused, and nothing changed. */
+export interface RejectFrame {
+  /** Frame type. */
+  t: "reject";
+  /** The `id` of the command or leave. */
+  id: number;
   /**
-   * First frame on every connection, including reconnects. `tickRate` is 0 in
-   * event mode, otherwise the simulation rate in ticks per second.
+   * What the room passed to `reject()`; else `invalid_command` if
+   * `parseCommand` threw, `internal_error` if a hook threw, or `rate_limited`.
    */
-  | {
-      t: "welcome";
-      v: number;
-      you: string;
-      seq: number;
-      tick: number;
-      tickRate: number;
-      state: View;
-      players: Player[];
-    }
-  /** The state changed. `seq` increases by one per change. `tick` is set while the room is ticking. */
-  | { t: "state"; seq: number; tick?: number; state: View }
-  /** The state changed while the room is ticking: only the difference from what this player last received. */
-  | { t: "patch"; seq: number; tick: number; p: Patch }
-  /** Someone joined, dropped or came back. */
-  | { t: "presence"; players: Player[] }
-  /** The command or leave was applied. Sent after the `state` frame it caused. */
-  | { t: "ack"; id: number; seq: number }
-  /** The command or leave was refused and the state is unchanged. */
-  | { t: "reject"; id: number; reason: string }
-  /** The frame could not be understood at all. */
-  | { t: "error"; reason: string }
-  /** A message the room sent this player with `send` or `broadcast`. */
-  | { t: "msg"; d: unknown };
+  reason: string;
+}
+
+/** A frame the room could not read at all. */
+export interface ErrorFrame {
+  /** Frame type. */
+  t: "error";
+  /** `invalid_json`, `invalid_message`, `message_too_large`, `binary_not_supported` or `rate_limited`. */
+  reason: string;
+}
+
+/** A message the room sent this player with `send` or `broadcast`. */
+export interface MessageFrame {
+  /** Frame type. */
+  t: "msg";
+  /** The message, as the room passed it. */
+  d: unknown;
+}
+
+/** Every frame a room sends, apart from the `pong` keepalive. */
+export type ServerMessage<View = unknown> =
+  | WelcomeFrame<View>
+  | StateFrame<View>
+  | PatchFrame
+  | PresenceFrame
+  | AckFrame
+  | RejectFrame
+  | ErrorFrame
+  | MessageFrame;
 
 /** WebSocket close codes the room uses. The client does not reconnect after these. */
 export const CloseCode = {
@@ -80,9 +172,11 @@ export const CloseCode = {
 
 /** Sent by a matchmaker to every player of a match it has just put together. */
 export interface MatchFound {
+  /** Frame type. */
   t: "match";
   /** The room to connect to. Only these players can take a seat in it. */
   room: string;
+  /** The players of the match, this one included. */
   players: string[];
 }
 
@@ -102,6 +196,7 @@ export interface MatchResult {
   replayKey?: string;
 }
 
+/** Whether a client should stop reconnecting after this close code. @internal */
 export function isFatalCloseCode(code: number): boolean {
   return code >= 4000 && code < 4100;
 }

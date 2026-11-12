@@ -1,3 +1,11 @@
+/**
+ * The client side: connecting to rooms, lockstep, matchmaking, accounts and
+ * smoothing. Runs in browsers, Node and anywhere with a global `WebSocket`
+ * and `fetch`.
+ *
+ * @packageDocumentation
+ * @module tickflare/client
+ */
 import { applyPatch } from "../patch.js";
 import { roomIn, withFreshToken, type TokenSource } from "./token.js";
 import {
@@ -21,6 +29,7 @@ export {
   type Guest,
   type KeyValueStore,
   type Leaderboard,
+  type LeaderboardLine,
   type Profile,
 } from "./accounts.js";
 export { Interpolator } from "./interpolate.js";
@@ -34,11 +43,17 @@ export {
   type TurnEntry,
 } from "../lockstep.js";
 
+/**
+ * Where a connection stands. `connecting` covers the first attempt and every
+ * reconnect; `closed` is final.
+ */
 export type ConnectionStatus = "connecting" | "open" | "closed";
 
 /** Why a connection closed: the WebSocket close code and reason. */
 export interface CloseDetail {
+  /** The WebSocket close code, e.g. `CloseCode.RoomFull`, or 1006 for a connection that was lost. */
   code: number;
+  /** The close reason, e.g. `room_full`, or what the room passed to `removePlayer`. */
   reason: string;
 }
 
@@ -56,6 +71,7 @@ export interface RoomClientEvents<View> {
   moved(roomId: string): void;
 }
 
+/** What a `RoomClient` reports and how it connects. Every option has a default. */
 export interface RoomClientOptions<View> {
   /**
    * The state changed, or was received for the first time after (re)connecting.
@@ -105,6 +121,7 @@ export interface RoomClientOptions<View> {
 
 /** A command or leave the room refused, or one that was in flight when the connection dropped. */
 export class CommandRejected extends Error {
+  /** What the room passed to `reject()`, or `not_connected` or `disconnected`. */
   readonly reason: string;
 
   constructor(reason: string) {
@@ -179,6 +196,7 @@ export class RoomClient<View = unknown, Command = unknown> {
     return this.#players;
   }
 
+  /** Where the connection stands. */
   get status(): ConnectionStatus {
     return this.#status;
   }

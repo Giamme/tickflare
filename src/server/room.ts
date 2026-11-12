@@ -17,6 +17,7 @@ import { RoomStorage, type OutboxEntry } from "./storage.js";
 
 /** Thrown by a hook to refuse a command, a join or a leave. The reason is sent to the client. */
 export class Rejection extends Error {
+  /** Sent to the client as the reason. */
   readonly reason: string;
 
   constructor(reason: string) {
@@ -25,6 +26,19 @@ export class Rejection extends Error {
     this.reason = reason;
   }
 }
+
+/** What `act` reports: the hook's changes were committed, or it was refused and why. */
+export type ActOutcome =
+  | {
+      /** The hook's changes were committed and sent. */
+      ok: true;
+    }
+  | {
+      /** The hook was refused: nothing it did was kept. */
+      ok: false;
+      /** What it passed to `reject()`, or `internal_error` if it threw. */
+      reason: string;
+    };
 
 /** What one room or matchmaker asks of another over RPC. @internal */
 export type RoomCall =
@@ -282,6 +296,15 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
   }
 
   /**
+   * The players a matchmaker reserved this room for, or null if it was not
+   * reserved. Only they can take a seat (players handed over from another
+   * room aside), so a match can start once all of them have joined.
+   */
+  protected get invited(): readonly string[] | null {
+    return this.#invited;
+  }
+
+  /**
    * Have what the current hook changes written to storage as soon as the hook
    * returns, instead of at the next save interval. Only matters while the
    * room is ticking; outside the simulation every change is written at once.
@@ -332,7 +355,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
    * connect here.
    */
   protected movePlayer(playerId: string, toRoomId: string, carry?: unknown): void {
-    if (!this.rooms && this.handOver === Room.prototype.handOver) {
+    if (!this.roomsFor(toRoomId) && this.handOver === Room.prototype.handOver) {
       throw new TypeError("movePlayer() needs `rooms` to be set");
     }
     const seat = this.#roster.indexOf(playerId);
@@ -343,9 +366,8 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
   }
 
   /**
-   * Deliver a player to another room. The default reaches it through
-   * `rooms`; override it only if rooms live in more than one namespace. If it
-   * throws, the handover is tried again on this room's next event.
+   * Deliver a player to another room, through `roomsFor`. If it throws, the
+   * handover is tried again on this room's next event.
    */
   protected async handOver(roomId: string, playerId: string, carry: unknown): Promise<void> {
     await this.#roomStub(roomId).tickflare({ op: "arrive", roomId, playerId, carry });
@@ -413,7 +435,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
    * changes are committed and sent, or all taken back if it throws or calls
    * `reject()`, which is what the returned outcome reports.
    */
-  protected async act(hook: () => void): Promise<{ ok: true } | { ok: false; reason: string }> {
+  protected async act(hook: () => void): Promise<ActOutcome> {
     this.#load();
     const outcome = this.#apply(hook);
     await this.#finish();
@@ -431,16 +453,15 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
    * for two seconds at a time, so an empty neighbour is not kept awake.
    */
   protected signal(roomId: string, data: unknown, options: { onlyIfWatched?: boolean } = {}): void {
-    if (!this.rooms && this.relay === Room.prototype.relay) {
+    if (!this.roomsFor(roomId) && this.relay === Room.prototype.relay) {
       throw new TypeError("signal() needs `rooms` to be set");
     }
     this.#signals.push({ to: roomId, data: data ?? null, onlyIfWatched: options.onlyIfWatched === true });
   }
 
   /**
-   * Deliver a signal to another room, resolving to whether anyone is
-   * connected there. The default reaches it through `rooms`; override it only
-   * if rooms live in more than one namespace.
+   * Deliver a signal to another room, through `roomsFor`, resolving to
+   * whether anyone is connected there.
    */
   protected async relay(roomId: string, data: unknown): Promise<boolean> {
     const watched = await this.#roomStub(roomId).tickflare({ op: "signal", from: this.roomId, data });
@@ -467,8 +488,17 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     }
   }
 
+  /**
+   * The namespace the room called `roomId` lives in. Defaults to `rooms`.
+   * Override it when handovers and signals go to rooms of more than one
+   * class, e.g. by the id's prefix.
+   */
+  protected roomsFor(_roomId: string): RoomNamespace | undefined {
+    return this.rooms;
+  }
+
   #roomStub(roomId: string): { tickflare(call: RoomCall): Promise<unknown> } {
-    const rooms = this.rooms;
+    const rooms = this.roomsFor(roomId);
     if (!rooms) throw new TypeError("reaching another room needs `rooms` to be set");
     return rooms.get(rooms.idFromName(roomId)) as unknown as { tickflare(call: RoomCall): Promise<unknown> };
   }
@@ -528,6 +558,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     this.#removed.push({ id: playerId, reason });
   }
 
+  /** Durable Object entry point for connections and HTTP requests from the gateway. Tickflare's: override `onHttp` instead. */
   override async fetch(request: Request): Promise<Response> {
     const playerId = request.headers.get(PLAYER_HEADER);
     if (!playerId) {
@@ -555,12 +586,14 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     return response;
   }
 
+  /** Durable Object entry point for incoming frames. Tickflare's: override `parseCommand` and `onCommand` instead. */
   override async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
     this.#load();
     this.#receive(ws, message);
     await this.#finish();
   }
 
+  /** Durable Object entry point for closed connections. Tickflare's: override `onDisconnect` instead. */
   override async webSocketClose(ws: WebSocket, code: number, reason: string): Promise<void> {
     // Runtimes with a compatibility date before 2026-04-07 need the close echoed back.
     try {
@@ -573,12 +606,14 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     await this.#finish();
   }
 
+  /** Durable Object entry point for broken connections. Tickflare's: override `onDisconnect` instead. */
   override async webSocketError(ws: WebSocket): Promise<void> {
     this.#load();
     this.#dropped(ws);
     await this.#finish();
   }
 
+  /** Durable Object entry point for the alarm that drives timers and retries. Tickflare's: override `onTimer` instead. */
   override async alarm(): Promise<void> {
     this.#load();
     // The alarm is always set for the earliest timer, so that one is due even

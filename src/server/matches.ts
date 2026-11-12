@@ -2,11 +2,17 @@ import type { MatchResult } from "../protocol.js";
 
 /** A finished match as stored in D1. */
 export interface MatchRecord {
+  /** The match id, as in `MatchResult.id`. */
   id: string;
+  /** The room it was played in, if the room knew its id. */
   room: string | null;
+  /** When it ended, in epoch milliseconds. */
   endedAt: number;
+  /** Everyone who held a seat when it ended. */
   players: string[];
+  /** What the room passed to `finishMatch`. */
   result: Record<string, unknown>;
+  /** Where its replay is in R2, if it has one. */
   replayKey: string | null;
 }
 
