@@ -207,6 +207,12 @@ export class RoomClient<View = unknown, Command = unknown> {
     socket.addEventListener("close", (event) => {
       if (socket === this.#socket) this.#closed(event.code, event.reason);
     });
+    // Browsers follow a failed connection's error with a close. Node's WebSocket does not when the
+    // server turns the upgrade away, which would leave the client waiting on a socket that will
+    // never open. A socket that errs before it opened has failed either way.
+    socket.addEventListener("error", () => {
+      if (socket === this.#socket && socket.readyState === 0) this.#closed(1006, "");
+    });
   }
 
   /** The current connection is over: settle what was in flight, then follow, retry or stop. */

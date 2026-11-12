@@ -40,6 +40,11 @@ class FakeSocket {
     this.#emit("close", { code, reason });
   }
 
+  /** Turned away at the upgrade, as Node's WebSocket reports it: an error, and no close. */
+  refuse(): void {
+    this.#emit("error", {});
+  }
+
   #emit(type: string, event: unknown): void {
     for (const listener of this.#listeners.get(type) ?? []) listener(event);
   }
@@ -120,6 +125,17 @@ describe("RoomClient", () => {
     expect(seen).toEqual(["connecting:1006:", "connecting:1006:", "connecting:1006:"]);
     client.close();
     expect(client.status).toBe("closed");
+  });
+
+  it("takes a connection that errs before it opened for a failed one, close event or not", () => {
+    const { seen, onStatus } = statuses();
+    const client = new RoomClient("wss://tickflare.test/rooms/r", { onStatus, reconnect: false });
+    FakeSocket.all[0]!.refuse();
+    expect(seen).toEqual(["closed:1006:"]);
+    expect(client.status).toBe("closed");
+    // The close a browser sends after the error changes nothing.
+    FakeSocket.all[0]!.drop(1006);
+    expect(seen).toEqual(["closed:1006:"]);
   });
 
   it("follows a handover it is told about before it was ever welcomed", () => {
