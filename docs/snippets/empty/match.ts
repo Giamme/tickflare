@@ -38,7 +38,7 @@ export class Match extends Room<State, Command> {
 
   protected override onTimer(name: string): void {
     if (name !== "abandoned" || this.players.length > 0) return;
-    this.state.over = true;
-    // Clear any timer of your own that sets itself again, or it wakes this room for ever.
+    // Nobody came back. The room and everything it stored go.
+    this.deleteRoom();
   }
 }

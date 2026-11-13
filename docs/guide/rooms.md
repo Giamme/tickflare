@@ -90,6 +90,7 @@ These are available on `this` while a hook runs:
 | `finishMatch(result, replay?)` | Announce a [finished match](./match-results) |
 | `movePlayer(playerId, roomId, carry?)` / `signal(roomId, data)` | [Talk to other rooms](./worlds) |
 | `saveNow()` | While ticking, write this hook's changes at once |
+| `deleteRoom()` | [End the room](#when-a-room-is-over) and delete what it stored |
 
 ## Rules for hooks
 
@@ -109,6 +110,27 @@ These are available on `this` while a hook runs:
 **One connection per player.** A newer connection for the same player closes the older one with `CloseCode.Replaced`.
 
 **Rate limiting.** Each player may send `maxCommandsPerSecond` frames a second, with a burst of the same size. Frames over the limit are refused with `rate_limited` before they reach your code. The allowance belongs to the player, so reconnecting does not refill it.
+
+## When a room is over
+
+A room begins to exist with the first player who is seated in it. Before that it stores nothing: a refused join, a request for a room that was never used or a mistyped room id leaves nothing behind.
+
+From then on it stays until you end it. Nothing ends a room by itself, not an empty lobby, not a finished match, so decide when yours is over and call `this.deleteRoom()`:
+
+```ts
+protected override onLeave(player: Player): void {
+  const anyoneElse = this.players.some((seated) => seated.id !== player.id);
+  if (!anyoneElse) this.deleteRoom();
+}
+```
+
+Shortly after the hook, everyone still connected is disconnected with `CloseCode.Removed` and the reason `"room_deleted"`, and everything the room stored is deleted: its state, seats and timers, a lockstep recording, and any tables of your own. With nothing stored, the Durable Object itself is gone from your account.
+
+- **What the room owes goes out first.** A match announced with `finishMatch`, recording included, and a player on their way to another room are delivered before anything is deleted. If a delivery fails the room stays and tries again every 30 seconds.
+- **The room id is free again.** Whoever comes to it later finds a new, empty room.
+- **It is undone with the hook**, like everything else, if the hook is refused.
+
+Rooms that are never deleted cost nothing while nothing wakes them, and a room's storage is billed by size, which for most games is small. Delete them anyway: a list of rooms that are over is hard to tell from a list of rooms that are stuck.
 
 ## Reaching a room
 

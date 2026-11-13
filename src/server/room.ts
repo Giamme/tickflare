@@ -65,6 +65,10 @@ const SOCKET_OPEN = 1;
 const KERNEL_TIMER = "tickflare:";
 /** Prefix of the kernel's own timers, which give up the seats of players who stay away. */
 const AWAY_TIMER = "tickflare:away:";
+/** Set by `deleteRoom()`: when it fires, the room deletes everything it stored. */
+const DELETE_TIMER = "tickflare:delete";
+/** A room that still owes a delivery puts its deletion off by this much, and tries the delivery again. */
+const DELETE_RETRY_MS = 30_000;
 /**
  * How long a room keeps sending a player on to the room it handed them to,
  * counted from the moment it first told them. Long enough for a client whose
@@ -540,6 +544,23 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     return firesAt;
   }
 
+  /**
+   * End this room for good. Shortly after the current event, everyone still
+   * connected is disconnected with `CloseCode.Removed` and the reason
+   * `"room_deleted"`, and everything the room stored is deleted: its state,
+   * seats and timers, a lockstep recording, and any tables of your own. With
+   * nothing stored the Durable Object itself ceases to exist.
+   *
+   * What the room still owes is delivered first: a finished match's result,
+   * a player on their way to another room. Until it is, the room stays.
+   *
+   * The room id is not used up. Someone who comes to it later finds a new,
+   * empty room. Call from inside a hook.
+   */
+  protected deleteRoom(): void {
+    this.#timers.set(DELETE_TIMER, Date.now());
+  }
+
   /** Cancel a timer. Does nothing if it is not set. Call from inside a hook. */
   protected clearTimer(name: string): void {
     this.#timers.delete(name);
@@ -623,9 +644,15 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
       .filter(([, firesAt]) => firesAt <= now)
       .sort((a, b) => a[1] - b[1]);
 
+    let doomed = false;
     for (const [name, firesAt] of due) {
       // A timer that fired earlier in this batch may have cleared or moved this one.
       if (this.#timers.get(name) !== firesAt) continue;
+      // Deleting comes last, after everything else that is due and after what is owed has gone out.
+      if (name === DELETE_TIMER) {
+        doomed = true;
+        continue;
+      }
       // Spend the timer first, on its own, so a failing hook cannot bring it back.
       this.#apply(() => this.#timers.delete(name));
       if (name.startsWith(AWAY_TIMER)) this.#giveUpSeat(name.slice(AWAY_TIMER.length));
@@ -634,6 +661,33 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     }
     this.#alarmStale = true;
     await this.#finish();
+    if (doomed) await this.#delete();
+  }
+
+  /** `deleteRoom()` was called, and its moment has come. */
+  async #delete(): Promise<void> {
+    if (this.#store.hasOutbox()) {
+      // Something is still owed, and `#finish` has just failed to deliver it. Keep the room, and
+      // let the next alarm try again.
+      this.#apply(() => this.#timers.set(DELETE_TIMER, Date.now() + DELETE_RETRY_MS));
+      this.#alarmStale = true;
+      await this.#finish();
+      return;
+    }
+    for (const ws of this.ctx.getWebSockets()) {
+      try {
+        ws.close(CloseCode.Removed, "room_deleted");
+      } catch {
+        // Already closed.
+      }
+    }
+    await this.ctx.storage.deleteAlarm();
+    await this.ctx.storage.deleteAll();
+    // Wait until the deletion is on disk. That is also when the close frames above are let out.
+    await this.ctx.storage.sync();
+    // Whatever this instance still holds in memory describes a room that is gone. Start over:
+    // the next event, if one ever comes, finds a new room.
+    (this.ctx.abort as (reason?: string, options?: { retryAlarm?: boolean }) => void)("room deleted", { retryAlarm: false });
   }
 
   #connect(playerId: string, name: string | undefined): Response {
@@ -1040,7 +1094,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
   #learnRoomId(roomId: string): void {
     if (this.#roomId === roomId) return;
     this.#roomId = roomId;
-    this.#store.setMeta("room", roomId);
+    this.#store.rememberRoomId(roomId);
   }
 
   /**

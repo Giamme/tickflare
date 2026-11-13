@@ -123,15 +123,15 @@ A room ticks only while a player is connected to it. This is deliberate: an empt
 
 **Timers still fire.** A timer that sets itself again keeps waking an abandoned room for ever, and anything it does, such as keeping the room in a list, carries on.
 
-**Rooms are never deleted.** A room's storage, a lockstep recording included, stays until you remove it.
+**Rooms stay until you delete them.** A room that has had a player keeps its storage, a lockstep recording included, and with it the Durable Object, until it calls [`deleteRoom()`](./rooms#when-a-room-is-over). A room nobody was ever seated in stores nothing and leaves nothing behind.
 
 **What you can do today.** Decide what an empty room means for your game, and say so in `onLeave`:
 
 <<< @/snippets/empty/match.ts{28-33,39-43}
 
-To remove a finished room's storage, call `this.ctx.storage.deleteAll()` from a hook of your own once its result is recorded.
+Do the same for a lobby everyone has left and for a finished match once its players are gone: nothing ends a room unless your code does.
 
-**What would lift it.** Three small things, none built: a setting to keep ticking with nobody connected, for matches that have to finish; a hook for the moment a room empties; and a way to close a room for good and delete what it stored.
+**What would lift it.** Two small things, neither built: a setting to keep ticking with nobody connected, for matches that have to finish; and a hook for the moment a room empties.
 
 ## Storage
 
@@ -172,7 +172,7 @@ Tickflare is at 0.1. It has a test suite that runs against Cloudflare's own runt
 
 In the order we would take them, by how much each removes for the work it needs:
 
-1. **Rooms nobody is in:** ticking with nobody connected, a hook for an empty room, and deleting a room. Small, and it closes a whole class of mistakes.
+1. **Rooms nobody is in:** ticking with nobody connected, and a hook for an empty room. Small, and it closes a whole class of mistakes.
 2. **Not serialising the whole state on every hook.** More players in a room, and larger states.
 3. **State in more than one row.** No 2 MB ceiling, cheaper saves.
 4. **Patches in event mode, and a binary encoding.** Less bandwidth.

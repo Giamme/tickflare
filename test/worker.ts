@@ -44,13 +44,16 @@ export type TestCommand =
   | { type: "tell"; to: string; text: string }
   | { type: "shout"; text: string }
   | { type: "tellThenReject"; to: string }
-  | { type: "kickWithNote"; id: string };
+  | { type: "kickWithNote"; id: string }
+  | { type: "delete" }
+  | { type: "deleteThenReject" }
+  | { type: "finishAndDelete" };
 
 const COMMANDS = [
   "add", "secret", "noop", "half", "boom", "async",
   "timer", "timerThenReject", "cancel", "kick", "kickThenReject", "lock",
   "finish", "finishThenReject", "move", "moveThenReject", "signal", "signalThenReject",
-  "tell", "shout", "tellThenReject", "kickWithNote",
+  "tell", "shout", "tellThenReject", "kickWithNote", "delete", "deleteThenReject", "finishAndDelete",
 ];
 
 /** A room that exercises every kernel feature; not a game. */
@@ -97,6 +100,7 @@ export class TestRoom extends Room<TestState, TestCommand> {
     this.state.log.push(`timer:${name}`);
     if (name === "boom") throw new TypeError("kaboom");
     if (name === "relay") this.setTimer("relayed", 20);
+    if (name === "close") this.deleteRoom();
   }
 
   protected onCommand(player: Player, command: TestCommand): void | Promise<void> {
@@ -168,6 +172,16 @@ export class TestRoom extends Room<TestState, TestCommand> {
       case "kickWithNote":
         this.send(command.id, { text: "you are out" });
         this.removePlayer(command.id, "kicked");
+        return;
+      case "delete":
+        this.deleteRoom();
+        return;
+      case "deleteThenReject":
+        this.deleteRoom();
+        reject("changed_my_mind");
+      case "finishAndDelete":
+        this.finishMatch({ winner: player.id });
+        this.deleteRoom();
         return;
     }
   }
@@ -298,7 +312,11 @@ export class TurnRoom extends LockstepRoom<TurnInput> {
 
   // The match is over when the last player gives up their seat.
   protected override onLeave(player: Player): void {
-    if (this.players.length === 1) this.finishMatch({ reason: "everyone_left" });
+    if (this.players.length === 1) {
+      this.finishMatch({ reason: "everyone_left" });
+      // Rooms named "once-…" are for one match, and delete themselves when it is over.
+      if (this.roomId?.startsWith("once-")) this.deleteRoom();
+    }
   }
 
   protected parseInput(raw: unknown): TurnInput {
@@ -390,6 +408,15 @@ export class EdgeRoom extends TestRoom {
       case "edge:finishBig":
         this.state.total += 5;
         this.finishMatch({ n: BigInt(1) as unknown as number });
+        return;
+      case "edge:moveAndDelete":
+        this.movePlayer(player.id, c.to!, { gold: 7 });
+        this.deleteRoom();
+        return;
+      case "edge:scribbleAndDelete":
+        this.ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS notes (text TEXT NOT NULL)");
+        this.ctx.storage.sql.exec("INSERT INTO notes (text) VALUES ('goes with the room')");
+        this.deleteRoom();
         return;
       case "edge:moveOther":
         this.movePlayer(c.id!, c.to!, { gold: 7 });

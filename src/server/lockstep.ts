@@ -107,12 +107,6 @@ export abstract class LockstepRoom<Input, Env = Cloudflare.Env> extends Room<
   /** The first hash reported for each recent turn, and who reported it. */
   #hashes = new Map<number, { hash: string; by: string }>();
 
-  constructor(ctx: DurableObjectState, env: Env) {
-    super(ctx, env);
-    // Here, not in a hook: a hook that fails takes back everything it wrote, tables included.
-    ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS tickflare_turns (n INTEGER PRIMARY KEY, entries TEXT NOT NULL)");
-  }
-
   /**
    * Turn an untrusted client payload into an input. Every client will feed
    * what this returns to its simulation, so reject anything malformed here.
@@ -156,9 +150,11 @@ export abstract class LockstepRoom<Input, Env = Cloudflare.Env> extends Room<
   #resume(): void {
     if (this.#resumed) return;
     this.#resumed = true;
-    const last = this.#turns()
-      .exec<{ n: number; entries: string }>("SELECT n, entries FROM tickflare_turns ORDER BY n DESC LIMIT 1")
-      .toArray()[0];
+    const last = this.#recorded()
+      ? this.ctx.storage.sql
+          .exec<{ n: number; entries: string }>("SELECT n, entries FROM tickflare_turns ORDER BY n DESC LIMIT 1")
+          .toArray()[0]
+      : undefined;
     if (last && last.n > this.state.turn) {
       this.state.turn = last.n; // Never reuse a number.
       this.state.entries = JSON.parse(last.entries) as TurnEntry<Input>[];
@@ -335,10 +331,10 @@ export abstract class LockstepRoom<Input, Env = Cloudflare.Env> extends Room<
 
   /** The recording so far. */
   protected replay(): Replay<Input> {
-    const turns = this.#turns()
-      .exec<{ n: number; entries: string }>("SELECT n, entries FROM tickflare_turns ORDER BY n")
-      .toArray()
-      .map((row): [number, TurnEntry<Input>[]] => [row.n, JSON.parse(row.entries) as TurnEntry<Input>[]]);
+    const rows = this.#recorded()
+      ? this.ctx.storage.sql.exec<{ n: number; entries: string }>("SELECT n, entries FROM tickflare_turns ORDER BY n").toArray()
+      : [];
+    const turns = rows.map((row): [number, TurnEntry<Input>[]] => [row.n, JSON.parse(row.entries) as TurnEntry<Input>[]]);
     const last = turns[turns.length - 1]?.[0] ?? 0;
     return {
       v: 2,
@@ -349,7 +345,20 @@ export abstract class LockstepRoom<Input, Env = Cloudflare.Env> extends Room<
     };
   }
 
+  /**
+   * The recording, to write to. The table is made with the first turn that
+   * has something in it, not before: a room that has recorded nothing stores
+   * nothing. Asked for each time, because a hook that fails takes back
+   * everything it wrote, a new table included.
+   */
   #turns(): SqlStorage {
-    return this.ctx.storage.sql;
+    const sql = this.ctx.storage.sql;
+    sql.exec("CREATE TABLE IF NOT EXISTS tickflare_turns (n INTEGER PRIMARY KEY, entries TEXT NOT NULL)");
+    return sql;
+  }
+
+  /** Whether there is a recording to read. */
+  #recorded(): boolean {
+    return this.ctx.storage.sql.exec("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'tickflare_turns'").toArray().length > 0;
   }
 }
