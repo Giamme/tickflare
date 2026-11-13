@@ -698,8 +698,12 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     // Wait until the deletion is on disk. That is also when the close frames above are let out.
     await this.ctx.storage.sync();
     // Whatever this instance still holds in memory describes a room that is gone. Start over:
-    // the next event, if one ever comes, finds a new room.
-    (this.ctx.abort as (reason?: string, options?: { retryAlarm?: boolean }) => void)("room deleted", { retryAlarm: false });
+    // the next event, if one ever comes, finds a new room. Cloudflare logs the reason as an
+    // uncaught error, so it says what it is.
+    (this.ctx.abort as (reason?: string, options?: { retryAlarm?: boolean }) => void)(
+      "deleteRoom(): this room deleted itself and its storage. Not a failure.",
+      { retryAlarm: false },
+    );
   }
 
   #connect(playerId: string, name: string | undefined): Response {

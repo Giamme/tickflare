@@ -128,6 +128,7 @@ Shortly after the hook, everyone still connected is disconnected with `CloseCode
 
 - **What the room owes goes out first.** A match announced with `finishMatch`, recording included, and a player on their way to another room are delivered before anything is deleted. If a delivery fails the room stays and tries again every 30 seconds.
 - **Deferred work gets to finish.** A task passed to `defer()` that is still running, telling a lobby list that the room is gone for instance, is given ten seconds.
+- **Your logs show it.** The room resets itself with `ctx.abort()`, which Cloudflare records as an uncaught error reading "deleteRoom(): this room deleted itself and its storage. Not a failure."
 - **The room id is free again.** Whoever comes to it later finds a new, empty room.
 - **It is undone with the hook**, like everything else, if the hook is refused.
 
