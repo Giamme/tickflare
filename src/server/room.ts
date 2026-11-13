@@ -13,6 +13,7 @@ import { MAX_CLOSE_REASON, readFrame, refuse } from "./frames.js";
 import { NAME_HEADER, PLAYER_HEADER, ROOM_HEADER, type RoomNamespace } from "./gateway.js";
 import { RateLimiter } from "./limiter.js";
 import { SignalSender, type Signal } from "./signals.js";
+import { Tracker } from "./tracked.js";
 import { RoomStorage, type OutboxEntry } from "./storage.js";
 
 /** Thrown by a hook to refuse a command, a join or a leave. The reason is sent to the client. */
@@ -159,8 +160,54 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
    */
   protected saveIntervalMs = 5_000;
 
-  /** The authoritative state. Change it only inside hooks. */
-  protected state!: State;
+  /**
+   * Whether the kernel follows what each hook writes to the state, rather
+   * than turning the whole state into JSON after every hook to see what
+   * changed and to be able to undo it. On by default: a hook then costs what
+   * it touches, not what the state weighs.
+   *
+   * It means that inside a hook other than `onTick`, `this.state` and
+   * everything reached through it are proxies of the state's objects. They
+   * read and write like the objects themselves, with two exceptions: a proxy
+   * is not `===` to an object that did not come from the state, and
+   * `structuredClone` refuses one. `plain(value)` gives the object underneath
+   * for those. Reach the state through `this.state` in every hook, rather
+   * than through a reference kept from an earlier one: a change made through
+   * such a reference is not seen until the next tick or save, and is not
+   * undone if the hook is refused.
+   *
+   * Set to false to have every hook work on the plain state, at the old cost.
+   */
+  protected trackChanges = true;
+
+  /**
+   * The authoritative state. Change it only inside hooks.
+   */
+  protected get state(): State {
+    return this.#tracker.active ? this.#tracker.wrap(this.#state) : this.#state;
+  }
+
+  protected set state(value: State) {
+    if (!this.#tracker.active) {
+      this.#state = value;
+      return;
+    }
+    const before = this.#state;
+    this.#tracker.note(() => {
+      this.#state = before;
+    });
+    this.#state = this.#tracker.clean(value);
+  }
+
+  /** The state itself: plain objects, never proxies. */
+  #state!: State;
+  #tracker = new Tracker();
+  /**
+   * The state has changed since `#committed.state` was written. Happens while
+   * ticking, when a tracked hook changes the state and nothing needs its JSON
+   * yet. Whatever does need it calls `#snapshot` first.
+   */
+  #stale = false;
 
   #loaded = false;
   /** The room's database. Set by `#load`. */
@@ -501,7 +548,9 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     if (!this.roomsFor(roomId) && this.relay === Room.prototype.relay) {
       throw new TypeError("signal() needs `rooms` to be set");
     }
-    this.#signals.push({ to: roomId, data: data ?? null, onlyIfWatched: options.onlyIfWatched === true });
+    // A signal goes out after the hook, so it takes a copy: what it was given may be part of the state.
+    const copy: unknown = this.#tracker.active ? JSON.parse(JSON.stringify(data ?? null)) : (data ?? null);
+    this.#signals.push({ to: roomId, data: copy, onlyIfWatched: options.onlyIfWatched === true });
   }
 
   /**
@@ -633,6 +682,8 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     if (roomId) this.#learnRoomId(roomId);
     const name = nameFrom(request);
     if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
+      // While onHttp runs, the state is compared with `#committed.state` to see that it left it alone.
+      this.#freshen();
       this.#reading += 1;
       try {
         const player: Player = { id: playerId, connected: this.#isConnected(playerId) };
@@ -1065,14 +1116,14 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
       this.#loop = undefined;
       // Send what changed since the last tick, or it would never go out.
       this.#broadcastTick();
-      if (this.#unsaved) this.#writeRoom(this.#seq, this.#committed);
+      if (this.#unsaved) this.#writeRoom();
       this.#deltas.reset();
     }
   }
 
   #runTick(): void {
     this.#tick += 1;
-    const ticked = this.#apply(() => this.onTick(1 / this.tickRate));
+    const ticked = this.#apply(() => this.onTick(1 / this.tickRate), false, true);
     if (ticked.ok) {
       this.#failedTicks = 0;
     } else if (++this.#failedTicks >= MAX_FAILED_TICKS) {
@@ -1083,7 +1134,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
 
     if (++this.#ticksSinceSave * 1000 >= this.saveIntervalMs * this.tickRate) {
       this.#ticksSinceSave = 0;
-      if (this.#unsaved) this.#writeRoom(this.#seq, this.#committed);
+      if (this.#unsaved) this.#writeRoom();
     }
     this.#broadcastTick();
     this.#finish(false).catch((err) => console.error("[tickflare] tick cleanup failed:", err));
@@ -1134,9 +1185,40 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
 
   /** Puts state, seats and timers back to what was last committed. */
   #restore(): void {
-    this.state = JSON.parse(this.#committed.state) as State;
+    this.#state = JSON.parse(this.#committed.state) as State;
+    this.#stale = false;
+    this.#restoreSeats();
+  }
+
+  /** Puts seats and timers back to what was last committed. */
+  #restoreSeats(): void {
     this.#roster = JSON.parse(this.#committed.roster) as string[];
     this.#timers = new Map(JSON.parse(this.#committed.timers) as [string, number][]);
+  }
+
+  /** Brings `#committed.state` up to date with the state. Throws if the state is not JSON. */
+  #snapshot(): void {
+    const state = JSON.stringify(this.#state);
+    if (state === undefined) throw new TypeError("Room state must be JSON-serializable");
+    this.#committed = { ...this.#committed, state };
+    this.#stale = false;
+  }
+
+  /**
+   * `#snapshot`, for where there is no hook to blame. A state that cannot be
+   * turned into JSON got that way through a reference kept from outside a
+   * hook, since what hooks write is checked as it is written. There is no
+   * knowing which change it was, so the state goes back to the last JSON
+   * there is.
+   */
+  #freshen(): void {
+    if (!this.#stale) return;
+    try {
+      this.#snapshot();
+    } catch (err) {
+      console.error("[tickflare] the state can no longer be saved; going back to the last state that could:", err);
+      this.#restore();
+    }
   }
 
   /**
@@ -1149,7 +1231,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
   #undoDrift(): void {
     let live: string | undefined;
     try {
-      live = JSON.stringify(this.state);
+      live = JSON.stringify(this.#state);
     } catch {
       // Not even serializable: certainly not what was committed.
     }
@@ -1160,8 +1242,10 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     this.#restore();
   }
 
-  #writeRoom(seq: number, committed: Committed): void {
-    this.#store.atomically(() => this.#persist(seq, committed));
+  /** Writes the state as it is now. */
+  #writeRoom(): void {
+    this.#freshen();
+    this.#store.atomically(() => this.#persist(this.#seq, this.#committed));
     this.#unsaved = false;
   }
 
@@ -1187,8 +1271,18 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
    * that also changes something which is always saved at once (seats, timers,
    * the outbox) or that asks for it (`durable`, `saveNow()`): the state is
    * written with it, so storage never holds one without the other.
+   *
+   * What the hook did to the state is known in one of two ways. A tracked
+   * hook writes through proxies that note each write: the kernel knows at
+   * once whether anything changed and how to undo it, and turns the state
+   * into JSON only if this commit saves or sends it. Otherwise the whole
+   * state is turned into JSON after the hook and compared with the JSON from
+   * before, which is also what it is put back from. That is how `onTick`
+   * runs (`plainly`), since a simulation reads far more than a proxy should
+   * be asked to pass on, and how every hook runs with `trackChanges` off or
+   * while something may be changing the state behind the kernel's back.
    */
-  #apply(hook: () => void, durable = false): Outcome {
+  #apply(hook: () => void, durable = false, plainly = false): Outcome {
     if (this.#suspect || this.#reading > 0) this.#undoDrift();
     const removedBefore = this.#removed.length;
     const mailBefore = this.#mail.length;
@@ -1197,46 +1291,63 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     this.#moved.length = 0;
     this.#signals.length = 0;
     this.#saveAsked = false;
-    const was = this.#committed;
     const ticking = this.#loop !== undefined;
     const seated = this.#roster.length;
+    const tracked = this.trackChanges && !plainly && !this.#suspect && this.#reading === 0;
+    let committed = false;
     try {
-      const { next, seq, stateChanged, saved } = this.#store.atomically(() => {
+      // Comparing needs a "before" that is up to date, and so does putting the state back from it.
+      if (!tracked && this.#stale) this.#snapshot();
+      const was = this.#committed;
+      if (tracked) this.#tracker.begin();
+      const { next, seq, stateChanged, saved, current } = this.#store.atomically(() => {
         const returned = hook() as unknown;
         if (isThenable(returned)) {
           returned.then(undefined, () => {});
           this.#suspect = true;
           throw new TypeError("Room hooks must be synchronous");
         }
-        const state = JSON.stringify(this.state);
-        if (state === undefined) {
-          throw new TypeError("Room state must be JSON-serializable");
-        }
-        const next: Committed = {
-          state,
-          roster: JSON.stringify(this.#roster),
-          timers: JSON.stringify([...this.#timers].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))),
-        };
+        const roster = JSON.stringify(this.#roster);
+        const timers = JSON.stringify([...this.#timers].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
         // Serialized before anything is written, so a value that cannot be is caught here.
         const owed = [
           ...this.#finished.map((finished) => JSON.stringify(finished satisfies OutboxEntry)),
           ...this.#moved.map((move) => JSON.stringify({ move } satisfies OutboxEntry)),
         ];
-
-        const stateChanged = next.state !== was.state;
-        const seq = stateChanged ? this.#seq + 1 : this.#seq;
-        const rosterChanged = next.roster !== was.roster;
-        const timersChanged = next.timers !== was.timers;
+        const rosterChanged = roster !== was.roster;
+        const timersChanged = timers !== was.timers;
         // What must never be in storage without the state it belongs to.
         const anchored = rosterChanged || timersChanged || owed.length > 0 || durable || this.#saveAsked;
-        const saved = rosterChanged || ((stateChanged || this.#unsaved) && (!ticking || anchored));
+        // Whether a state that is newer than storage is written by this commit.
+        const writes = !ticking || anchored;
+
+        // A tracked hook that wrote nothing changed nothing. One that did, while nothing needs
+        // the state as JSON, is taken at its word, and `#committed.state` falls behind.
+        const touched = !tracked || this.#tracker.changed;
+        let state = was.state;
+        let stateChanged = false;
+        let current = !this.#stale;
+        if (!tracked || ((touched || this.#stale) && writes)) {
+          const json = JSON.stringify(this.#state);
+          if (json === undefined) throw new TypeError("Room state must be JSON-serializable");
+          stateChanged = touched && json !== was.state;
+          state = json;
+          current = true;
+        } else if (touched) {
+          stateChanged = true;
+          current = false;
+        }
+        const next: Committed = { state, roster, timers };
+        const seq = stateChanged ? this.#seq + 1 : this.#seq;
+        const saved = rosterChanged || ((stateChanged || this.#unsaved) && writes);
 
         if (saved) this.#persist(seq, next);
         if (timersChanged) this.#store.replaceTimers(this.#timers);
         for (const body of owed) this.#store.addToOutbox(body);
         for (const move of this.#moved) this.#store.putForward(move.player, move.to);
-        return { next, seq, stateChanged, saved };
+        return { next, seq, stateChanged, saved, current };
       });
+      this.#tracker.end();
 
       if (saved) this.#unsaved = false;
       else if (stateChanged) this.#unsaved = true;
@@ -1249,35 +1360,51 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
 
       this.#seq = seq;
       this.#committed = next;
-      if (stateChanged && !ticking) this.#broadcastState();
+      this.#stale = !current;
+      committed = true;
+      if (stateChanged && !ticking) this.#broadcastState(next.state);
       // No await between the two commits, so storage holds both or neither.
       if (seated > 0 && this.#roster.length === 0) this.#apply(() => this.onEmpty());
       return { ok: true };
     } catch (err) {
-      this.#restore();
+      if (committed) {
+        // The hook's changes stand. What failed came after them: telling the players.
+        console.error("[tickflare] could not send the state:", err);
+        return { ok: true };
+      }
+      if (this.#tracker.active) {
+        this.#tracker.undo();
+        this.#restoreSeats();
+      } else {
+        this.#restore();
+      }
       this.#removed.length = removedBefore;
       this.#mail.length = mailBefore;
       this.#deferred.length = deferredBefore;
       this.#finished.length = 0;
       this.#moved.length = 0;
       this.#signals.length = 0;
+      // From here on every hook compares against `#committed.state`, so it has to be current.
+      if (this.#suspect) this.#freshen();
       if (err instanceof Rejection) return { ok: false, reason: err.reason };
       console.error("[tickflare] room hook failed:", err);
+      if (tracked && (err as { name?: unknown } | null)?.name === "DataCloneError") {
+        console.error(
+          "[tickflare] inside a hook, `this.state` and what is read from it are proxies, which cannot be cloned. Use `plain(value)` from tickflare to get the object itself.",
+        );
+      }
       return { ok: false, reason: "internal_error" };
     } finally {
       this.#connecting = null;
     }
   }
 
-  /** Sends everyone their whole view. Used outside the simulation. */
-  #broadcastState(): void {
+  /** Sends everyone their whole view. Used outside the simulation. `json` is the state, as JSON. */
+  #broadcastState(json: string): void {
     // Whatever the sockets were sent during an earlier simulation is now out of date.
     this.#deltas.reset();
     // Without a custom view everyone gets the same frame, so build it once.
-    const shared =
-      this.view === Room.prototype.view
-        ? JSON.stringify({ t: "state", seq: this.#seq, state: this.state })
-        : undefined;
+    const shared = this.view === Room.prototype.view ? `{"t":"state","seq":${this.#seq},"state":${json}}` : undefined;
 
     for (const { ws, id } of this.#seatedSockets()) {
       try {
@@ -1303,7 +1430,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
       this.#seatedSockets(),
       this.#seq,
       this.#tick,
-      this.state,
+      this.#state,
       custom ? (id) => this.view({ id, connected: true }) : undefined,
     );
   }

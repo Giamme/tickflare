@@ -1,5 +1,5 @@
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
-import { env } from "cloudflare:workers";
+import { env, exports } from "cloudflare:workers";
 import { describe, expect, it, vi } from "vitest";
 import { follow, freshRoom, sleep, until } from "./helpers.js";
 import type { TickState } from "./worker.js";
@@ -193,6 +193,86 @@ describe("state sync", () => {
       p1.ws.close(1000, "bye");
       await sleep(150);
       expect((await awake(room)).timer).toBe(false);
+    });
+  });
+
+  // While the simulation runs, a command's change is neither saved nor turned into JSON when it
+  // is made. Everything that then needs the state as it is has to find the change there.
+  describe("a command's change while ticking", () => {
+    const state = (room: string) =>
+      runInDurableObject(stubFor(room), (_instance, storage) =>
+        JSON.parse(storage.storage.sql.exec<{ state: string }>("SELECT state FROM tickflare_room").one().state) as TickState,
+      );
+    async function bumped(times: number) {
+      const room = freshRoom();
+      const p1 = await join(room, "p1");
+      await until(() => p1.tick >= 3);
+      for (let i = 0; i < times; i++) p1.send({ type: "bump" });
+      await until(() => p1.of("ack").length === times, "the acks");
+      return { room, p1 };
+    }
+
+    it("survives a tick that fails straight after it", async () => {
+      const error = vi.spyOn(console, "error").mockImplementation(() => {});
+      const { room, p1 } = await bumped(3);
+      p1.send({ type: "break" });
+      await sleep(300);
+      error.mockRestore();
+
+      // Each failed tick was put back to the state as the commands left it.
+      expect(p1.state).toMatchObject({ bumps: 3, broken: true });
+      expect(await state(room)).toMatchObject({ bumps: 3, broken: true });
+    });
+
+    it("is not mistaken for a change made behind the room's back when a request reads the state", async () => {
+      const error = vi.spyOn(console, "error").mockImplementation(() => {});
+      const { room, p1 } = await bumped(2);
+      const response = await exports.default.fetch(`https://tickflare.test/ticks/${room}/score?player=p1`);
+      expect(await response.json()).toMatchObject({ bumps: 2 });
+      p1.send({ type: "bump" });
+      await until(() => p1.state!.bumps === 3, "the third bump");
+
+      expect(error).not.toHaveBeenCalled();
+      error.mockRestore();
+    });
+
+    it("outlasts a hook that breaks the rules after it", async () => {
+      const error = vi.spyOn(console, "error").mockImplementation(() => {});
+      const { p1 } = await bumped(2);
+      p1.send({ type: "later" });
+      await until(() => p1.of("reject").length === 1, "the refusal");
+      p1.send({ type: "bump" });
+      await until(() => p1.state!.bumps === 3, "the third bump");
+      const before = p1.tick;
+      await until(() => p1.tick >= before + 3);
+
+      expect(p1.state!.bumps).toBe(3);
+      // The one line about the promise, and none about the state having been changed.
+      expect(error.mock.calls.flat().join(" ")).not.toContain("outside a hook");
+      error.mockRestore();
+    });
+
+    it("is written when the simulation stops", async () => {
+      const { room, p1 } = await bumped(4);
+      p1.send({ type: "stop" });
+      await until(() => p1.state!.phase === "lobby", "the stop");
+      await sleep(50);
+
+      expect(await state(room)).toMatchObject({ bumps: 4, phase: "lobby" });
+    });
+
+    it("is written with a timer set after it, which is saved at once", async () => {
+      const { room, p1 } = await bumped(2);
+      p1.send({ type: "timer", ms: 60_000 });
+      await until(() => p1.of("ack").length === 3, "the ack");
+
+      expect(await state(room)).toMatchObject({ bumps: 2 });
+    });
+
+    it("is there for the next player to join", async () => {
+      const { room } = await bumped(5);
+      const p2 = await join(room, "p2");
+      expect(p2.of("welcome")[0]!.state.bumps).toBe(5);
     });
   });
 

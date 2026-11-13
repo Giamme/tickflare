@@ -27,34 +27,35 @@ What we measured, with Wrangler's local runtime on a two-core 2.1 GHz machine th
 | In the room | Players | Ticks a second it managed |
 | --- | --- | --- |
 | 100 units, everyone sees all of them | 200 | 9.5 |
-| 100 units, everyone sees all of them | 1,000 | 4.5 |
-| 1,000 units, each player sees those near them | 200 | 9.0 |
-| 1,000 units, each player sees those near them | 500 | 8.2 |
-| 1,000 units, each player sees those near them | 1,000 | 4.3 |
-| 5,000 units, each player sees those near them | 100 | 7.5 |
-| 20,000 units, each player sees those near them | 20 | 9.0 |
+| 100 units, everyone sees all of them | 1,000 | 3.5 |
+| 1,000 units, each player sees those near them | 200 | 9.2 |
+| 1,000 units, each player sees those near them | 500 | 8.5 |
+| 1,000 units, each player sees those near them | 1,000 | 6.0 |
+| 5,000 units, each player sees those near them | 100 | 8.7 |
+| 20,000 units, each player sees those near them | 20 | 9.2 |
 | 1,000 units, by sight, asked for 30 ticks a second | 100 | 26 |
-| 1,000 units, by sight, asked for 60 ticks a second | 50 | 52 |
+| 1,000 units, by sight, asked for 60 ticks a second | 50 | 53 |
 | 1,000 units, by sight, and 480 commands a second | 100 | 9.0 |
-| 5,000 units, by sight, and 480 commands a second | 100 | 6.8 |
+| 5,000 units, by sight, and 480 commands a second | 100 | 8.3 |
+| 20,000 units, by sight, and 400 commands a second | 20 | 8.7 |
 
-Treat these as the right order of size, not as a promise: Cloudflare's machines are not this one. When a room cannot keep up, its simulation runs slow; it does not skip ahead to catch up.
+Treat these as the right order of size, not as a promise: Cloudflare's machines are not this one, and with many players the same run varies by a tick a second or more. When a room cannot keep up, its simulation runs slow; it does not skip ahead to catch up.
 
 Two things in Tickflare's design set these numbers:
 
-- **The whole state is turned into JSON after every hook**, to see whether it changed and to be able to undo a hook that fails. A command in a room with a large state costs as much as the state is large, however little the command does.
+- **The whole state is turned into JSON whenever it is saved or sent whole, and once or twice a tick.** In event mode that is every command that changes something: the state is written and sent in full each time. While ticking it is the tick itself, which is compared whole so that `onTick` can run on plain objects, and the save every few seconds. What a command, a join or a timer costs in between is only what it touches: the room [follows a hook's writes](./rooms#the-state-inside-a-hook) rather than going through the state after it. A hook that changes nothing, or is refused, costs the same in a room of any size.
 - **`view()` runs for every connected player on every tick**, and each result is compared with what that player was sent last.
 
 **What you can do today**
 
 - Send each player what they can see. A `view()` that filters by sight is the single biggest saving, in time and in bandwidth.
 - Keep what never changes out of the state: a map, unit definitions. Send it once as a message, or let the page load it.
-- Make one command say more. A hundred small commands a second cost a hundred passes over the state.
+- In event mode, keep a large state out of rooms that take many commands: each one that changes anything writes and sends all of it. Tick instead, even slowly, and changes go out as differences.
 - Tick slower and let screens interpolate. Ten ticks a second is enough for most of what Tickflare aims at.
 - Past a few hundred players, split the world [across rooms](./worlds).
 - For many units and few players, use [lockstep](./lockstep): the room never touches the simulation.
 
-**What would lift it.** Tracking which parts of the state a hook touched, instead of serialising all of it, would take most of the cost of a command away. Working out a view once for players who share one, a team for instance, would do the same for ticks. Neither is built.
+**What would lift it.** Working out a view once for players who share one, a team for instance, would take most of the cost of a tick away in games with sides. Sending differences in event mode, and keeping the state in more than one row, would do for a command that changes the state what following writes did for one that does not. None of these is built.
 
 ## Bandwidth
 
@@ -172,11 +173,10 @@ Tickflare is at 0.1. It has a test suite that runs against Cloudflare's own runt
 
 In the order we would take them, by how much each removes for the work it needs:
 
-1. **Not serialising the whole state on every hook.** More players in a room, and larger states.
-2. **State in more than one row.** No 2 MB ceiling, cheaper saves.
-3. **Patches in event mode, and a binary encoding.** Less bandwidth.
-4. **Snapshots for lockstep.** Rejoining a long match at once.
-5. **Prediction helpers for state sync.**
-6. **Matchmaking by skill and region; account recovery.**
+1. **State in more than one row.** No 2 MB ceiling, cheaper saves.
+2. **Patches in event mode, and a binary encoding.** Less bandwidth.
+3. **Snapshots for lockstep.** Rejoining a long match at once.
+4. **Prediction helpers for state sync.**
+5. **Matchmaking by skill and region; account recovery.**
 
 None of these is promised. They are here so that you can see where the edges are, and which of them are meant to move.

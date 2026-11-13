@@ -10,6 +10,8 @@ declare namespace Cloudflare {
     TURNS: DurableObjectNamespace<import("./worker").TurnRoom>;
     ASKED: DurableObjectNamespace<import("./worker").AskedTurnRoom>;
     AWAY: DurableObjectNamespace<import("./worker").AwayRoom>;
+    SHAPES: DurableObjectNamespace<import("./worker").ShapesRoom>;
+    PLAIN: DurableObjectNamespace<import("./worker").PlainShapesRoom>;
     PATIENT: DurableObjectNamespace<import("./worker").PatientMatchmaker>;
     MATCHMAKER: DurableObjectNamespace<import("./worker").TestMatchmaker>;
     EDGE: DurableObjectNamespace<import("./worker").EdgeRoom>;

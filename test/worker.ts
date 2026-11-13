@@ -1,3 +1,4 @@
+import { initialShapes, SCRIPTS, type Shapes } from "./shapes.js";
 import {
   Accounts,
   LockstepRoom,
@@ -217,6 +218,41 @@ export class AwayRoom extends TestRoom {
   protected override seatTimeoutMs = 150;
 }
 
+export type ShapesCommand = { script: string; then?: "reject" | "throw" };
+
+/** A room whose commands run the scripts in ./shapes.ts, then stand, are refused, or fail. */
+export class ShapesRoom extends Room<Shapes, ShapesCommand> {
+  protected initialState(): Shapes {
+    return initialShapes();
+  }
+
+  protected parseCommand(raw: unknown): ShapesCommand {
+    const command = raw as ShapesCommand;
+    if (!Object.hasOwn(SCRIPTS, command.script)) reject("no_such_script");
+    return command;
+  }
+
+  protected onCommand(_player: Player, command: ShapesCommand): void {
+    // The scripts change `state` through the room, as a game's own code does.
+    const room = this;
+    SCRIPTS[command.script]!({
+      get state() {
+        return room.state;
+      },
+      set state(value: Shapes) {
+        room.state = value;
+      },
+    });
+    if (command.then === "reject") reject("changed_my_mind");
+    if (command.then === "throw") throw new TypeError("kaboom");
+  }
+}
+
+/** ShapesRoom on the plain state: every hook is compared whole, as before changes were tracked. */
+export class PlainShapesRoom extends ShapesRoom {
+  protected override trackChanges = false;
+}
+
 export interface TickState {
   phase: "lobby" | "playing" | "over";
   /** Goes up by one per tick. */
@@ -231,7 +267,7 @@ export interface TickState {
 }
 
 export type TickCommand =
-  | { type: "start" | "stop" | "bump" | "half" | "break" | "fix" }
+  | { type: "start" | "stop" | "bump" | "half" | "break" | "fix" | "later" }
   | { type: "timer"; ms: number };
 
 /** A ticking room: 50 ticks a second while `phase` is "playing". */
@@ -267,8 +303,16 @@ export class TickRoom extends Room<TickState, TickCommand> {
     });
   }
 
-  protected onCommand(_player: Player, command: TickCommand): void {
+  /** For reading only, as onHttp is. */
+  protected override onHttp(): Response {
+    return Response.json({ bumps: this.state.bumps, count: this.state.count });
+  }
+
+  protected onCommand(_player: Player, command: TickCommand): void | Promise<void> {
     switch (command.type) {
+      case "later":
+        // Not allowed: a hook may not return a promise.
+        return Promise.resolve();
       case "start":
         this.state.phase = "playing";
         return;
@@ -563,6 +607,8 @@ export default {
       (await routeToRoom(request, { rooms: env.ASKED, prefix: "/asked", authenticate: whoIs })) ??
       (await routeToMatchmaker(request, { matchmakers: env.MATCHMAKER, authenticate: whoIs })) ??
       (await routeToRoom(request, { rooms: env.AWAY, prefix: "/away", authenticate: whoIs })) ??
+      (await routeToRoom(request, { rooms: env.SHAPES, prefix: "/shapes", authenticate: whoIs })) ??
+      (await routeToRoom(request, { rooms: env.PLAIN, prefix: "/plain", authenticate: whoIs })) ??
       (await routeToMatchmaker(request, { matchmakers: env.PATIENT, prefix: "/patient", authenticate: whoIs })) ??
       (await routeToRoom(request, { rooms: env.EDGE, prefix: "/edge", authenticate: whoIs })) ??
       (await routeToRoom(request, { rooms: env.LAZY, prefix: "/lazy", authenticate: whoIs })) ??

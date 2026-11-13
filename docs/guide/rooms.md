@@ -64,6 +64,7 @@ Options are fields you override:
 | `maxMessageLength` | `16384` | Longest frame accepted, in characters |
 | `tickRate` | `0` | Ticks a second. 0 is event mode |
 | `saveIntervalMs` | `5000` | While ticking, how often the state is written |
+| `trackChanges` | `true` | Follow what each hook writes, instead of comparing the whole state after it. See [The state inside a hook](#the-state-inside-a-hook) |
 | `matchQueue` | none | A Queue binding for [finished matches](./match-results) |
 | `matchBucket` | none | An R2 binding for replays |
 | `rooms` | none | The namespace other rooms live in, for [handover and signals](./worlds) |
@@ -93,11 +94,32 @@ These are available on `this` while a hook runs:
 | `saveNow()` | While ticking, write this hook's changes at once |
 | `deleteRoom()` | [End the room](#when-a-room-is-over) and delete what it stored |
 
+### The state inside a hook
+
+A hook should cost what it does, not what the state weighs. So the room does not copy the state before a hook in order to undo it, or go through all of it afterwards to see what changed. It follows the hook's writes: inside a hook, `this.state` and everything you reach through it are stand-ins (JavaScript proxies) for the state's objects, which note each change as it is made. They read and write like the objects themselves:
+
+```ts
+const unit = this.state.units[command.unit];
+unit.target = command.target;          // noted, and undone if the hook is refused
+this.state.units[id] = { ...unit, hp: 10 };
+this.state.order.push(id);
+```
+
+Three things are different from plain objects:
+
+- **A stand-in is not `===` to an object that did not come from the state.** Two reads of the same unit give the same stand-in, so comparing state with state works. An object you made yourself and then put into the state is the exception: read back, it is its stand-in. `includes`, `indexOf` and `lastIndexOf` see through this; a comparison of your own does not, so compare ids.
+- **`structuredClone` refuses a stand-in**, and so does anything that clones what it is handed: a Queue, a call to another Durable Object. `plain(value)`, exported by `tickflare`, gives the object underneath: `structuredClone(plain(this.state.board))`. Read from what it gives you; a change made through it is not followed. It is also the faster way to read a large part of the state in one go, to hash it for instance.
+- **Go through `this.state` in every hook.** Do not keep an object of the state in a field of the room and change it in a later hook. Such a change is not followed either: it is not sent until the next tick or save, and it stays if the hook is refused.
+
+`onTick` is the exception. A simulation reads far more than it writes, and reads through stand-ins are slower, so `onTick` gets the state itself and the room compares the whole of it once the tick is done. `view()`, `shouldTick()` and `onHttp` get the state itself too.
+
+If your hooks need plain objects everywhere, set `trackChanges = false`. Every hook then works on the state itself, and each one costs a pass over the whole state.
+
 ## Rules for hooks
 
 - **Hooks are synchronous.** A hook that returns a promise is refused with `internal_error`, because the room can't save or roll back work that finishes later. Use [`defer`](./timers-messages-async#async-work) for anything that waits.
 - **The state must be JSON-serialisable.** It is stored and sent as JSON, in one database row, which Cloudflare limits to 2 MB.
-- **Change the state only inside hooks.** What `onHttp` changes is discarded, and so is anything a refused hook's leftover promise changes later.
+- **Change the state only inside hooks, through `this.state`.** What `onHttp` changes is discarded, and so is anything a refused hook's leftover promise changes later. See [The state inside a hook](#the-state-inside-a-hook).
 - **Identity is decided at the gateway.** Rooms trust the player id your `authenticate` function returns ([Identity and join tokens](./identity)).
 
 ## What the room does for you

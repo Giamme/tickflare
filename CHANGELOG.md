@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+**A hook costs what it touches.** Until now the whole state was turned into JSON after every hook, to see whether the hook changed anything and to be able to undo it. A command in a room with a large state cost as much as the state was large, however little it did.
+
+The room now follows what a hook writes. Inside a hook, `this.state` and what is reached through it are proxies that note each change; undoing a refused hook replays the notes backwards, and the state becomes JSON only when it is saved or sent whole. `onTick` still runs on the plain state and is compared whole, since a simulation reads far more than it writes.
+
+Measured locally, in a room asked for 10 ticks a second:
+
+| In the room | Before | Now |
+| --- | --- | --- |
+| 5,000 units, 100 players, 480 commands a second | 6.3 ticks a second | 8.3 |
+| 20,000 units, 20 players, 400 commands a second | 3.5 ticks a second | 8.7 |
+| Event mode, 20,000 units: commands that change nothing, a second | 440 | 3,500 |
+
+A command that changes the state in event mode costs what it did, since the whole state is still written and sent each time.
+
+What changes for your code, in hooks other than `onTick`:
+
+- An object read from the state is a proxy. It is not `===` to an object that did not come from the state, and `structuredClone` refuses it. `plain(value)`, a new export, gives the object underneath.
+- Reach the state through `this.state` in every hook. A change made through a reference kept from an earlier hook is not followed: it is not sent until the next tick or save, and it stays if the hook is refused.
+- A state that JSON cannot hold (a `BigInt`, a loop) is refused when it is written, in the hook that writes it.
+- `trackChanges = false` puts a room back on the plain state, at the old cost.
+
 **Rooms can be deleted, unused rooms no longer exist, and a match can play on without its players.** Until now every room a request ever reached stayed in your Cloudflare account for good, with its storage, and a match everyone left stood still.
 
 - **`this.deleteRoom()`** ends a room: everyone still connected is disconnected with `CloseCode.Removed` and the reason `"room_deleted"`, and everything the room stored is deleted, a lockstep recording and tables of your own included, so that the Durable Object ceases to exist. A finished match and players on their way to another room are delivered first. The room id is free for a new room afterwards. Nothing calls it for you: decide when a room of yours is over, for instance when the last player leaves.
