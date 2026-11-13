@@ -181,12 +181,14 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
   protected trackChanges = true;
 
   /**
-   * The authoritative state. Change it only inside hooks.
+   * The authoritative state. Change it only inside hooks, through
+   * `this.state`: see `trackChanges` for what a hook is handed.
    */
   protected get state(): State {
     return this.#tracker.active ? this.#tracker.wrap(this.#state) : this.#state;
   }
 
+  /** Replaces the whole state. Like any other change, only inside hooks. */
   protected set state(value: State) {
     if (!this.#tracker.active) {
       this.#state = value;
