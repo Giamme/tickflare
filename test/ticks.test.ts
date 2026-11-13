@@ -1,4 +1,4 @@
-import { runInDurableObject } from "cloudflare:test";
+import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it, vi } from "vitest";
 import { follow, freshRoom, sleep, until } from "./helpers.js";
@@ -114,6 +114,86 @@ describe("state sync", () => {
     expect(back.of("welcome")[0]).toMatchObject({ tick: stopped.tick, state: { count: stopped.count } });
     await until(() => back.tick >= stopped.tick + 3);
     expect(back.state!.count).toBe(back.tick);
+  });
+
+  describe("with ticksWhileEmpty()", () => {
+    const awake = (room: string) =>
+      runInDurableObject(stubFor(room), async (_instance, state) => ({
+        timer: state.storage.sql.exec("SELECT name FROM tickflare_timers WHERE name = 'tickflare:awake'").toArray().length > 0,
+        alarm: await state.storage.getAlarm(),
+      }));
+
+    it("plays on with nobody connected, until the game says it is over", async () => {
+      const room = `onward-${freshRoom()}`;
+      const p1 = await join(room, "p1");
+      await until(() => p1.tick >= 5);
+      p1.ws.close(1000, "bye");
+      await sleep(150);
+
+      const first = await saved(room);
+      await sleep(300);
+      const later = await saved(room);
+      expect(later.count).toBeGreaterThan(first.count + 5);
+      // An alarm a few seconds ahead keeps the object in memory, and would restart it.
+      const during = await awake(room);
+      expect(during.timer).toBe(true);
+      expect(during.alarm).toBeGreaterThan(Date.now());
+
+      // The fixture ends its match at 150. Then the room is asleep like any other.
+      for (let waited = 0; (await saved(room)).count < 150; waited += 50) {
+        expect(waited).toBeLessThan(8000);
+        await sleep(50);
+      }
+      await sleep(200);
+      expect((await saved(room)).count).toBe(150);
+      expect((await awake(room)).timer).toBe(false);
+    });
+
+    it("carries on from its last save when the room is torn down", async () => {
+      const room = `onward-${freshRoom()}`;
+      const p1 = await join(room, "p1");
+      await until(() => p1.tick >= 5);
+      p1.ws.close(1000, "bye");
+      await sleep(250);
+      const before = await saved(room);
+
+      // What a deploy does: the object is gone from memory, loop and all. Its alarm brings it back.
+      await runInDurableObject(stubFor(room), (_instance, state) => {
+        try {
+          state.abort("torn down");
+        } catch {
+          // Aborting throws in the caller.
+        }
+      }).catch(() => {});
+      await sleep(100);
+      expect((await saved(room)).count).toBeLessThanOrEqual(before.count + 6);
+      expect(await runDurableObjectAlarm(stubFor(room))).toBe(true);
+      await sleep(300);
+      expect((await saved(room)).count).toBeGreaterThan(before.count + 6);
+    });
+
+    it("hands the match to whoever comes back", async () => {
+      const room = `onward-${freshRoom()}`;
+      const p1 = await join(room, "p1");
+      await until(() => p1.tick >= 5);
+      p1.ws.close(1000, "bye");
+      await sleep(400);
+
+      const back = await join(room, "p1");
+      expect(back.of("welcome")[0]!.state.count).toBeGreaterThan(20);
+      await until(() => back.tick >= back.of("welcome")[0]!.tick + 3);
+      expect(back.state!.count).toBe(back.tick);
+      expect((await awake(room)).timer).toBe(false);
+    });
+
+    it("leaves other rooms as they were: they stop when the last player drops", async () => {
+      const room = freshRoom();
+      const p1 = await join(room, "p1");
+      await until(() => p1.tick >= 5);
+      p1.ws.close(1000, "bye");
+      await sleep(150);
+      expect((await awake(room)).timer).toBe(false);
+    });
   });
 
   it("behaves as event mode while shouldTick() is false", async () => {

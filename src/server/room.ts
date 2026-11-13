@@ -69,6 +69,14 @@ const AWAY_TIMER = "tickflare:away:";
 const DELETE_TIMER = "tickflare:delete";
 /** A room that still owes a delivery puts its deletion off by this much, and tries the delivery again. */
 const DELETE_RETRY_MS = 30_000;
+/**
+ * Set while a room ticks with nobody connected. Cloudflare takes an object
+ * with no connections out of memory after about a minute without an event,
+ * timers and all; an alarm is an event, and it is also what starts the
+ * simulation again after a deploy or a crash.
+ */
+const AWAKE_TIMER = "tickflare:awake";
+const AWAKE_MS = 20_000;
 /** How long a room that is being deleted waits for deferred work that is still running. */
 const DELETE_PATIENCE_MS = 10_000;
 /**
@@ -262,10 +270,26 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
    * Whether the simulation should be running. Checked after every event and
    * every tick, so base it on the state, e.g. `this.state.phase === "playing"`.
    * While it returns false the room behaves as in event mode and can
-   * hibernate. The room never ticks while nobody is connected.
+   * hibernate. The room does not tick while nobody is connected, unless
+   * `ticksWhileEmpty()` says so.
    */
   protected shouldTick(): boolean {
     return true;
+  }
+
+  /**
+   * Whether the simulation keeps running while nobody is connected, for a
+   * match that has to reach its end whoever is watching. `shouldTick()` has
+   * to agree. Checked like `shouldTick()`, so base it on the state.
+   *
+   * Give such a room an end. It is awake, and billed, for every second it
+   * ticks, and nobody is there to notice one that never stops: have `onTick`
+   * finish or delete the room when the match is over or has run too long.
+   * After a deploy or a crash it carries on from its last save within
+   * twenty seconds.
+   */
+  protected ticksWhileEmpty(): boolean {
+    return false;
   }
 
   /**
@@ -659,6 +683,8 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
         doomed = true;
         continue;
       }
+      // Waking the room is all this one is for. `#finish` moves it on, or drops it.
+      if (name === AWAKE_TIMER) continue;
       // Spend the timer first, on its own, so a failing hook cannot bring it back.
       this.#apply(() => this.#timers.delete(name));
       if (name.startsWith(AWAY_TIMER)) this.#giveUpSeat(name.slice(AWAY_TIMER.length));
@@ -905,6 +931,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
       this.#broadcastPresence();
     }
 
+    this.#stayAwake();
     if (this.#alarmStale) {
       this.#alarmStale = false;
       const next = this.#nextTimer();
@@ -987,16 +1014,37 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     await this.matchQueue?.send(message);
   }
 
+  /** Whether the simulation should be running now. `connected` is whether anybody is. */
+  #wantsTicks(connected: boolean, evenIfStalled = false): boolean {
+    if (this.tickRate <= 0 || (this.#stalled && !evenIfStalled)) return false;
+    try {
+      return this.shouldTick() === true && (connected || this.ticksWhileEmpty() === true);
+    } catch (err) {
+      console.error("[tickflare] shouldTick() or ticksWhileEmpty() failed:", err);
+      return false;
+    }
+  }
+
+  /**
+   * A room that ticks with nobody connected keeps an alarm a few seconds
+   * ahead of itself: see `AWAKE_TIMER`. A simulation that keeps failing is
+   * woken too, since every alarm is an event and lets it try again.
+   */
+  #stayAwake(): void {
+    const alone = this.#seatedSockets().length === 0 && this.#wantsTicks(false, true);
+    const firesAt = this.#timers.get(AWAKE_TIMER);
+    if (alone ? firesAt !== undefined && firesAt > Date.now() : firesAt === undefined) return;
+    // Saved at once: if the room is taken out of memory, this is what brings it back.
+    this.#apply(() => {
+      if (alone) this.#timers.set(AWAKE_TIMER, Date.now() + AWAKE_MS);
+      else this.#timers.delete(AWAKE_TIMER);
+    }, true);
+    this.#alarmStale = true;
+  }
+
   /** Starts the simulation if it should be running and stops it if it should not. */
   #syncLoop(): void {
-    let wanted = false;
-    if (this.tickRate > 0 && !this.#stalled && this.#seatedSockets().length > 0) {
-      try {
-        wanted = this.shouldTick() === true;
-      } catch (err) {
-        console.error("[tickflare] shouldTick() failed:", err);
-      }
-    }
+    const wanted = this.#wantsTicks(this.#seatedSockets().length > 0);
     if (wanted && this.#loop === undefined) {
       this.#loop = setInterval(() => this.#runTick(), 1000 / this.tickRate);
     } else if (!wanted && this.#loop !== undefined) {

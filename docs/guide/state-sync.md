@@ -77,6 +77,18 @@ protected override shouldTick(): boolean {
 }
 ```
 
+### Playing on with nobody connected
+
+Some matches have to reach their end whoever is watching: a ranked match should have a winner even if the losing side closes the tab, and so should one the last player was only disconnected from. Return true from `ticksWhileEmpty()` and the simulation keeps running while `shouldTick()` does:
+
+<<< @/snippets/onward/ranked.ts{32-44}
+
+- **Give it an end.** The room is awake, and [billed](./costs), for every second it ticks, and nobody is there to notice one that never stops. End the match when it has a winner, cap how long it may run unattended, and delete the room when it is done.
+- **It survives deploys and crashes.** While it ticks alone the room keeps an alarm twenty seconds ahead of itself. That keeps Cloudflare from taking it out of memory, and after a restart it is what starts the simulation again, from the last save.
+- **Coming back is an ordinary join.** A player who connects again gets the state as it is now.
+
+It is checked like `shouldTick()`, so it can depend on the state: `return this.state.ranked` plays ranked matches to the end and lets the others stand still.
+
 ## Keeping ticks cheap
 
 - **Key collections by id.** Patches go into objects key by key; an array is sent whole when anything in it changes.

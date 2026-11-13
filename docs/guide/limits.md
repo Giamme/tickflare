@@ -11,7 +11,7 @@ Every limit here is one of three kinds: Cloudflare's, which nobody can lift; Tic
 | A message from a player | 16 KB and 30 a second by default; both are settings | Tickflare, to protect the room |
 | Transport | WebSockets: ordered and reliable, no UDP | Cloudflare |
 | What a restart loses | Up to `saveIntervalMs` of a ticking room, five seconds by default | Tickflare |
-| A room nobody is in | Stands still, and stays for ever | Tickflare |
+| A room nobody is in | Stands still and stays, until your code says otherwise | Tickflare |
 | Storage | 10 GB a room, 10 GB for accounts and match history | Cloudflare |
 | Where a room runs | Where it was created; it does not move | Cloudflare |
 | Clients | TypeScript and JavaScript | Not built |
@@ -117,21 +117,23 @@ Every deploy of your Worker restarts every room. Cloudflare gives no warning of 
 
 ## Rooms nobody is in
 
-A room ticks only while a player is connected to it. This is deliberate: an empty room is not billed. But it has a consequence that is easy to miss.
+A room ticks only while a player is connected to it, unless you say otherwise. This is deliberate: an empty room is not billed. But it has a consequence that is easy to miss.
 
-**A match everyone leaves stands still.** It is not over, it has no winner, and nothing ends it. A match that should play on without its players, to give a ranked result for instance, cannot.
+**A match everyone leaves stands still.** It is not over, it has no winner, and nothing ends it.
 
 **Timers still fire.** A timer that sets itself again keeps waking an abandoned room for ever, and anything it does, such as keeping the room in a list, carries on.
 
 **Rooms stay until you delete them.** A room that has had a player keeps its storage, a lockstep recording included, and with it the Durable Object, until it calls [`deleteRoom()`](./rooms#when-a-room-is-over). A room nobody was ever seated in stores nothing and leaves nothing behind.
 
-**What you can do today.** Decide what an empty room means for your game, and say so in `onLeave`:
+**What you can do today.** Decide what an empty room means for your game, and say so in `onLeave`. For most matches, give the players a while to come back and then delete the room:
 
 <<< @/snippets/empty/match.ts{28-33,39-43}
 
 Do the same for a lobby everyone has left and for a finished match once its players are gone: nothing ends a room unless your code does.
 
-**What would lift it.** Two small things, neither built: a setting to keep ticking with nobody connected, for matches that have to finish; and a hook for the moment a room empties.
+A match that has to reach a result whoever is watching, a ranked one for instance, can [play on with nobody connected](./state-sync#playing-on-with-nobody-connected). That room is awake and billed until it ends, so it needs an end of its own.
+
+**What would lift the rest.** A hook for the moment a room empties, so that this is one decision in one place. Not built.
 
 ## Storage
 
@@ -172,7 +174,7 @@ Tickflare is at 0.1. It has a test suite that runs against Cloudflare's own runt
 
 In the order we would take them, by how much each removes for the work it needs:
 
-1. **Rooms nobody is in:** ticking with nobody connected, and a hook for an empty room. Small, and it closes a whole class of mistakes.
+1. **Rooms nobody is in:** a hook for an empty room. Small, and it closes a whole class of mistakes.
 2. **Not serialising the whole state on every hook.** More players in a room, and larger states.
 3. **State in more than one row.** No 2 MB ceiling, cheaper saves.
 4. **Patches in event mode, and a binary encoding.** Less bandwidth.

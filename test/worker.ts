@@ -207,7 +207,7 @@ export class AwayRoom extends TestRoom {
 }
 
 export interface TickState {
-  phase: "lobby" | "playing";
+  phase: "lobby" | "playing" | "over";
   /** Goes up by one per tick. */
   count: number;
   /** Per player, `count` times their seat number. `view` hides everyone else's. */
@@ -242,9 +242,15 @@ export class TickRoom extends Room<TickState, TickCommand> {
     return this.state.phase === "playing";
   }
 
+  /** Rooms named "onward-…" play on with nobody connected, until the count reaches 150. */
+  protected override ticksWhileEmpty(): boolean {
+    return this.roomId?.startsWith("onward-") === true;
+  }
+
   protected override onTick(): void {
     if (this.state.broken) throw new TypeError("tick kaboom");
     this.state.count += 1;
+    if (this.ticksWhileEmpty() && this.state.count >= 150) this.state.phase = "over";
     this.players.forEach((player, seat) => {
       this.state.secrets[player.id] = this.state.count * (seat + 1);
     });

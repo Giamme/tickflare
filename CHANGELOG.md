@@ -2,9 +2,10 @@
 
 ## Unreleased
 
-**Rooms can be deleted, and unused rooms no longer exist.** Until now every room a request ever reached stayed in your Cloudflare account for good, with its storage.
+**Rooms can be deleted, unused rooms no longer exist, and a match can play on without its players.** Until now every room a request ever reached stayed in your Cloudflare account for good, with its storage, and a match everyone left stood still.
 
 - **`this.deleteRoom()`** ends a room: everyone still connected is disconnected with `CloseCode.Removed` and the reason `"room_deleted"`, and everything the room stored is deleted, a lockstep recording and tables of your own included, so that the Durable Object ceases to exist. A finished match and players on their way to another room are delivered first. The room id is free for a new room afterwards. Nothing calls it for you: decide when a room of yours is over, for instance when the last player leaves.
+- **`ticksWhileEmpty()`** lets a match play on with nobody connected, for results that have to stand whoever is still watching. Return true and the simulation runs for as long as `shouldTick()` says, through deploys and crashes. Such a room is awake and billed until it stops, so give it an end.
 - **A room stores nothing until its first player is seated.** A refused join or a request to a room id nobody uses used to create the room's tables, which is enough for Cloudflare to keep the object. Rooms created by earlier versions are read as before.
 
 **Lockstep rooms can sleep between turns.** Set `turnClock = "players"` on a `LockstepRoom` and it has no timer of its own: `LockstepClient` asks it for each turn as it falls due, one player's client at a time, with the others standing by to take over. The room closes as many turns as its own clock says have passed, so nobody can hurry the game or hold it back, and orders take effect as soon as they do with the room's clock. For the costs guide's RTS example it brings the bill from about $45 a month to about $11.
