@@ -96,6 +96,17 @@ export class TestRoom extends Room<TestState, TestCommand> {
     this.state.log.push(`left:${player.id}`);
   }
 
+  /** What becomes of an empty room goes by its name, so that the other tests see no difference. */
+  protected override onEmpty(): void {
+    const id = this.roomId ?? "";
+    if (id.startsWith("hollow-")) this.state.log.push(`empty:${this.players.length}`);
+    if (id.startsWith("fleeting-")) this.deleteRoom();
+    if (id.startsWith("sour-")) {
+      this.state.log.push("empty");
+      throw new TypeError("onEmpty kaboom");
+    }
+  }
+
   protected override onTimer(name: string): void {
     this.state.log.push(`timer:${name}`);
     if (name === "boom") throw new TypeError("kaboom");

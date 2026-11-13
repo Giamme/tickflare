@@ -41,6 +41,7 @@ Three hooks are required. The rest have defaults.
 | `onDisconnect(player)` | A seated player's last connection closes | They keep their seat |
 | `onReconnect(player)` | A seated player comes back | |
 | `onLeave(player)` | A player asks to leave, or stayed away longer than `seatTimeoutMs` | Tidy up; `reject(reason)` makes them stay |
+| `onEmpty()` | The last seat is given up, however the players went | Say [what becomes of the room](#when-a-room-is-over). Not called for a room nobody ever sat in |
 | `onTimer(name)` | A timer set with `setTimer` runs out | |
 | `onTick(dt)` | `tickRate` times a second, in [state sync](./state-sync) | `dt` is always `1 / tickRate` seconds |
 | `shouldTick()` | After every event and every tick | Return false to pause the simulation |
@@ -115,14 +116,15 @@ These are available on `this` while a hook runs:
 
 A room begins to exist with the first player who is seated in it. Before that it stores nothing: a refused join, a request for a room that was never used or a mistyped room id leaves nothing behind.
 
-From then on it stays until you end it. Nothing ends a room by itself, not an empty lobby, not a finished match, so decide when yours is over and call `this.deleteRoom()`:
+From then on it stays until you end it. Nothing ends a room by itself, not an empty lobby, not a finished match, so decide when yours is over and call `this.deleteRoom()`. The usual place is `onEmpty()`, which runs when the last seat is given up, whether its player left, stayed away longer than `seatTimeoutMs`, was removed or moved to another room:
 
 ```ts
-protected override onLeave(player: Player): void {
-  const anyoneElse = this.players.some((seated) => seated.id !== player.id);
-  if (!anyoneElse) this.deleteRoom();
+protected override onEmpty(): void {
+  this.deleteRoom();
 }
 ```
+
+`onEmpty()` runs as a hook of its own, straight after the one that emptied the room, with `this.players` empty. A match worth coming back to can set a timer there instead and delete itself when it fires; [Rooms nobody is in](./limits#rooms-nobody-is-in) shows one.
 
 Shortly after the hook, everyone still connected is disconnected with `CloseCode.Removed` and the reason `"room_deleted"`, and everything the room stored is deleted: its state, seats and timers, a lockstep recording, and any tables of your own. With nothing stored, the Durable Object itself is gone from your account.
 

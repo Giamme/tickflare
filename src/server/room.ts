@@ -257,6 +257,19 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
    */
   protected onLeave(_player: Player): void {}
 
+  /**
+   * The last seat was given up: nobody is in the room any more, whichever way
+   * they went (they left, stayed away too long, were removed, or moved to
+   * another room). `this.players` is empty. Nothing ends a room by itself, so
+   * this is where to say what becomes of it: `deleteRoom()`, a timer that
+   * deletes it unless somebody comes back, or nothing, for a room that waits
+   * for its next players. Not called for a room nobody ever sat in.
+   *
+   * It runs as a hook of its own, straight after the one that emptied the
+   * room. If it fails it alone is undone: the players are still gone.
+   */
+  protected onEmpty(): void {}
+
   /** A timer set with `setTimer(name, ...)` ran out. */
   protected onTimer(_name: string): void {}
 
@@ -1186,6 +1199,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     this.#saveAsked = false;
     const was = this.#committed;
     const ticking = this.#loop !== undefined;
+    const seated = this.#roster.length;
     try {
       const { next, seq, stateChanged, saved } = this.#store.atomically(() => {
         const returned = hook() as unknown;
@@ -1236,6 +1250,8 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
       this.#seq = seq;
       this.#committed = next;
       if (stateChanged && !ticking) this.#broadcastState();
+      // No await between the two commits, so storage holds both or neither.
+      if (seated > 0 && this.#roster.length === 0) this.#apply(() => this.onEmpty());
       return { ok: true };
     } catch (err) {
       this.#restore();

@@ -125,15 +125,13 @@ A room ticks only while a player is connected to it, unless you say otherwise. T
 
 **Rooms stay until you delete them.** A room that has had a player keeps its storage, a lockstep recording included, and with it the Durable Object, until it calls [`deleteRoom()`](./rooms#when-a-room-is-over). A room nobody was ever seated in stores nothing and leaves nothing behind.
 
-**What you can do today.** Decide what an empty room means for your game, and say so in `onLeave`. For most matches, give the players a while to come back and then delete the room:
+**What you can do today.** Decide what an empty room means for your game, and say so in `onEmpty()`, which runs when the last seat is given up. For most matches, give the players a while to come back and then delete the room:
 
 <<< @/snippets/empty/match.ts{28-33,39-43}
 
-Do the same for a lobby everyone has left and for a finished match once its players are gone: nothing ends a room unless your code does.
+A lobby everyone has left needs the same decision, usually a plain `deleteRoom()`: nothing ends a room unless your code does.
 
 A match that has to reach a result whoever is watching, a ranked one for instance, can [play on with nobody connected](./state-sync#playing-on-with-nobody-connected). That room is awake and billed until it ends, so it needs an end of its own.
-
-**What would lift the rest.** A hook for the moment a room empties, so that this is one decision in one place. Not built.
 
 ## Storage
 
@@ -174,12 +172,11 @@ Tickflare is at 0.1. It has a test suite that runs against Cloudflare's own runt
 
 In the order we would take them, by how much each removes for the work it needs:
 
-1. **Rooms nobody is in:** a hook for an empty room. Small, and it closes a whole class of mistakes.
-2. **Not serialising the whole state on every hook.** More players in a room, and larger states.
-3. **State in more than one row.** No 2 MB ceiling, cheaper saves.
-4. **Patches in event mode, and a binary encoding.** Less bandwidth.
-5. **Snapshots for lockstep.** Rejoining a long match at once.
-6. **Prediction helpers for state sync.**
-7. **Matchmaking by skill and region; account recovery.**
+1. **Not serialising the whole state on every hook.** More players in a room, and larger states.
+2. **State in more than one row.** No 2 MB ceiling, cheaper saves.
+3. **Patches in event mode, and a binary encoding.** Less bandwidth.
+4. **Snapshots for lockstep.** Rejoining a long match at once.
+5. **Prediction helpers for state sync.**
+6. **Matchmaking by skill and region; account recovery.**
 
 None of these is promised. They are here so that you can see where the edges are, and which of them are meant to move.

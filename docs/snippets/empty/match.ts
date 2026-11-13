@@ -1,4 +1,4 @@
-import { Room, type Player } from "tickflare";
+import { Room } from "tickflare";
 
 interface State {
   over: boolean;
@@ -25,11 +25,11 @@ export class Match extends Room<State, Command> {
     return !this.state.over;
   }
 
-  // A seat was given up, on purpose or by staying away. `players` still has the one leaving.
-  protected override onLeave(player: Player): void {
-    const anyoneElse = this.players.some((seated) => seated.id !== player.id);
-    // Nobody is left to play for. Give them ten minutes to come back, then call it.
-    if (!anyoneElse && !this.state.over) this.setTimer("abandoned", 10 * 60_000);
+  // The last seat was given up, on purpose or by staying away. Nobody is left to play for.
+  protected override onEmpty(): void {
+    // A match that is over can go at once. One that is not gets ten minutes for somebody to return.
+    if (this.state.over) this.deleteRoom();
+    else this.setTimer("abandoned", 10 * 60_000);
   }
 
   protected override onJoin(): void {
