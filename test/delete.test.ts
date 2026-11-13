@@ -131,6 +131,15 @@ describe("deleteRoom()", () => {
     expect(await kept(env.EDGE, room)).toEqual(NOTHING);
   });
 
+  it("lets deferred work that is under way finish first", async () => {
+    const { room, p1 } = await twoPlayers(freshRoom(), "/edge");
+    p1.raw(JSON.stringify({ t: "cmd", id: 1, data: { type: "edge:tellThenDelete" } }));
+
+    await p1.closed;
+    await gone(env.EDGE, room);
+    expect(await (await env.REPLAYS.get(`farewell/${room}`))?.text()).toBe("gone");
+  });
+
   it("waits for as long as the room owes a delivery", async () => {
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
     const { room, p1, p2 } = await twoPlayers(freshRoom(), "/edge");

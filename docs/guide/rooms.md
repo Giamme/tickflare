@@ -127,6 +127,7 @@ protected override onLeave(player: Player): void {
 Shortly after the hook, everyone still connected is disconnected with `CloseCode.Removed` and the reason `"room_deleted"`, and everything the room stored is deleted: its state, seats and timers, a lockstep recording, and any tables of your own. With nothing stored, the Durable Object itself is gone from your account.
 
 - **What the room owes goes out first.** A match announced with `finishMatch`, recording included, and a player on their way to another room are delivered before anything is deleted. If a delivery fails the room stays and tries again every 30 seconds.
+- **Deferred work gets to finish.** A task passed to `defer()` that is still running, telling a lobby list that the room is gone for instance, is given ten seconds.
 - **The room id is free again.** Whoever comes to it later finds a new, empty room.
 - **It is undone with the hook**, like everything else, if the hook is refused.
 

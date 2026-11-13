@@ -69,6 +69,8 @@ const AWAY_TIMER = "tickflare:away:";
 const DELETE_TIMER = "tickflare:delete";
 /** A room that still owes a delivery puts its deletion off by this much, and tries the delivery again. */
 const DELETE_RETRY_MS = 30_000;
+/** How long a room that is being deleted waits for deferred work that is still running. */
+const DELETE_PATIENCE_MS = 10_000;
 /**
  * How long a room keeps sending a player on to the room it handed them to,
  * counted from the moment it first told them. Long enough for a client whose
@@ -177,6 +179,8 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
   #mail: { to: string | null; frame: string }[] = [];
   /** Work for after the event, from `defer`. */
   #deferred: (() => unknown)[] = [];
+  /** Deferred tasks that have started and not finished. */
+  #working = new Set<Promise<unknown>>();
   /** Messages for other rooms that are committed and waiting to go out. */
   #outgoing = new SignalSender();
   #flushing = false;
@@ -553,6 +557,8 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
    *
    * What the room still owes is delivered first: a finished match's result,
    * a player on their way to another room. Until it is, the room stays.
+   * Work passed to `defer()` that is still running is given ten seconds to
+   * finish.
    *
    * The room id is not used up. Someone who comes to it later finds a new,
    * empty room. Call from inside a hook.
@@ -666,6 +672,12 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
 
   /** `deleteRoom()` was called, and its moment has come. */
   async #delete(): Promise<void> {
+    // Deferred work that is under way gets to finish: it may be telling someone that this room is going.
+    const patience = scheduler.wait(DELETE_PATIENCE_MS);
+    while (this.#working.size > 0) {
+      const waited = await Promise.race([Promise.allSettled([...this.#working]).then(() => true), patience.then(() => false)]);
+      if (!waited) break;
+    }
     if (this.#store.hasOutbox()) {
       // Something is still owed, and `#finish` has just failed to deliver it. Keep the room, and
       // let the next alarm try again.
@@ -914,7 +926,9 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     for (const task of this.#deferred.splice(0)) {
       const running = Promise.resolve()
         .then(task)
-        .catch((err) => console.error("[tickflare] deferred task failed:", err));
+        .catch((err) => console.error("[tickflare] deferred task failed:", err))
+        .finally(() => this.#working.delete(running));
+      this.#working.add(running);
       this.ctx.waitUntil(running);
     }
   }

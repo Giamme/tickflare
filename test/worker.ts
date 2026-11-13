@@ -418,6 +418,14 @@ export class EdgeRoom extends TestRoom {
         this.ctx.storage.sql.exec("INSERT INTO notes (text) VALUES ('goes with the room')");
         this.deleteRoom();
         return;
+      case "edge:tellThenDelete":
+        // What a room does to take itself off a list somewhere before it goes.
+        this.defer(async () => {
+          await scheduler.wait(150);
+          await this.env.REPLAYS.put(`farewell/${this.roomId}`, "gone");
+        });
+        this.deleteRoom();
+        return;
       case "edge:moveOther":
         this.movePlayer(c.id!, c.to!, { gold: 7 });
         return;
