@@ -36,25 +36,30 @@ async function ask(label, query) {
 
 if (process.argv.includes("--describe")) {
   // What the two datasets can be filtered and summed by, straight from the schema.
-  const fieldsOf = async (type) => (await ask(type, `{ __type(name: "${type}") { fields { name } inputFields { name } } }`))?.__type;
-  const base = (type) => type?.name ?? type?.ofType?.name ?? type?.ofType?.ofType?.name ?? type?.ofType?.ofType?.ofType?.name;
-  const root = await ask(
-    "schema",
-    `{ __type(name: "account") { fields { name args { name type { name ofType { name ofType { name } } } }
-       type { name ofType { name ofType { name ofType { name } } } } } } }`,
-  );
+  const REF = "name kind ofType { name kind ofType { name kind ofType { name kind ofType { name kind } } } }";
+  const named = (type) => {
+    while (type && !type.name) type = type.ofType;
+    return type?.name;
+  };
+  const typeOf = async (name) =>
+    (await ask(name, `{ __type(name: "${name}") { fields { name type { ${REF} } } inputFields { name } } }`))?.__type;
+  const root = await ask("schema", `{ __type(name: "account") { fields { name args { name type { ${REF} } } type { ${REF} } } } }`);
   for (const field of root?.__type?.fields ?? []) {
     if (!/^durableObjects(Periodic|InvocationsAdaptive)Groups$/.test(field.name)) continue;
-    const row = await ask(base(field.type), `{ __type(name: "${base(field.type)}") { fields { name type { name ofType { name } } } } }`);
     const parts = {};
-    for (const part of row?.__type?.fields ?? []) {
-      parts[part.name] = (await fieldsOf(base(part.type)))?.fields?.map((f) => f.name) ?? base(part.type);
+    for (const part of (await typeOf(named(field.type)))?.fields ?? []) {
+      parts[part.name] = (await typeOf(named(part.type)))?.fields?.map((f) => f.name) ?? named(part.type);
     }
     const filter = field.args.find((arg) => arg.name === "filter");
-    const filters = (await fieldsOf(base(filter?.type)))?.inputFields?.map((f) => f.name) ?? [];
+    const filters = (await typeOf(named(filter?.type)))?.inputFields?.map((f) => f.name) ?? [];
     console.log(
       "ANALYTICS " +
-        JSON.stringify({ dataset: field.name, parts, filters: filters.filter((name) => !/_(neq|gt|lt|leq|geq|like|notlike|notin)$/.test(name)) }).slice(0, 6000),
+        JSON.stringify({
+          dataset: field.name,
+          row: named(field.type),
+          parts,
+          filters: filters.filter((name) => !/_(neq|gt|lt|leq|geq|like|notlike|notin|in)$/.test(name)),
+        }).slice(0, 6000),
     );
   }
   process.exit(0);
