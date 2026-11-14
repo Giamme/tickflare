@@ -5,7 +5,8 @@
  * game in each mode, where the money goes, and what the usual
  * alternatives would charge.
  */
-import { computed, reactive } from "vue";
+import { computed, reactive, useId } from "vue";
+import HelpTip from "./HelpTip.vue";
 import {
   PRICES_AS_OF,
   breakEven,
@@ -23,12 +24,62 @@ const props = defineProps<{ start?: string }>();
 
 const game = reactive<Game>({ ...(presets.find((preset) => preset.id === props.start) ?? presets[0]!).game });
 
-const fields: { key: "matchesPerDay" | "playersPerMatch" | "matchMinutes" | "messagesPerMinute"; label: string; hint: string; min: number; max: number }[] = [
-  { key: "matchesPerDay", label: "Matches a day", hint: "Sessions started", min: 0, max: 10_000_000 },
-  { key: "playersPerMatch", label: "Players in a match", hint: "In one room", min: 1, max: 1000 },
-  { key: "matchMinutes", label: "Minutes in a match", hint: "Start to end", min: 1, max: 43_200 },
-  { key: "messagesPerMinute", label: "Messages a minute", hint: "From each player", min: 0, max: 6000 },
+/** A prefix for the ids that tie each label to its input: the estimator is on more than one page. */
+const uid = useId();
+
+const fields: {
+  key: "matchesPerDay" | "playersPerMatch" | "matchMinutes" | "messagesPerMinute";
+  label: string;
+  hint: string;
+  help: string;
+  min: number;
+  max: number;
+}[] = [
+  {
+    key: "matchesPerDay",
+    label: "Matches a day",
+    hint: "Sessions started",
+    help: "How many matches, or play sessions, start on an average day. Each one is a room, and everything on the bill grows with this number.",
+    min: 0,
+    max: 10_000_000,
+  },
+  {
+    key: "playersPerMatch",
+    label: "Players in a match",
+    hint: "In one room",
+    help: "How many players share one room. More players send more messages into it, but a room costs the same to keep awake whoever is in it.",
+    min: 1,
+    max: 1000,
+  },
+  {
+    key: "matchMinutes",
+    label: "Minutes in a match",
+    hint: "Start to end",
+    help: "How long a match lasts, from the first player in to the last one out. A room that runs is billed for every second of it. A room that sleeps is billed for its moves, however long the match takes.",
+    min: 1,
+    max: 43_200,
+  },
+  {
+    key: "messagesPerMinute",
+    label: "Messages a minute",
+    hint: "From each player",
+    help: "What one player sends the room in a minute: moves, orders, inputs. In a room that sleeps, each one wakes it and is saved, so this is most of the bill. In a room that runs they are close to free.",
+    min: 0,
+    max: 6000,
+  },
 ];
+
+/** What the settings under "More settings" are for. */
+const more = {
+  saveEverySeconds:
+    "How often a room that runs writes its state to storage: saveIntervalMs, five seconds unless you change it. Each save is one row. Saving less often costs less and loses more if the room is restarted. Rooms that sleep save each move instead.",
+  timerPerMove:
+    "Whether each move also sets a timer, as a turn clock or a deadline to move does. The timer is a second row written with the move, so it doubles what a move costs in a room that sleeps. Rooms that run are not affected.",
+  peakFactor:
+    "How much busier your busiest hour is than an average one: 3 means three times as many players online. Cloudflare bills what is used, so its figure does not change. Rented servers are sized for the peak, so theirs does.",
+  playersPerServer:
+    "How many players one rented server carries at once, for the comparison with servers. It depends on your game and the machine; a few hundred to a few thousand is usual. The Cloudflare figure does not depend on it.",
+};
 const runs: { id: Runs; what: string }[] = [
   { id: "event", what: "Rooms sleep between moves" },
   { id: "sync", what: "Rooms run for the whole match" },
@@ -130,11 +181,14 @@ const insight = computed(() => {
     <p class="about">{{ chosen ? chosen.about : "Your own numbers." }}</p>
 
     <div class="fields">
-      <label v-for="field in fields" :key="field.key">
-        <span class="label">{{ field.label }}</span>
-        <input v-model.number="game[field.key]" type="number" inputmode="decimal" :min="field.min" :max="field.max" step="any" />
+      <div v-for="field in fields" :key="field.key" class="field">
+        <span class="head">
+          <label class="label" :for="`${uid}-${field.key}`">{{ field.label }}</label>
+          <HelpTip :about="field.label">{{ field.help }}</HelpTip>
+        </span>
+        <input :id="`${uid}-${field.key}`" v-model.number="game[field.key]" type="number" inputmode="decimal" :min="field.min" :max="field.max" step="any" />
         <span class="hint">{{ field.hint }}</span>
-      </label>
+      </div>
     </div>
 
     <div class="runs" role="group" aria-label="How the rooms run">
@@ -184,26 +238,38 @@ const insight = computed(() => {
     <details class="assume">
       <summary>More settings</summary>
       <div class="fields">
-        <label>
-          <span class="label">Seconds between saves</span>
-          <input v-model.number="game.saveEverySeconds" type="number" inputmode="decimal" min="1" max="3600" step="any" />
+        <div class="field">
+          <span class="head">
+            <label class="label" :for="`${uid}-save`">Seconds between saves</label>
+            <HelpTip about="Seconds between saves">{{ more.saveEverySeconds }}</HelpTip>
+          </span>
+          <input :id="`${uid}-save`" v-model.number="game.saveEverySeconds" type="number" inputmode="decimal" min="1" max="3600" step="any" />
           <span class="hint">Rooms that tick: saveIntervalMs</span>
-        </label>
-        <label class="check">
-          <span class="label">A timer on every move</span>
-          <span class="box"><input v-model="game.timerPerMove" type="checkbox" /> {{ game.timerPerMove ? "Yes" : "No" }}</span>
+        </div>
+        <div class="field check">
+          <span class="head">
+            <label class="label" :for="`${uid}-timer`">A timer on every move</label>
+            <HelpTip about="A timer on every move">{{ more.timerPerMove }}</HelpTip>
+          </span>
+          <label class="box"><input :id="`${uid}-timer`" v-model="game.timerPerMove" type="checkbox" /> {{ game.timerPerMove ? "Yes" : "No" }}</label>
           <span class="hint">Rooms that sleep: a turn clock</span>
-        </label>
-        <label>
-          <span class="label">Peak over average</span>
-          <input v-model.number="game.peakFactor" type="number" inputmode="decimal" min="1" max="50" step="any" />
+        </div>
+        <div class="field">
+          <span class="head">
+            <label class="label" :for="`${uid}-peak`">Peak over average</label>
+            <HelpTip about="Peak over average">{{ more.peakFactor }}</HelpTip>
+          </span>
+          <input :id="`${uid}-peak`" v-model.number="game.peakFactor" type="number" inputmode="decimal" min="1" max="50" step="any" />
           <span class="hint">Servers are sized for the peak</span>
-        </label>
-        <label>
-          <span class="label">Players a server holds</span>
-          <input v-model.number="game.playersPerServer" type="number" inputmode="numeric" min="1" max="100000" step="any" />
+        </div>
+        <div class="field">
+          <span class="head">
+            <label class="label" :for="`${uid}-server`">Players a server holds</label>
+            <HelpTip about="Players a server holds">{{ more.playersPerServer }}</HelpTip>
+          </span>
+          <input :id="`${uid}-server`" v-model.number="game.playersPerServer" type="number" inputmode="numeric" min="1" max="100000" step="any" />
           <span class="hint">It depends on your game</span>
-        </label>
+        </div>
       </div>
     </details>
 
@@ -283,8 +349,12 @@ summary:focus-visible {
 .fields {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 14px 16px;
+  gap: 0 16px;
   margin-top: 16px;
+}
+
+.field {
+  margin-bottom: 14px;
 }
 
 @media (min-width: 900px) {
@@ -297,17 +367,56 @@ summary:focus-visible {
   }
 }
 
-label {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
+/*
+ * A field is what its help text is placed against: the bubble opens above the label. Its three
+ * parts sit on the rows of the grid of fields, so that the inputs of a row line up whichever
+ * label next to them runs to two lines.
+ */
+.field {
+  position: relative;
+  display: grid;
+  grid-row: span 3;
+  grid-template-rows: subgrid;
+  row-gap: 4px;
   min-width: 0;
 }
 
+.head {
+  display: flex;
+  align-items: end;
+  gap: 6px;
+  min-height: 22px;
+}
+
+.head :deep(.help) {
+  margin-bottom: 1px;
+}
+
 .label {
+  min-width: 0;
   font-size: 14px;
   font-weight: 600;
+  line-height: 1.3;
   color: var(--tf-ink);
+}
+
+/* In the right-hand column the bubble grows leftwards, so that it stays on the page. */
+.field:nth-child(2n) :deep(.tip) {
+  left: auto;
+  right: 0;
+}
+
+@media (min-width: 900px) {
+  .field:nth-child(2n) :deep(.tip) {
+    left: 0;
+    right: auto;
+  }
+
+  .field:nth-child(4n) :deep(.tip),
+  .field:nth-child(4n - 1) :deep(.tip) {
+    left: auto;
+    right: 0;
+  }
 }
 
 input {
@@ -331,6 +440,7 @@ input:hover {
 .box {
   display: flex;
   align-items: center;
+  cursor: pointer;
   gap: 10px;
   min-height: 43px;
   font-family: var(--tf-display);
