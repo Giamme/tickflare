@@ -27,3 +27,52 @@ jobs:
       # Runs inside workerd, with local D1, R2 and Queues.
       - run: npm test
       - run: npm run build
+
+  # The Godot client, run in Godot against a local Worker.
+  godot-client:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GODOT_VERSION: 4.5.1-stable
+      GODOT_SHA256: 02ec53d1cc7dbb9cc6355393c61b9ab43d1244751a124f10248a4802830788cd
+      WRANGLER_SEND_METRICS: "false"
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - uses: actions/cache@v4
+        with:
+          path: ~/godot
+          key: godot-${{ env.GODOT_VERSION }}
+      - name: Download Godot
+        run: |
+          if [ ! -x ~/godot/godot ]; then
+            mkdir -p ~/godot
+            curl -fsSL -o /tmp/godot.zip "https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}/Godot_v${GODOT_VERSION}_linux.x86_64.zip"
+            echo "${GODOT_SHA256}  /tmp/godot.zip" | sha256sum -c -
+            unzip -q /tmp/godot.zip -d /tmp/godot
+            mv "/tmp/godot/Godot_v${GODOT_VERSION}_linux.x86_64" ~/godot/godot
+          fi
+      - name: Start the test server
+        run: |
+          npx wrangler dev --config clients/test-server/wrangler.jsonc --port 8787 > server.log 2>&1 &
+          for attempt in $(seq 1 60); do
+            curl -s -o /dev/null http://127.0.0.1:8787/ && exit 0
+            sleep 1
+          done
+          cat server.log
+          exit 1
+      - name: Test the client
+        env:
+          TICKFLARE_TEST_URL: ws://127.0.0.1:8787
+        run: |
+          set -o pipefail
+          timeout 300 ~/godot/godot --headless --path clients/godot --script res://tests/run.gd 2>&1 | tee godot.log
+          # A script that does not load, or stops halfway, is a failure too.
+          grep -q " checks, 0 failed" godot.log
+          if grep -q "SCRIPT ERROR\|Parse Error" godot.log; then exit 1; fi
+      - if: failure()
+        run: cat server.log

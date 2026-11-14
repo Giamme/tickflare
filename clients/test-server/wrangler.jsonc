@@ -1,0 +1,13 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "tickflare-client-tests",
+  "main": "worker.ts",
+  "compatibility_date": "2026-11-01",
+  "durable_objects": {
+    "bindings": [
+      { "name": "SHAPES", "class_name": "ShapesRoom" },
+      { "name": "TICKS", "class_name": "TickRoom" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ShapesRoom", "TickRoom"] }]
+}

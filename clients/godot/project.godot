@@ -1,0 +1,9 @@
+; The Tickflare client for Godot 4, as a project of its own so that its tests
+; can run: godot --headless --path clients/godot --script res://tests/run.gd
+; To use the client, copy addons/tickflare into your project.
+
+config_version=5
+
+[application]
+
+config/name="Tickflare client"
