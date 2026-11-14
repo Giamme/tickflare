@@ -174,12 +174,15 @@ describe("commands", () => {
   it("counts the frames it refuses unread against the limit as well", async () => {
     const { p1 } = await twoPlayers();
     const tooLarge = JSON.stringify({ t: "cmd", id: 1, data: { type: "secret", value: "x".repeat(300) } });
-    for (let i = 0; i < 40; i++) p1.raw(tooLarge);
+    // Many more than the limit lets through in a burst, so that a slow machine, on which the
+    // allowance refills while they arrive, still runs out of it.
+    for (let i = 0; i < 200; i++) p1.raw(tooLarge);
 
     const reasons: string[] = [];
-    for (let i = 0; i < 40; i++) reasons.push((await p1.next("error")).reason);
+    for (let i = 0; i < 200; i++) reasons.push((await p1.next("error")).reason);
     expect(reasons.slice(0, 30)).toEqual(Array(30).fill("message_too_large"));
-    expect(reasons.at(-1)).toBe("rate_limited");
+    expect(reasons.filter((reason) => reason === "rate_limited").length).toBeGreaterThan(50);
+    expect(new Set(reasons)).toEqual(new Set(["message_too_large", "rate_limited"]));
   });
 
   it("lets single frames through at a rate below one a second", async () => {

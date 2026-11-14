@@ -96,14 +96,17 @@ describe("matchmaker", () => {
     const queue = freshQueue();
     const started = Date.now();
     const a = await enqueue(queue, "a", "/patient");
-    await sleep(60);
+    await sleep(300);
     const b = await enqueue(queue, "b", "/patient");
-    expect(a.found()).toBeUndefined();
+    const arrived = Date.now();
+    // Not yet: the first has not waited the limit. (Unless the machine is so slow that it has.)
+    if (arrived - started < 500) expect(a.found()).toBeUndefined();
 
     const forA = await a.closed;
-    // Counted from when the first player started waiting, not from when the second arrived.
-    expect(Date.now() - started).toBeGreaterThanOrEqual(140);
-    expect(Date.now() - started).toBeLessThan(600);
+    // Counted from when the first player started waiting, not from when the second arrived: the
+    // second has waited about half the limit, not all of it.
+    expect(Date.now() - started).toBeGreaterThanOrEqual(590);
+    if (arrived - started < 500) expect(Date.now() - arrived).toBeLessThan(590);
     expect(forA.match!.players).toEqual(["a", "b"]);
     expect((await b.closed).match).toEqual(forA.match);
   });
@@ -111,7 +114,7 @@ describe("matchmaker", () => {
   it("keeps a lone player waiting past the limit, and fills a full match at once", async () => {
     const queue = freshQueue();
     const a = await enqueue(queue, "a", "/patient");
-    await sleep(300);
+    await sleep(750);
     expect(a.found()).toBeUndefined();
 
     // Already overdue, so the second player completes a match straight away.

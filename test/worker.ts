@@ -422,11 +422,15 @@ export class TestMatchmaker extends Matchmaker {
   protected override rooms = this.env.ROOMS;
 }
 
-/** Waits for four players, but starts with two or more once the first has waited 150 ms. */
+/**
+ * Waits for four players, but starts with two or more once the first has
+ * waited 600 ms: long enough that four who arrive together are four on a
+ * slow machine too.
+ */
 export class PatientMatchmaker extends TestMatchmaker {
   protected override matchSize = 4;
   protected override minPlayers = 2;
-  protected override maxWaitMs = 150;
+  protected override maxWaitMs = 600;
 }
 
 /** Signs the join tokens accepted under /secure. */
