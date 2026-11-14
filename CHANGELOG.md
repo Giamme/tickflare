@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+**Measured on Cloudflare.**
+
+- `bench/` holds a Worker with a room in which everything moves on every tick, a script that plays in it, and one that asks Cloudflare's analytics what it counted. The workflow *Measure on Cloudflare* deploys the Worker under a key made for the run, measures, and deletes it.
+- The limits and costs pages of the guide have what came back: rooms held their tick rate on a fifth of a processor, bytes on the wire were as measured locally, an idle room with five players was billed two thirds of a second in ninety, and a thousand players joining one room at once did not work.
+
 **Matchmaking by skill and by region.**
 
 - `Matchmaker` has a `ratingOf(player, request)` hook, asked once when a player starts waiting, and two settings: `ratingGap`, how far apart two players' ratings may be, and `ratingGapPerSecond`, how much that grows for each second a player has waited. A match is built around whoever has waited longest, from the players nearest to them.

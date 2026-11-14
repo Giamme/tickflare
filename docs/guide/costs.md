@@ -64,6 +64,15 @@ A room is a Durable Object. Cloudflare bills a Durable Object for the time it is
 - **Lockstep with the players' clock.** The room is awake only to answer: a request for the turns that are due, ten times a second from one player's client, and the orders themselves. Between them it sleeps.
 - **Matchmakers** sleep while players wait in the queue.
 
+What Cloudflare counted when we [measured this on its network](./limits#the-same-rooms-on-cloudflare):
+
+| | Awake, as billed |
+| --- | --- |
+| Five players connected to a room for 90 seconds, sending keepalives and one move | 0.66 seconds |
+| A hundred moves in event mode, each of which is stored | 1.9 seconds: 0.019 each |
+| A hundred commands that change nothing | 0.13 seconds |
+| A room ticking for 10.5 seconds | 10.6 seconds |
+
 Two things do not change the bill: the tick rate, and how much CPU your simulation uses. A room ticking 30 times a second with a heavy simulation costs the same per hour as one ticking 5 times with a light one. More players in a room cost nothing extra either, apart from their messages.
 
 ## Price list
@@ -239,6 +248,6 @@ Read in {{ PRICES_AS_OF }}:
 - [Colyseus Cloud pricing](https://colyseus.io/pricing/).
 - [Hetzner Cloud](https://www.hetzner.com/cloud) for the cheapest server; the higher figure is the usual price of the same size at larger hosts.
 
-The row counts are Tickflare's own, measured by running each kind of write in Wrangler's local runtime and reading what it reports as written. The time a move keeps a room awake, 0.02 seconds, is twice what Cloudflare's pricing examples assume.
+The row counts are Tickflare's own, measured by running each kind of write in Wrangler's local runtime and reading what it reports as written; on Cloudflare a hundred moves were counted as 118 rows written, joining included. The time a move keeps a room awake, 0.02 seconds, is twice what Cloudflare's pricing examples assume, and what Cloudflare counted for our moves: 0.019 seconds.
 
 These are estimates to plan with. Your own numbers depend on how long your players stay, how many share a room and how much they send; the estimator and the arithmetic above are there to redo with them.

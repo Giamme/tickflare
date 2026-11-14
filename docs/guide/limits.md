@@ -41,6 +41,30 @@ What we measured, with Wrangler's local runtime on a two-core 2.1 GHz machine th
 
 Treat these as the right order of size, not as a promise: Cloudflare's machines are not this one, and with many players the same run varies by a tick a second or more. When a room cannot keep up, its simulation runs slow; it does not skip ahead to catch up.
 
+### The same rooms on Cloudflare
+
+The same rooms, deployed to Cloudflare in November 2026 and played from a machine in a data centre near them. The last column is how much of one processor the room used, from Cloudflare's own count of its CPU time:
+
+| In the room | Players | Ticks asked for | Managed | Of one processor |
+| --- | --- | --- | --- | --- |
+| 100 units, everyone sees all of them | 200 | 10 | 9.9 | 8% |
+| 1,000 units, each player sees those near them | 200 | 10 | 9.9 | 18% |
+| 1,000 units, by sight | 500 | 10 | 10, in one run of two | 28% |
+| 5,000 units, by sight | 100 | 10 | 9.7 to 10 | 20% |
+| 20,000 units, by sight | 20 | 10 | 9.9 | not counted |
+| 1,000 units, by sight | 100 | 30 | 30.4 | not counted |
+| 1,000 units, by sight | 50 | 60 | 63 | 19% |
+| 1,000 units, by sight, and 480 commands a second | 100 | 10 | 9.5 | 19% |
+| 5,000 units, by sight, and 480 commands a second | 100 | 10 | 7.7 to 9.6 | 25% |
+| 20,000 units, by sight, and 400 commands a second | 20 | 10 | 9.6 to 9.9 | 22% |
+| Either room | 1,000 | 10 | did not work: see below | |
+
+Where the local machine fell behind, Cloudflare's did not, and none of these rooms used a third of a processor. A room asked for 60 ticks a second ran 63: ticks are a whole number of milliseconds apart, 16 for 60 a second.
+
+**Many players joining at once is what broke.** Every join is told to every player, with the whole list of players. Two hundred players who connected within two seconds were fine every time. Five hundred within five seconds worked in one run and not in the other. A thousand never worked: Cloudflare restarted the room for using too much memory, six times over while they connected, most of the connections were lost, and the room never got to tick. So the limit we found on Cloudflare is not how many players a room can simulate for, but how many can arrive in the same few seconds: a few hundred.
+
+These were two runs of a few minutes each, with every player on one machine, in the eastern United States. They say nothing about a room that runs for hours, or about players on home connections around the world. The Worker and the scripts are in the repository's `bench` folder, and the workflow *Measure on Cloudflare* runs them on your own account.
+
 Two things in Tickflare's design set these numbers:
 
 - **The whole state is turned into JSON whenever it is saved or sent whole, and once or twice a tick.** In event mode that is every command that changes something: the state is written in full each time, and compared with what the players hold to send them the difference. While ticking it is the tick itself, which is compared whole so that `onTick` can run on plain objects, and the save every few seconds. What a command, a join or a timer costs in between is only what it touches: the room [follows a hook's writes](./rooms#the-state-inside-a-hook) rather than going through the state after it. A hook that changes nothing, or is refused, costs the same in a room of any size.
@@ -61,7 +85,7 @@ Two things in Tickflare's design set these numbers:
 
 Frames are JSON, and what is sent after a change is a patch: it names what changed and gives the new value. In event mode a move costs the bytes of what it changed, whatever the size of the state. While ticking, a unit that moves is about 26 bytes of JSON each tick.
 
-**That is not what crosses the network.** Cloudflare's runtime compresses a WebSocket for every client that offers it, and browsers and Node offer it with every connection. There is nothing to turn on; it needs a compatibility date of 2023-08-15 or later. What reached a player, measured locally with units that walk in straight lines and turn now and then:
+**That is not what crosses the network.** Cloudflare's runtime compresses a WebSocket for every client that offers it, and browsers and Node offer it with every connection. There is nothing to turn on; it needs a compatibility date of 2023-08-15 or later. What reached a player, measured locally and again on Cloudflare, with the same result to within a byte, with units that walk in straight lines and turn now and then:
 
 | A unit's position, each tick it moves | As JSON | On the wire |
 | --- | --- | --- |
@@ -117,9 +141,18 @@ A Durable Object runs in the Cloudflare location where it was first created, and
 
 Tickflare places a room near whoever asks for it first. A room made by a [matchmaker](./matchmaking) is placed near where most of its players are.
 
-**What you can do today.** Create rooms through a matchmaker, and run a queue for each region if your players are spread across the world.
+How long a command took to come back answered, from a machine about 18 ms from the Worker and back, with the room in the same region:
 
-**What would lift it.** Matchmaking that weighs a player's distance when putting matches together. Not built.
+| | Typical | Slowest of twenty |
+| --- | --- | --- |
+| A request to the Worker, with no room involved | 18 ms | |
+| A command that changes nothing | 21 ms | 24 ms |
+| A command that changes the state, in event mode | 42 ms | 95 ms |
+| A command in a room ticking 20 times a second | 43 ms | 45 ms |
+
+A room adds about 3 ms to the way there and back. In event mode a change is stored before anyone hears of it, which took about 20 ms more. In a ticking room a command is answered with the tick that shows it, so it waits for up to one tick, and nothing is stored on the way.
+
+**What you can do today.** Create rooms through a matchmaker, and have it [match within a region first](./matchmaking#matching-by-region) if your players are spread across the world.
 
 ## Prediction is for a player's own moves
 
@@ -197,12 +230,17 @@ There is no client for native code or other engines. [The protocol](../reference
 
 ## How far it has been tested
 
-Tickflare is at 0.1. It has a test suite that runs against Cloudflare's own runtime, and one game running on it in production. It has not been load-tested on Cloudflare itself: the figures on this page were measured locally. The API can still change between versions; [Upgrading](../reference/upgrading) says what did.
+Tickflare is at 0.1. It has a test suite that runs against Cloudflare's own runtime, and one game running on it in production. It has been measured on Cloudflare itself twice, for a few minutes each time, [as described above](#the-same-rooms-on-cloudflare): enough to check the figures on this page, not a test of hours or of many rooms at once. The API can still change between versions; [Upgrading](../reference/upgrading) says what did.
+
+**One thing from those runs is not explained.** In the first, two rooms were still counted as awake, and as sending messages, nine minutes after every player had disconnected; they stopped when the Worker was deleted. In the second run every room stopped within two seconds of its last player leaving, and it has not happened locally. We do not know the cause. A room that stays awake is billed for it, a little over half a cent an hour, so until this is understood, look at your rooms' active time in Cloudflare's dashboard now and then, and have [`onEmpty`](./rooms#when-a-room-is-over) delete rooms that are done.
 
 ## What would lift the most
 
 In the order we would take them, by how much each removes for the work it needs:
 
-1. **Matchmaking by skill and region; account recovery.**
+1. **Joining a full room.** Telling every player of every join, with the whole list, is what limits a room to a few hundred arrivals at once. Sending only who came and went would lift it.
+2. **Closing connections that have gone silent.** A ticking room takes a connection for alive until Cloudflare says it closed. Closing one that has sent neither a command nor a keepalive for a minute or two would keep a room from staying awake for players who are gone, whatever the cause.
+3. **Lockstep, prediction and interpolation in the Godot and Unity clients.**
+4. **Parties in matchmaking**: friends who queue together and stay together.
 
 None of these is promised. They are here so that you can see where the edges are, and which of them are meant to move.
