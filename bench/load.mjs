@@ -97,8 +97,25 @@ async function watch(ws, ms, binary) {
 /** A room asked for `rate` ticks a second, with everything in it moving on every tick. */
 async function tickRate({ units, rate, sight, players, cps = 0 }) {
   const room = freshRoom();
+  const opening = performance.now();
   const sockets = await openMany("/rooms", room, players);
+  const joined = (performance.now() - opening) / 1000;
   try {
+    // Every join is told to everyone. Wait for that to be over: a second with nothing said.
+    let last = performance.now();
+    let said = 0;
+    const heard = () => {
+      last = performance.now();
+      said += 1;
+    };
+    sockets[0].on("message", heard);
+    const wireBefore = sockets[0].wire;
+    const waiting = performance.now();
+    while (performance.now() - last < 1000 && performance.now() - waiting < 180_000) await sleep(100);
+    sockets[0].off("message", heard);
+    const settled = Math.max(0, (performance.now() - waiting) / 1000 - 1);
+    const joinKB = (sockets[0].wire - wireBefore) / 1024;
+
     command(sockets[0], { type: "setup", units, rate, sight });
     await sleep(2500);
     const timer =
@@ -121,6 +138,12 @@ async function tickRate({ units, rate, sight, players, cps = 0 }) {
       asked: rate,
       managed: +(seen.ticks / seen.seconds).toFixed(1),
       wireKBps: +(seen.wire / seen.seconds / 1024).toFixed(1),
+      // How long the players took to connect, how long the room then went on telling them of
+      // each other, and what one of them was sent of that after the last had connected.
+      joined: +joined.toFixed(1),
+      settled: +settled.toFixed(1),
+      joinKB: +joinKB.toFixed(0),
+      framesAfterJoining: said,
       gapP50: seen.gapP50,
       gapP95: seen.gapP95,
       compressed: sockets[0].extensions,

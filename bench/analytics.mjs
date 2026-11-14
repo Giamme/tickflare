@@ -98,13 +98,45 @@ if (patience > 0) {
   }
 }
 
+// By class first. What is counted is sampled, so a sum over many rooms says more than one room's.
+const totals = accounts(
+  await ask(
+    "totals",
+    `{ viewer { accounts(filter: { accountTag: "${account}" }) {
+      durableObjectsPeriodicGroups(limit: 100, filter: { ${window} }) {
+        dimensions { namespaceId }
+        avg { sampleInterval }
+        sum { activeTime cpuTime duration exceededCpuErrors exceededMemoryErrors fatalInternalErrors }
+      }
+    } } }`,
+  ),
+);
+for (const group of totals?.durableObjectsPeriodicGroups ?? []) {
+  const { dimensions, sum, avg } = group;
+  console.log(
+    "ANALYTICS " +
+      JSON.stringify({
+        kind: "total",
+        class: names[dimensions.namespaceId] ?? dimensions.namespaceId,
+        activeSeconds: seconds(sum.activeTime),
+        cpuSeconds: seconds(sum.cpuTime),
+        duration: +sum.duration.toFixed(3),
+        sampleInterval: avg.sampleInterval,
+        cpuErrors: sum.exceededCpuErrors,
+        memoryErrors: sum.exceededMemoryErrors,
+        fatalErrors: sum.fatalInternalErrors,
+      }),
+  );
+}
+
 // By object: `name` is the room's id, which the load script printed with what it measured there.
 const periodic = accounts(
   await ask(
     "periodic",
     `{ viewer { accounts(filter: { accountTag: "${account}" }) {
       durableObjectsPeriodicGroups(limit: 1000, filter: { ${window} }) {
-        dimensions { namespaceId name objectId coloCode }
+        dimensions { namespaceId name objectId }
+        avg { sampleInterval }
         sum {
           activeTime cpuTime duration rowsWritten inboundWebsocketMsgCount outboundWebsocketMsgCount
           exceededCpuErrors exceededMemoryErrors fatalInternalErrors
@@ -122,7 +154,7 @@ for (const group of periodic?.durableObjectsPeriodicGroups ?? []) {
         kind: "periodic",
         class: names[dimensions.namespaceId] ?? dimensions.namespaceId,
         room: dimensions.name || dimensions.objectId.slice(0, 8),
-        colo: dimensions.coloCode,
+        sampleInterval: group.avg.sampleInterval,
         // Counted in microseconds.
         activeSeconds: seconds(sum.activeTime),
         cpuSeconds: seconds(sum.cpuTime),
@@ -133,7 +165,9 @@ for (const group of periodic?.durableObjectsPeriodicGroups ?? []) {
         messagesOut: sum.outboundWebsocketMsgCount,
         sockets: max.activeWebsocketConnections,
         memoryMB: +(max.memoryUsageBytes / 1e6).toFixed(1),
-        errors: sum.exceededCpuErrors + sum.exceededMemoryErrors + sum.fatalInternalErrors || undefined,
+        cpuErrors: sum.exceededCpuErrors || undefined,
+        memoryErrors: sum.exceededMemoryErrors || undefined,
+        fatalErrors: sum.fatalInternalErrors || undefined,
       }),
   );
 }
@@ -143,9 +177,9 @@ const invocations = accounts(
   await ask(
     "invocations",
     `{ viewer { accounts(filter: { accountTag: "${account}" }) {
-      durableObjectsInvocationsAdaptiveGroups(limit: 1000, filter: { ${window} }) {
-        dimensions { namespaceId name objectId type }
-        sum { requests errors wallTime }
+      durableObjectsInvocationsAdaptiveGroups(limit: 100, filter: { ${window} }) {
+        dimensions { namespaceId type }
+        sum { requests wallTime }
         quantiles { cpuTimeP50 cpuTimeP99 }
       }
     } } }`,
@@ -158,11 +192,10 @@ for (const group of invocations?.durableObjectsInvocationsAdaptiveGroups ?? []) 
       JSON.stringify({
         kind: "invocations",
         class: names[dimensions.namespaceId] ?? dimensions.namespaceId,
-        room: dimensions.name || dimensions.objectId.slice(0, 8),
         type: dimensions.type,
         requests: sum.requests,
-        errors: sum.errors,
         wallSeconds: seconds(sum.wallTime),
+        // Microseconds of CPU for one event.
         cpuP50: quantiles.cpuTimeP50,
         cpuP99: quantiles.cpuTimeP99,
       }),
