@@ -5,7 +5,7 @@ import { Accounts, hashPassword, verifyPassword } from "../src/server/accounts.j
 import { createJoinToken } from "../src/server/tokens.js";
 import { MATCHES_SCHEMA } from "../src/server/matches.js";
 import { freshRoom, sleep, upgrade } from "./helpers.js";
-import { TEST_SECRET, testAccounts } from "./worker.js";
+import { sentResets, TEST_SECRET, testAccounts } from "./worker.js";
 
 const BASE = "https://tickflare.test";
 const PASSWORD = "correct horse battery";
@@ -149,6 +149,235 @@ describe("signing up and in", () => {
     expect((await call("GET", "/me", { session: token })).status).toBe(200);
     expect((await call("POST", "/login", { body: { name: account.name, password: PASSWORD } })).status).toBe(401);
     expect((await call("POST", "/login", { body: { name: account.name, password: "a new password" } })).status).toBe(200);
+  });
+});
+
+describe("a recovery code", () => {
+  const CODE = /^[0-9A-HJKMNP-TV-Z]{5}(-[0-9A-HJKMNP-TV-Z]{5}){3}$/;
+
+  async function codeFor(session: string): Promise<string> {
+    const response = await call("POST", "/recovery-code", { session, body: { password: PASSWORD } });
+    expect(response.status).toBe(201);
+    return ((await response.json()) as { code: string }).code;
+  }
+
+  it("is made with the password, shown once, and sets a new password once", async () => {
+    const account = await register();
+    expect(await (await call("GET", "/me", { session: account.session })).json()).toMatchObject({ recoveryCode: false });
+    expect((await call("POST", "/recovery-code", { body: { password: PASSWORD } })).status).toBe(401);
+    const wrong = await call("POST", "/recovery-code", { session: account.session, body: { password: "not the password" } });
+    expect(await wrong.json()).toMatchObject({ error: "wrong_password" });
+
+    const code = await codeFor(account.session);
+    expect(code).toMatch(CODE);
+    expect(await (await call("GET", "/me", { session: account.session })).json()).toMatchObject({ recoveryCode: true });
+    // Only its hash is kept.
+    const rows = await env.DB.prepare("SELECT token_hash FROM tickflare_recovery WHERE account_id = ?").bind(account.id).all();
+    expect(rows.results).toHaveLength(1);
+    expect(JSON.stringify(rows.results)).not.toContain(code.slice(0, 5));
+
+    const next = "a brand new password";
+    const guess = await call("POST", "/recover", { body: { name: account.name, code: "00000-00000-00000-00000", password: next } });
+    expect(guess.status).toBe(401);
+    expect(await guess.json()).toMatchObject({ error: "invalid_code" });
+    const stranger = await call("POST", "/recover", { body: { name: freshName(), code, password: next } });
+    expect(await stranger.json()).toMatchObject({ error: "invalid_code" });
+
+    // Typed the way people type: lower case, no dashes, spaces here and there.
+    const typed = ` ${code.toLowerCase().replaceAll("-", " ")} `;
+    const recovered = await call("POST", "/recover", { body: { name: account.name.toUpperCase(), code: typed, password: next } });
+    expect(recovered.status).toBe(200);
+    expect(recovered.headers.get("Set-Cookie")).toContain("tf_session=");
+    const body = (await recovered.json()) as { account: { id: string; recoveryCode: boolean }; token: string };
+    expect(body.account).toMatchObject({ id: account.id, recoveryCode: false });
+
+    // Whoever was signed in is not any more, and the old password is no good.
+    expect((await call("GET", "/me", { session: account.session })).status).toBe(401);
+    expect((await call("GET", "/me", { session: body.token })).status).toBe(200);
+    expect((await call("POST", "/login", { body: { name: account.name, password: PASSWORD } })).status).toBe(401);
+    expect((await call("POST", "/login", { body: { name: account.name, password: next } })).status).toBe(200);
+
+    // Once.
+    const again = await call("POST", "/recover", { body: { name: account.name, code, password: "yet another password" } });
+    expect(await again.json()).toMatchObject({ error: "invalid_code" });
+  });
+
+  it("reads the characters people mistake for one another", async () => {
+    const accounts = testAccounts(env);
+    const account = await accounts.register({ name: freshName(), password: PASSWORD });
+    const code = await accounts.createRecoveryCode(account.id);
+    const mistaken = code.replaceAll("0", "O").replaceAll("1", "l");
+    expect((await accounts.recoverWithCode(account.name!, mistaken, "a brand new password")).id).toBe(account.id);
+  });
+
+  it("is replaced by a newer one, and is not used up by a password that is refused", async () => {
+    const account = await register();
+    const first = await codeFor(account.session);
+    const second = await codeFor(account.session);
+    expect(second).not.toBe(first);
+
+    const old = await call("POST", "/recover", { body: { name: account.name, code: first, password: "a brand new password" } });
+    expect(await old.json()).toMatchObject({ error: "invalid_code" });
+    const weak = await call("POST", "/recover", { body: { name: account.name, code: second, password: "short" } });
+    expect(await weak.json()).toMatchObject({ error: "weak_password" });
+    const good = await call("POST", "/recover", { body: { name: account.name, code: second, password: "a brand new password" } });
+    expect(good.status).toBe(200);
+  });
+
+  it("cannot be guessed at for long", async () => {
+    const account = await register();
+    const code = await codeFor(account.session);
+    for (let attempt = 0; attempt < 10; attempt++) {
+      const guess = await call("POST", "/recover", { body: { name: account.name, code: `guess-${attempt}`, password: "a brand new password" } });
+      expect(guess.status).toBe(401);
+    }
+    const locked = await call("POST", "/recover", { body: { name: account.name, code, password: "a brand new password" } });
+    expect(locked.status).toBe(429);
+    expect(await locked.json()).toMatchObject({ error: "too_many_attempts" });
+    // Signing in with the password is not held up by it.
+    expect((await call("POST", "/login", { body: { name: account.name, password: PASSWORD } })).status).toBe(200);
+  });
+
+  it("goes with the account when it is deleted, and says in an export whether there is one", async () => {
+    const accounts = testAccounts(env);
+    const account = await accounts.register({ name: freshName(), password: PASSWORD });
+    expect(await accounts.exportAccount(account.id)).toMatchObject({ account: { recoveryCode: false } });
+    await accounts.createRecoveryCode(account.id);
+    expect(await accounts.exportAccount(account.id)).toMatchObject({ account: { recoveryCode: true } });
+    await accounts.deleteAccount(account.id);
+    const rows = await env.DB.prepare("SELECT 1 FROM tickflare_recovery WHERE account_id = ?").bind(account.id).all();
+    expect(rows.results).toHaveLength(0);
+    await expect(accounts.createRecoveryCode(account.id)).rejects.toMatchObject({ code: "not_found" });
+  });
+});
+
+describe("a password reset by email", () => {
+  const mail = () => `${freshName()}@example.com`;
+
+  it("makes a token for the account's address that sets a new password once", async () => {
+    const accounts = testAccounts(env);
+    const email = mail();
+    const account = await accounts.register({ name: freshName(), password: PASSWORD, email });
+    const session = await accounts.createSession(account.id);
+
+    const before = Date.now();
+    const [reset, ...more] = await accounts.startPasswordReset({ name: account.name!.toUpperCase() });
+    expect(more).toEqual([]);
+    expect(reset).toMatchObject({ id: account.id, name: account.name, email });
+    expect(reset!.expiresAt).toBeGreaterThanOrEqual(before + 60 * 60 * 1000);
+    expect(reset!.token.length).toBeGreaterThanOrEqual(40);
+
+    await expect(accounts.resetPassword("not a token", "a brand new password")).rejects.toMatchObject({ status: 400, code: "invalid_token" });
+    await expect(accounts.resetPassword(reset!.token, "short")).rejects.toMatchObject({ code: "weak_password" });
+    expect(await accounts.resetPassword(reset!.token, "a brand new password")).toMatchObject({ id: account.id, guest: false });
+    await expect(accounts.resetPassword(reset!.token, "one more password")).rejects.toMatchObject({ code: "invalid_token" });
+
+    expect((await call("GET", "/me", { session })).status).toBe(401);
+    expect((await accounts.signIn(account.name!, "a brand new password")).id).toBe(account.id);
+  });
+
+  it("has nothing to send for a name nobody has or an account without an address", async () => {
+    const accounts = testAccounts(env);
+    const account = await accounts.register({ name: freshName(), password: PASSWORD });
+    expect(await accounts.startPasswordReset({ name: account.name })).toEqual([]);
+    expect(await accounts.startPasswordReset({ name: freshName() })).toEqual([]);
+    expect(await accounts.startPasswordReset({ email: mail() })).toEqual([]);
+  });
+
+  it("finds every account with an address, whatever its case", async () => {
+    const accounts = testAccounts(env);
+    const email = mail();
+    const one = await accounts.register({ name: freshName(), password: PASSWORD, email });
+    const two = await accounts.register({ name: freshName(), password: PASSWORD, email: email.toUpperCase() });
+    const resets = await accounts.startPasswordReset({ email: email.toUpperCase() });
+    expect(resets.map((reset) => reset.id).sort()).toEqual([one.id, two.id].sort());
+    expect(new Set(resets.map((reset) => reset.token)).size).toBe(2);
+  });
+
+  it("keeps only the newest token good, and none after the password was changed or the time is up", async () => {
+    const accounts = testAccounts(env);
+    const account = await accounts.register({ name: freshName(), password: PASSWORD, email: mail() });
+    const [first] = await accounts.startPasswordReset({ name: account.name });
+    const [second] = await accounts.startPasswordReset({ name: account.name });
+    await expect(accounts.resetPassword(first!.token, "a brand new password")).rejects.toMatchObject({ code: "invalid_token" });
+
+    await accounts.setPassword(account.id, "changed in the meantime");
+    await expect(accounts.resetPassword(second!.token, "a brand new password")).rejects.toMatchObject({ code: "invalid_token" });
+
+    const hasty = testAccounts(env, { passwordResetTtlSeconds: 0 });
+    const [late] = await hasty.startPasswordReset({ name: account.name });
+    await expect(accounts.resetPassword(late!.token, "a brand new password")).rejects.toMatchObject({ code: "invalid_token" });
+    expect((await accounts.signIn(account.name!, "changed in the meantime")).id).toBe(account.id);
+  });
+
+  it("is asked for over HTTP, with the same answer whether or not there is such an account", async () => {
+    const account = await register(freshName(), { email: mail() });
+    const sentBefore = sentResets.length;
+
+    const nobody = await call("POST", "/forgot", { body: { name: freshName() } });
+    expect(nobody.status).toBe(204);
+    expect(sentResets.length).toBe(sentBefore);
+
+    const somebody = await call("POST", "/forgot", { body: { name: account.name } });
+    expect(somebody.status).toBe(204);
+    expect(await somebody.text()).toBe("");
+    expect(sentResets.length).toBe(sentBefore + 1);
+    const reset = sentResets.at(-1)!;
+    expect(reset).toMatchObject({ id: account.id, name: account.name });
+
+    const done = await call("POST", "/reset", { body: { token: reset.token, password: "a brand new password" } });
+    expect(done.status).toBe(200);
+    expect(done.headers.get("Set-Cookie")).toContain("tf_session=");
+    expect(await done.json()).toMatchObject({ account: { id: account.id } });
+    expect((await call("GET", "/me", { session: account.session })).status).toBe(401);
+    const spent = await call("POST", "/reset", { body: { token: reset.token, password: "one more password" } });
+    expect(spent.status).toBe(400);
+    expect(await spent.json()).toMatchObject({ error: "invalid_token" });
+  });
+
+  it("can be asked for by email address, and only so often", async () => {
+    const email = mail();
+    const account = await register(freshName(), { email });
+    const sentBefore = sentResets.length;
+    for (let request = 0; request < 3; request++) {
+      expect((await call("POST", "/forgot", { body: { email: email.toUpperCase() } })).status).toBe(204);
+    }
+    expect(sentResets.length).toBe(sentBefore + 3);
+    expect(sentResets.at(-1)).toMatchObject({ id: account.id, email });
+    const tooMany = await call("POST", "/forgot", { body: { email } });
+    expect(tooMany.status).toBe(429);
+    expect(sentResets.length).toBe(sentBefore + 3);
+  });
+
+  it("sends after the answer when given the Worker's ctx, and is off when the game sends no email", async () => {
+    const account = await register(freshName(), { email: mail() });
+    const sent: string[] = [];
+    const later: Promise<unknown>[] = [];
+    const accounts = testAccounts(env, { sendPasswordReset: (reset) => void sent.push(reset.name) });
+    const request = () =>
+      new Request(`${BASE}/api/accounts/forgot`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: account.name }),
+      });
+    const response = await accounts.route(request(), { waitUntil: (promise) => void later.push(promise) });
+    expect(response!.status).toBe(204);
+    expect(later).toHaveLength(1);
+    await Promise.all(later);
+    expect(sent).toEqual([account.name]);
+
+    // A send that fails is the game's to notice in its logs: the player is told nothing either way.
+    const broken = testAccounts(env, {
+      sendPasswordReset: () => {
+        throw new Error("the mail service is down");
+      },
+    });
+    expect((await broken.route(request()))!.status).toBe(204);
+
+    const silent = testAccounts(env, { sendPasswordReset: undefined });
+    const off = await silent.route(request());
+    expect(off!.status).toBe(404);
+    expect(await off!.json()).toMatchObject({ error: "not_enabled" });
   });
 });
 
@@ -500,6 +729,32 @@ describe("AccountClient", () => {
     await client.logout();
     expect(sessions.at(-1)).toBeNull();
     expect(await later.restore()).toBeNull();
+  });
+
+  it("gets back into an account with a recovery code or a reset link", async () => {
+    const client = new AccountClient({ baseUrl: BASE, fetch: fetcher, storage: null, mode: "bearer" });
+    const name = freshName();
+    const registered = await client.register({ name, password: PASSWORD, email: `${name}@example.com` });
+    expect(registered.recoveryCode).toBe(false);
+    const code = await client.createRecoveryCode(PASSWORD);
+    expect(client.account?.recoveryCode).toBe(true);
+    await client.logout();
+
+    const elsewhere = new AccountClient({ baseUrl: BASE, fetch: fetcher, storage: null, mode: "bearer" });
+    const wrong = await elsewhere.recover(name, "nope", "a brand new password").catch((e: unknown) => e);
+    expect(wrong).toMatchObject({ status: 401, code: "invalid_code" });
+    const recovered = await elsewhere.recover(name, code, "a brand new password");
+    expect(recovered).toMatchObject({ id: registered.id, recoveryCode: false });
+    expect(elsewhere.signedIn).toBe(true);
+
+    const sentBefore = sentResets.length;
+    await elsewhere.forgotPassword({ name });
+    await elsewhere.forgotPassword({ name: freshName() });
+    expect(sentResets.length).toBe(sentBefore + 1);
+    const third = new AccountClient({ baseUrl: BASE, fetch: fetcher, storage: null, mode: "bearer" });
+    expect((await third.resetPassword(sentResets.at(-1)!.token, "the third password")).id).toBe(registered.id);
+    expect(third.signedIn).toBe(true);
+    expect(await elsewhere.restore()).toBeNull();
   });
 
   it("reports refusals with their code", async () => {

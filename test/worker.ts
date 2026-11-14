@@ -10,6 +10,8 @@ import {
   routeToMatchmaker,
   routeToRoom,
   tokenAuth,
+  type AccountsOptions,
+  type PasswordReset,
   type Player,
 } from "../src/server/index.js";
 
@@ -433,6 +435,40 @@ export class PatientMatchmaker extends TestMatchmaker {
   protected override maxWaitMs = 600;
 }
 
+/**
+ * Pairs players whose ratings, given as `?rating=`, are within 100 of each
+ * other. A player who gives none can be matched with anyone, and
+ * `?rating=boom` is a rating that cannot be looked up.
+ */
+export class RankedMatchmaker extends TestMatchmaker {
+  protected override ratingGap = 100;
+
+  protected override ratingOf(_player: string, request: Request): number | undefined {
+    const rating = new URL(request.url).searchParams.get("rating");
+    if (rating === "boom") throw new Error("no ratings today");
+    return rating === null ? undefined : Number(rating);
+  }
+}
+
+/** RankedMatchmaker, where the gap a player accepts grows by 100 for every 100 ms they wait. */
+export class WideningMatchmaker extends RankedMatchmaker {
+  protected override ratingGapPerSecond = 1000;
+}
+
+/** Threes, by rating. */
+export class RankedTrios extends RankedMatchmaker {
+  protected override matchSize = 3;
+}
+
+/** Pairs players of one region, given as `?region=`, for their first 400 ms in the queue. */
+export class RegionalMatchmaker extends TestMatchmaker {
+  protected override regionWaitMs = 400;
+
+  protected override regionOf(_player: string, request: Request): string | undefined {
+    return new URL(request.url).searchParams.get("region") ?? undefined;
+  }
+}
+
 /** Signs the join tokens accepted under /secure. */
 export const TEST_SECRET = "test-secret-0123456789";
 
@@ -452,9 +488,13 @@ export class NameRoom extends TestRoom {
   }
 }
 
-export function testAccounts(env: Cloudflare.Env): Accounts {
+/** The password resets the test accounts were asked to send, in place of emails. */
+export const sentResets: PasswordReset[] = [];
+
+export function testAccounts(env: Cloudflare.Env, options: Partial<AccountsOptions> = {}): Accounts {
   return new Accounts(env.DB, {
     secret: TEST_SECRET,
+    sendPasswordReset: (reset) => void sentResets.push(reset),
     allowedOrigins: ["https://allowed.test"],
     data: {
       avatar: { read: "public", write: "owner" },
@@ -465,6 +505,7 @@ export function testAccounts(env: Cloudflare.Env): Accounts {
     maxDataBytes: 1024,
     // Accounts brought over from elsewhere carry "plain:<password>", which nobody should ever do.
     verifyImportedPassword: (hash, password) => hash === `plain:${password}`,
+    ...options,
   });
 }
 
@@ -649,6 +690,10 @@ export default {
       (await routeToRoom(request, { rooms: env.EDGE, prefix: "/edge", authenticate: whoIs })) ??
       (await routeToRoom(request, { rooms: env.LAZY, prefix: "/lazy", authenticate: whoIs })) ??
       (await routeToRoom(request, { rooms: env.HALF, prefix: "/half", authenticate: whoIs })) ??
+      (await routeToMatchmaker(request, { matchmakers: env.RANKED, prefix: "/ranked", authenticate: whoIs })) ??
+      (await routeToMatchmaker(request, { matchmakers: env.WIDENING, prefix: "/widening", authenticate: whoIs })) ??
+      (await routeToMatchmaker(request, { matchmakers: env.TRIOS, prefix: "/trios", authenticate: whoIs })) ??
+      (await routeToMatchmaker(request, { matchmakers: env.REGIONAL, prefix: "/regional", authenticate: whoIs })) ??
       (await routeToMatchmaker(request, { matchmakers: env.SLOW, prefix: "/slow", authenticate: whoIs })) ??
       (await routeToMatchmaker(request, { matchmakers: env.FLAKY, prefix: "/flaky", authenticate: whoIs })) ??
       (await routeToRoom(request, {

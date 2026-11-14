@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+**Matchmaking by skill and by region.**
+
+- `Matchmaker` has a `ratingOf(player, request)` hook, asked once when a player starts waiting, and two settings: `ratingGap`, how far apart two players' ratings may be, and `ratingGapPerSecond`, how much that grows for each second a player has waited. A match is built around whoever has waited longest, from the players nearest to them.
+- `regionWaitMs` matches a player only within their region for that long, and with anyone after. The region is the location hint the gateway worked out; `regionOf(player, request)` replaces it with your own.
+- Both are off by default, and a queue without them matches exactly as before. A queue that is waiting for a gap to widen or a region wait to end sets an alarm for that moment, and hibernates until then.
+
+**Ways back into an account.**
+
+- **Recovery codes.** `POST /recovery-code` (`createRecoveryCode`) gives a signed-in player a code, shown once and stored as a hash. `POST /recover` (`recoverWithCode`) sets a new password with it, once. No email is involved.
+- **Password reset by email.** With `sendPasswordReset` set, `POST /forgot` makes a token that lasts an hour and hands it to your function to send; `POST /reset` sets the new password. Tickflare sends no email itself. `Accounts.route` takes the Worker's `ctx` as a second argument, so that the email is sent after the answer.
+- `AccountClient` has `createRecoveryCode`, `recover`, `forgotPassword` and `resetPassword`, and an account has `recoveryCode: boolean`.
+- A new table, `tickflare_recovery`, is created on first use like the others. `ACCOUNTS_SCHEMA` has it, for those who apply the schema as a migration.
+
 **Clients for Godot and Unity.**
 
 - `clients/godot` is a client in GDScript for Godot 4, and `clients/unity` one in C# for Unity 2021.3 and later, as a package with no dependencies. Both connect and reconnect, keep the room's state up to date from JSON or binary patches, send commands and report the room's answer, and follow a player who is moved to another room. They ask for binary patches by default. Lockstep, prediction and interpolation remain in the TypeScript client only.

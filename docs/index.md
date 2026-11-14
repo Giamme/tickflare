@@ -227,7 +227,7 @@ export class Poker extends Room<State, Command> {
 
 ### Accounts and leaderboards
 
-Guests play at once and sign up later without losing anything. Data, stats and leaderboards live in D1. [Accounts](/guide/accounts)
+Guests play at once and sign up later without losing anything. A forgotten password is set again with a recovery code or a link by email. Data, stats and leaderboards live in D1. [Accounts](/guide/accounts)
 
 </div>
 <div>
@@ -251,7 +251,7 @@ const top = await me.leaderboard("wins");
 
 ### Matchmaking
 
-A queue pairs waiting players and reserves a room for them, near where they are. [Matchmaking](/guide/matchmaking)
+A queue puts waiting players together, by skill and by region if you like, and reserves a room for them near where they are. [Matchmaking](/guide/matchmaking)
 
 </div>
 <div>
@@ -260,6 +260,12 @@ A queue pairs waiting players and reserves a room for them, near where they are.
 export class Lobby extends Matchmaker<Env> {
   protected override matchSize = 2;
   protected override rooms = this.env.ROOMS;
+  // Within 150 rating points, and 10 more a second waited.
+  protected override ratingGap = 150;
+  protected override ratingGapPerSecond = 10;
+  protected override ratingOf(player: string) {
+    return rating(this.env, player);
+  }
 }
 
 // In the page

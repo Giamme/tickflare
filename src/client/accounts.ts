@@ -38,6 +38,8 @@ export interface Account {
   email: string | null;
   /** When the account was made, in epoch milliseconds. */
   createdAt: number;
+  /** Whether the account has a recovery code. */
+  recoveryCode: boolean;
   /** Every data key the player has, private ones included. */
   data: Record<string, unknown>;
   /** Every stat the player has. */
@@ -221,6 +223,46 @@ export class AccountClient {
     const result = await this.#request<{ account: Account; token: string }>("POST", "/password", { current, next });
     this.#setSession(result.token);
     this.#setAccount(result.account);
+  }
+
+  /**
+   * Makes a recovery code and returns it: show it to the player once, to
+   * keep somewhere safe. It sets a new password with `recover`, with no
+   * email involved, and replaces the code the account had. Needs the password.
+   */
+  async createRecoveryCode(password: string): Promise<string> {
+    const result = await this.#request<{ code: string }>("POST", "/recovery-code", { password });
+    if (this.#account) this.#setAccount({ ...this.#account, recoveryCode: true });
+    return result.code;
+  }
+
+  /**
+   * Sets a new password with a recovery code, and signs in. The code is used
+   * up. Rejects with `AccountRequestError` (`invalid_code`, `too_many_attempts`).
+   */
+  async recover(name: string, code: string, password: string): Promise<Account> {
+    const result = await this.#request<{ account: Account; token: string }>("POST", "/recover", { name, code, password });
+    this.#setSession(result.token);
+    this.#setAccount(result.account);
+    return result.account;
+  }
+
+  /**
+   * Asks for a password reset link to be sent to the account with this name,
+   * or to every account with this email address. It resolves whether or not
+   * there is such an account, so as not to tell. Rejects with `not_enabled`
+   * if the game does not send email.
+   */
+  async forgotPassword(who: { name: string } | { email: string }): Promise<void> {
+    await this.#request("POST", "/forgot", who);
+  }
+
+  /** Sets a new password with the token from a reset link, and signs in. Rejects with `invalid_token`. */
+  async resetPassword(token: string, password: string): Promise<Account> {
+    const result = await this.#request<{ account: Account; token: string }>("POST", "/reset", { token, password });
+    this.#setSession(result.token);
+    this.#setAccount(result.account);
+    return result.account;
   }
 
   /** Takes another name. */

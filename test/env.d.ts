@@ -20,6 +20,10 @@ declare namespace Cloudflare {
     LAZY: DurableObjectNamespace<import("./worker").LazyTickRoom>;
     HALF: DurableObjectNamespace<import("./worker").HalfRate>;
     SLOW: DurableObjectNamespace<import("./worker").SlowLobby>;
+    RANKED: DurableObjectNamespace<import("./worker").RankedMatchmaker>;
+    WIDENING: DurableObjectNamespace<import("./worker").WideningMatchmaker>;
+    TRIOS: DurableObjectNamespace<import("./worker").RankedTrios>;
+    REGIONAL: DurableObjectNamespace<import("./worker").RegionalMatchmaker>;
     FLAKY: DurableObjectNamespace<import("./worker").FlakyLobby>;
     NAMES: DurableObjectNamespace<import("./worker").NameRoom>;
     MATCHES: Queue<import("../src/protocol.js").MatchResult>;

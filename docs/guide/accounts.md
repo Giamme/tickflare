@@ -4,6 +4,7 @@
 
 - guests who can play at once, and sign up later without losing what they earned
 - accounts with a name and a password, and sessions
+- two ways back in for a player who forgot their password
 - per-player data, with a policy for who may read and write each key
 - stats that only your server writes, and a leaderboard for every stat
 - public profiles
@@ -101,7 +102,64 @@ The cookie is `SameSite=Lax` by default, which keeps players signed in when they
 - Passwords are 8 to 256 characters. They are hashed with PBKDF2-SHA256 at 100,000 iterations, the most the Workers runtime allows.
 - Sessions are stored as hashes, so a leaked database doesn't sign anyone in.
 - After ten failed sign-ins for one name, or fifty from one address, sign-ins are refused with `too_many_attempts` for up to fifteen minutes.
-- An email address is optional and only stored. There is no email verification and no password reset, because both need an email sender. A player who forgets their password needs you to set a new one with `setPassword`.
+- An email address is optional and is not verified. It is where a [password reset](#by-email) is sent, if you set that up.
+
+## A forgotten password
+
+There are two ways back into an account, and a game can offer either or both.
+
+### With a recovery code
+
+A recovery code needs nothing but Tickflare. A signed-in player asks for one, writes it down, and can later set a new password with it:
+
+```ts
+// Signed in: show this to the player once. Only its hash is stored.
+const code = await accounts.createRecoveryCode(password); // "7K2QF-M0XTR-9DJ4W-B6HNA"
+
+// Later, signed out, with the password forgotten:
+await accounts.recover("Ada", code, "a new password");
+```
+
+- A code is twenty letters and digits, typed in any case, with or without the dashes.
+- It works once. Using it sets the new password, ends every session of the account, and signs the player in; they can then make a new code.
+- Making a code replaces the one the account had. `account.recoveryCode` says whether there is one, so the page can remind a player who has none.
+- Wrong codes are counted like wrong passwords: ten for one name and no more are taken for up to fifteen minutes.
+
+Offer it right after sign-up, while the player still has their password in hand.
+
+### By email
+
+Tickflare makes the reset token and checks it; sending the email is yours, with whichever service you use. Give `Accounts` a `sendPasswordReset`:
+
+```ts
+const accounts = new Accounts(env.DB, {
+  secret: env.JOIN_SECRET,
+  async sendPasswordReset(reset) {
+    // Your mail service: Cloudflare Email Service, Resend, Postmark...
+    await sendEmail(env, {
+      to: reset.email,
+      subject: "Set a new password",
+      text: `Hello ${reset.name}. Set a new password here, within the hour:\n` +
+        `https://my-game.example/reset#${reset.token}`,
+    });
+  },
+});
+return (await accounts.route(request, ctx)) ?? new Response("Not found", { status: 404 });
+```
+
+```ts
+// On the sign-in page
+await accounts.forgotPassword({ name: "Ada" }); // or { email: "ada@example.com" }
+
+// On the page the link opens
+await accounts.resetPassword(location.hash.slice(1), "a new password");
+```
+
+- `forgotPassword` resolves whether or not there is such an account, so the page cannot be used to find out who plays your game. Pass the Worker's `ctx` to `route`, as above: the email is then sent after the answer, which takes as long either way.
+- Asked for by email address, every account with that address is sent a link of its own, with its name in it. A player who forgot their name finds it there.
+- A token lasts an hour (`passwordResetTtlSeconds`) and works once. A newer one replaces it, and so does changing the password. Using it ends every session of the account and signs the player in.
+- One account, or one address, is sent three links in fifteen minutes at most.
+- Put the token after a `#` in the link, as above, so that it does not reach your logs or anyone else's.
 
 ## Player data
 
@@ -173,7 +231,7 @@ Players with the same value share a rank. `GET /api/accounts/leaderboards/<stat>
 
 ## From server code
 
-Everything the HTTP API does is also a method, for your own routes, rooms and queue consumers: `register`, `signIn`, `rename`, `setEmail`, `setPassword`, `createSession`, `deleteAccount`, `exportAccount`, `ownAccount`, `profile`, `names`, the data and stats methods above, and `identify(request)`, which tells you who is behind any request. See the [`Accounts` API reference](../api/tickflare/classes/Accounts).
+Everything the HTTP API does is also a method, for your own routes, rooms and queue consumers: `register`, `signIn`, `rename`, `setEmail`, `setPassword`, `createRecoveryCode`, `recoverWithCode`, `startPasswordReset`, `resetPassword`, `createSession`, `deleteAccount`, `exportAccount`, `ownAccount`, `profile`, `names`, the data and stats methods above, and `identify(request)`, which tells you who is behind any request. See the [`Accounts` API reference](../api/tickflare/classes/Accounts).
 
 ## Moving from another service
 
@@ -194,4 +252,4 @@ for (const old of exported) {
 
 ## Not included
 
-Email verification, password reset, social sign-in, analytics events and remote config are left out on purpose. Each needs a service of its own, and they are easy to add next to `Accounts` in your Worker.
+Email verification, social sign-in, analytics events and remote config are left out on purpose. Each needs a service of its own, and they are easy to add next to `Accounts` in your Worker.

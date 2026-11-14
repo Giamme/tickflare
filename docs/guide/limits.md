@@ -180,8 +180,8 @@ A match that has to reach a result whoever is watching, a ranked one for instanc
 
 ## Accounts, matchmaking and results
 
-- **Accounts** have no email verification and no password reset.
-- **The matchmaker** is first come, first served: no skill ratings, no parties, no regions. Each queue is one object, good for about a thousand requests a second.
+- **Accounts** do not verify email addresses, and send no email themselves: a [password reset by email](./accounts#by-email) needs a mail service of yours.
+- **The matchmaker** matches by [skill](./matchmaking#matching-by-skill) and [region](./matchmaking#matching-by-region) but knows no parties and does not split players into teams. Each queue is one object, good for about a thousand requests a second. A queue that matches by skill or region looks at every pair of waiting players when one arrives, which is fine for hundreds waiting at once and slow for many thousands.
 - **Delivery of match results and handovers is at least once.** After a crash at the wrong moment one can arrive twice. What a room owes and could not deliver is retried on its next event, not on a timer of its own.
 - **A join token scoped to a name** opens both the room and the matchmaking queue of that name.
 

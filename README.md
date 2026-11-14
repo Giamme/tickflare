@@ -63,8 +63,8 @@ The room saves every change before anyone hears about it, rolls back what `rejec
 - **[Lockstep snapshots](docs/guide/lockstep.md#snapshots)**: a player who joins or reloads late starts from a simulation the other players' clients saved and agreed on, not from the first turn.
 - **[Rooms that end](docs/guide/rooms.md#when-a-room-is-over)**: a hook for when the last player is gone, rooms that delete themselves with their storage, and matches that [play on](docs/guide/state-sync.md#playing-on-with-nobody-connected) with nobody connected.
 - **[Identity](docs/guide/identity.md)** decided once, at the gateway, with signed join tokens.
-- **[Accounts](docs/guide/accounts.md)** on D1: guests, sign-up, sessions, player data, stats and leaderboards.
-- **[Matchmaking](docs/guide/matchmaking.md)** that reserves a room near its players, and **[match results](docs/guide/match-results.md)** through a Queue into D1, with replays in R2.
+- **[Accounts](docs/guide/accounts.md)** on D1: guests, sign-up, sessions, password recovery, player data, stats and leaderboards.
+- **[Matchmaking](docs/guide/matchmaking.md)** by skill and region, which reserves a room near its players, and **[match results](docs/guide/match-results.md)** through a Queue into D1, with replays in R2.
 - **[Worlds across rooms](docs/guide/worlds.md)**: handover between rooms and seeing across borders.
 - **[Clients for Godot and Unity](docs/guide/engines.md)**, and **[a written-down protocol](docs/reference/protocol.md)** for other engines, with binary patches for those whose WebSocket is not compressed.
 - **[A client](docs/guide/client.md)** for browsers and Node that reconnects on its own, and **[prediction](docs/guide/state-sync.md#showing-a-players-own-moves-at-once)**: a player's own move shows on the click and is corrected by the room.

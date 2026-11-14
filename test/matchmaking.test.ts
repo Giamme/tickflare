@@ -135,6 +135,117 @@ describe("matchmaker", () => {
   });
 });
 
+describe("matchmaker by rating", () => {
+  it("matches players who are close, and keeps the others waiting", async () => {
+    const queue = freshQueue();
+    const low = await enqueue(queue, "low&rating=1000", "/ranked");
+    const high = await enqueue(queue, "high&rating=1500", "/ranked");
+    await sleep(80);
+    expect(low.found()).toBeUndefined();
+    expect(high.found()).toBeUndefined();
+
+    // Third in line, and the first to have someone close enough.
+    const near = await enqueue(queue, "near&rating=1050", "/ranked");
+    expect((await near.closed).match!.players).toEqual(["low", "near"]);
+    expect((await low.closed).reason).toBe("matched");
+    await sleep(50);
+    expect(high.found()).toBeUndefined();
+
+    // Exactly the gap apart is close enough.
+    const top = await enqueue(queue, "top&rating=1600", "/ranked");
+    expect((await top.closed).match!.players).toEqual(["high", "top"]);
+  });
+
+  it("matches a player without a rating with anyone", async () => {
+    const queue = freshQueue();
+    const rated = await enqueue(queue, "rated&rating=2400", "/ranked");
+    const unrated = await enqueue(queue, "unrated", "/ranked");
+    expect((await unrated.closed).match!.players).toEqual(["rated", "unrated"]);
+    await rated.closed;
+
+    // A rating that could not be looked up is no rating: the player still gets to play.
+    const lost = await enqueue(queue, "lost&rating=boom", "/ranked");
+    const other = await enqueue(queue, "other&rating=10", "/ranked");
+    expect((await other.closed).match!.players).toEqual(["lost", "other"]);
+    await lost.closed;
+  });
+
+  it("builds a match around the one who has waited longest, from those near them", async () => {
+    const queue = freshQueue();
+    const a = await enqueue(queue, "a&rating=1000", "/trios");
+    const far = await enqueue(queue, "far&rating=1700", "/trios");
+    const b = await enqueue(queue, "b&rating=1080", "/trios");
+    await sleep(60);
+    expect(a.found()).toBeUndefined();
+
+    const c = await enqueue(queue, "c&rating=940", "/trios");
+    expect((await c.closed).match!.players).toEqual(["a", "b", "c"]);
+    await Promise.all([a.closed, b.closed]);
+    expect(far.found()).toBeUndefined();
+  });
+
+  it("widens the gap as a player waits, with nobody arriving", async () => {
+    const queue = freshQueue();
+    const started = Date.now();
+    const a = await enqueue(queue, "a&rating=1000", "/widening");
+    const b = await enqueue(queue, "b&rating=1400", "/widening");
+    const arrived = Date.now();
+    // 300 too far apart, at 100 more for every 100 ms the first has waited.
+    if (arrived - started < 200) {
+      await sleep(100);
+      expect(a.found()).toBeUndefined();
+    }
+    const forA = await a.closed;
+    expect(Date.now() - started).toBeGreaterThanOrEqual(295);
+    expect(forA.match!.players).toEqual(["a", "b"]);
+    expect((await b.closed).match).toEqual(forA.match);
+  });
+
+  it("takes the nearer of two players the wait has made acceptable", async () => {
+    const queue = freshQueue();
+    const a = await enqueue(queue, "a&rating=1000", "/widening");
+    // Each too far from the others to match at once; b is the nearer to a, though it came last.
+    const c = await enqueue(queue, "c&rating=1800", "/widening");
+    const b = await enqueue(queue, "b&rating=1400", "/widening");
+    expect((await a.closed).match!.players).toEqual(["a", "b"]);
+    await b.closed;
+    expect(c.found()).toBeUndefined();
+  });
+});
+
+describe("matchmaker by region", () => {
+  it("matches within a region first, and across regions once a player has waited", async () => {
+    const queue = freshQueue();
+    const started = Date.now();
+    const europe = await enqueue(queue, "europe&region=weur", "/regional");
+    const america = await enqueue(queue, "america&region=enam", "/regional");
+    const arrived = Date.now();
+    if (arrived - started < 300) {
+      await sleep(80);
+      expect(europe.found()).toBeUndefined();
+    }
+
+    const forEurope = await europe.closed;
+    expect(Date.now() - started).toBeGreaterThanOrEqual(395);
+    expect(forEurope.match!.players).toEqual(["europe", "america"]);
+    await america.closed;
+  });
+
+  it("does not make a player wait for someone who is there", async () => {
+    const queue = freshQueue();
+    const america = await enqueue(queue, "america&region=enam", "/regional");
+    const europe = await enqueue(queue, "europe&region=weur", "/regional");
+    const second = await enqueue(queue, "second&region=weur", "/regional");
+    expect((await second.closed).match!.players).toEqual(["europe", "second"]);
+    await europe.closed;
+    expect(america.found()).toBeUndefined();
+
+    // Someone whose region is not known suits anyone.
+    const somewhere = await enqueue(queue, "somewhere", "/regional");
+    expect((await somewhere.closed).match!.players).toEqual(["america", "somewhere"]);
+  });
+});
+
 describe("matchmaker while a room is being reserved", () => {
   /** The rooms the slow lobby has reserved, as "a+b". */
   const reservations = (queue: string) =>

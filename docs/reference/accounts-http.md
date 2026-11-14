@@ -15,6 +15,10 @@ Bodies are JSON (`Content-Type: application/json`). A signed-in request carries 
 | `GET /me` | | a session | the account |
 | `DELETE /me` | `{ password }` | a session | 204: the account and everything in it is deleted |
 | `POST /password` | `{ current, next }` | a session | `{ account, token }`: every other session ends |
+| `POST /recovery-code` | `{ password }` | a session | 201 `{ code }`: a recovery code, shown this once. It replaces the one before |
+| `POST /recover` | `{ name, code, password }` | nothing | `{ account, token }`, sets the cookie. The code is used up and every other session ends |
+| `POST /forgot` | `{ name }` or `{ email }` | `sendPasswordReset` to be set | 204, whether or not there is such an account |
+| `POST /reset` | `{ token, password }` | nothing | `{ account, token }`, sets the cookie. The token is used up and every other session ends |
 | `POST /name` | `{ name }` | a session | the account |
 | `POST /email` | `{ password, email }` | a session | the account. `email: null` removes it |
 | `GET /export` | | a session | everything stored about the player, as a JSON download |
@@ -64,15 +68,18 @@ Errors are JSON, with a machine-readable code:
 | 400 | `invalid_name` | The name breaks the name rules |
 | 400 | `weak_password` | The password is shorter than 8 characters |
 | 400 | `invalid_email` | The email address is not one |
+| 400 | `invalid_token` | The password reset token is wrong, used, replaced or more than an hour old |
 | 400 | `invalid_key` | A data key must be 1 to 64 letters, digits, dots, dashes or underscores |
 | 400 | `invalid_value` | The data value is not JSON, or a stat is not a finite number |
 | 400 | `invalid_stat` | A stat name must be 1 to 64 letters, digits, dots, dashes or underscores |
 | 401 | `not_signed_in` | The request needs a session and has none that is valid |
 | 401 | `invalid_credentials` | Wrong name or password |
+| 401 | `invalid_code` | Wrong name or recovery code |
 | 403 | `wrong_password` | The password given to confirm a change is wrong |
 | 403 | `read_only` | Players can't write this data key |
 | 403 | `origin_not_allowed` | The request came from a page on an origin not in `allowedOrigins` |
 | 404 | `not_found` | No such endpoint, player or data key |
+| 404 | `not_enabled` | `POST /forgot` on a game that has no `sendPasswordReset` |
 | 409 | `name_taken` | Someone has that name |
 | 409 | `account_exists` | This player id already has an account, e.g. a guest who registered before |
 | 409 | `too_many_keys` | The player has `maxDataKeys` keys already |

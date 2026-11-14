@@ -47,6 +47,7 @@ export {
   type LeaderboardEntry,
   type LeaderboardPage,
   type OwnAccount,
+  type PasswordReset,
   type PublicProfile,
 } from "./accounts.js";
 export {

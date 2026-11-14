@@ -5,8 +5,9 @@ import { createJoinToken, verifyJoinToken } from "./tokens.js";
  *
  * What a game backend service such as Talo does for accounts, cut down to
  * what most games need: name and password accounts, sessions, guests that
- * can register without losing their progress, per-player data, server-side
- * stats and leaderboards, public profiles, and the means to export or delete
+ * can register without losing their progress, ways back into an account
+ * whose password was forgotten, per-player data, server-side stats and
+ * leaderboards, public profiles, and the means to export or delete
  * everything about a player.
  *
  * Everything lives in tables prefixed `tickflare_` in one D1 database, so
@@ -68,6 +69,30 @@ export interface AccountsOptions {
    * hashed again the usual way. Return false for hashes you do not recognise.
    */
   verifyImportedPassword?(hash: string, password: string): boolean | Promise<boolean>;
+  /**
+   * Sends a player the link to set a new password: Tickflare makes the
+   * token, and sending the email is yours to do, with whichever mail service
+   * you use. Setting this turns `POST /forgot` on. Put `reset.token` in a
+   * link to a page of yours that asks for a new password and sends both to
+   * `POST /reset`.
+   */
+  sendPasswordReset?(reset: PasswordReset, request: Request): void | Promise<void>;
+  /** How long a password reset token lasts, in seconds. Default one hour. */
+  passwordResetTtlSeconds?: number;
+}
+
+/** What `sendPasswordReset` is given: whom to write to, and the token that lets them set a new password. */
+export interface PasswordReset {
+  /** The player id. */
+  id: string;
+  /** The account name, to remind the player of it. */
+  name: string;
+  /** The account's email address. */
+  email: string;
+  /** Lets its holder set a new password, once. Only its hash is stored. */
+  token: string;
+  /** When the token stops working, in epoch milliseconds. */
+  expiresAt: number;
 }
 
 /** Who is behind a request. */
@@ -104,6 +129,8 @@ export interface OwnAccount {
   email: string | null;
   /** When the account was made, in epoch milliseconds. */
   createdAt: number;
+  /** Whether the account has a recovery code. The code itself is shown once, when it is made. */
+  recoveryCode: boolean;
   /** Every data key the player has, private ones included. */
   data: Record<string, unknown>;
   /** Every stat the player has. */
@@ -188,6 +215,14 @@ CREATE TABLE IF NOT EXISTS tickflare_sign_in_failures (
   failures INTEGER NOT NULL,
   window_start INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS tickflare_recovery (
+  token_hash TEXT PRIMARY KEY,
+  account_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS tickflare_recovery_account ON tickflare_recovery (account_id);
 `;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -201,6 +236,12 @@ const STAT_PATTERN = /^[A-Za-z0-9_.-]{1,64}$/;
 const FAILURE_WINDOW_MS = 15 * 60 * 1000;
 const MAX_FAILURES_PER_NAME = 10;
 const MAX_FAILURES_PER_ADDRESS = 50;
+/** Password reset emails one account, or one email address, can be sent within one window. */
+const MAX_RESET_REQUESTS = 3;
+/** Accounts with the same email address that one request for a reset writes to. */
+const MAX_RESETS_PER_EMAIL = 5;
+/** Recovery codes are written in these: no I, L, O or U, which read as other characters. */
+const CODE_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 /** A session is extended at most once per this interval, so using it does not mean a write every time. */
 const SESSION_REFRESH_MS = DAY_MS;
 
@@ -246,6 +287,8 @@ export class Accounts {
   readonly #maxDataBytes: number;
   readonly #maxDataKeys: number;
   readonly #verifyImported: AccountsOptions["verifyImportedPassword"];
+  readonly #sendReset: AccountsOptions["sendPasswordReset"];
+  readonly #resetTtl: number;
   readonly #normalizeName: (name: string) => string;
 
   constructor(db: D1Database, options: AccountsOptions) {
@@ -265,6 +308,8 @@ export class Accounts {
     this.#maxDataBytes = options.maxDataBytes ?? 64 * 1024;
     this.#maxDataKeys = options.maxDataKeys ?? 100;
     this.#verifyImported = options.verifyImportedPassword;
+    this.#sendReset = options.sendPasswordReset;
+    this.#resetTtl = options.passwordResetTtlSeconds ?? 60 * 60;
     const custom = options.normalizeName;
     this.#normalizeName = custom
       ? name => {
@@ -346,6 +391,10 @@ export class Accounts {
    *     GET    /me               your account, data and stats
    *     DELETE /me               { password }: delete your account and everything in it
    *     POST   /password         { current, next }: change it and sign out everywhere else
+   *     POST   /recovery-code    { password }: a code that sets a new password once, shown this one time
+   *     POST   /recover          { name, code, password }: set a new password with that code, and sign in
+   *     POST   /forgot           { name } or { email }: send a reset link, if `sendPasswordReset` is set
+   *     POST   /reset            { token, password }: set a new password with the link's token, and sign in
    *     POST   /name             { name }: take another name
    *     POST   /email            { password, email }: set or (with null) remove the email address
    *     GET    /export           everything stored about you, as a JSON download
@@ -353,8 +402,12 @@ export class Accounts {
    *     GET    /data/:key        PUT /data/:key { value }   DELETE /data/:key
    *     GET    /players/:id      a public profile
    *     GET    /leaderboards/:stat?limit=&offset=
+   *
+   * Pass the Worker's `ctx` as well if you reset passwords by email: the
+   * email is then sent after the answer, which takes as long whether or not
+   * there was an account to write to.
    */
-  async route(request: Request): Promise<Response | null> {
+  async route(request: Request, ctx?: Pick<ExecutionContext, "waitUntil">): Promise<Response | null> {
     const url = new URL(request.url);
     if (url.pathname !== this.#prefix && !url.pathname.startsWith(`${this.#prefix}/`)) return null;
     const path = url.pathname.slice(this.#prefix.length) || "/";
@@ -373,7 +426,7 @@ export class Accounts {
     let response: Response;
     try {
       await this.migrate();
-      response = await this.#dispatch(request, url, path);
+      response = await this.#dispatch(request, url, path, ctx);
     } catch (error) {
       if (error instanceof AccountError) {
         response = json({ error: error.code, message: error.message }, error.status);
@@ -386,7 +439,12 @@ export class Accounts {
     return response;
   }
 
-  async #dispatch(request: Request, url: URL, path: string): Promise<Response> {
+  async #dispatch(
+    request: Request,
+    url: URL,
+    path: string,
+    ctx: Pick<ExecutionContext, "waitUntil"> | undefined,
+  ): Promise<Response> {
     const method = request.method;
     let segments: string[];
     try {
@@ -455,6 +513,51 @@ export class Accounts {
       await this.#checkPassword(account.id, stringField(body, "current"));
       await this.setPassword(account.id, stringField(body, "next"));
       // Every session ends, this one included; it is replaced with a fresh one.
+      return this.#signedIn(request, account.id, 200);
+    }
+    if (path === "/recovery-code" && method === "POST") {
+      this.#checkOrigin(request);
+      const account = await this.#requireAccount(request);
+      const body = await readJson(request);
+      await this.#checkPassword(account.id, stringField(body, "password"));
+      return json({ code: await this.createRecoveryCode(account.id) }, 201, { "Cache-Control": "no-store" });
+    }
+    if (path === "/recover" && method === "POST") {
+      this.#checkOrigin(request);
+      const body = await readJson(request);
+      const account = await this.recoverWithCode(
+        stringField(body, "name"),
+        stringField(body, "code"),
+        stringField(body, "password"),
+        address(request),
+      );
+      return this.#signedIn(request, account.id, 200);
+    }
+    if (path === "/forgot" && method === "POST") {
+      this.#checkOrigin(request);
+      const send = this.#sendReset;
+      if (!send) throw new AccountError(404, "not_enabled", "This game does not reset passwords by email.");
+      const body = await readJson(request);
+      const who =
+        typeof body.email === "string" && body.email.trim() !== ""
+          ? { email: body.email.trim() }
+          : { name: stringField(body, "name") };
+      // Every request counts, whether or not there is such an account: nobody's inbox is filled this way.
+      const keys = [`forgot:${who.email?.toLowerCase() ?? nameKey(who.name!.trim())}`, `forgot-address:${address(request)}`];
+      await this.#checkThrottle(keys);
+      await this.#recordFailure(keys);
+      const work = (async () => {
+        for (const reset of await this.startPasswordReset(who)) await send(reset, request);
+      })().catch((error) => console.error("[tickflare] could not send a password reset:", error));
+      // The answer is the same, and with `ctx` as quick, whether or not anything was sent.
+      if (ctx) ctx.waitUntil(work);
+      else await work;
+      return new Response(null, { status: 204 });
+    }
+    if (path === "/reset" && method === "POST") {
+      this.#checkOrigin(request);
+      const body = await readJson(request);
+      const account = await this.resetPassword(stringField(body, "token"), stringField(body, "password"));
       return this.#signedIn(request, account.id, 200);
     }
     if (path === "/name" && method === "POST") {
@@ -612,16 +715,132 @@ export class Accounts {
       .run();
   }
 
-  /** Sets a new password and ends every session of the account. */
+  /**
+   * Sets a new password, ends every session of the account, and makes any
+   * password reset token it was sent useless. Its recovery code stays.
+   */
   async setPassword(accountId: string, password: string): Promise<void> {
     checkPassword(password);
+    await this.migrate();
     const now = Date.now();
     await this.#db.batch([
       this.#db
         .prepare("UPDATE tickflare_accounts SET password_hash = ?, password_changed_at = ? WHERE id = ?")
         .bind(await hashPassword(password), now, accountId),
       this.#db.prepare("DELETE FROM tickflare_sessions WHERE account_id = ?").bind(accountId),
+      this.#db.prepare("DELETE FROM tickflare_recovery WHERE account_id = ? AND kind = 'reset'").bind(accountId),
     ]);
+  }
+
+  // --- Recovery ---------------------------------------------------------------------
+
+  /**
+   * Makes a recovery code for an account and returns it: twenty letters and
+   * digits the player keeps somewhere safe, which set a new password once,
+   * with no email involved. It replaces the code the account had, if any.
+   * Only its hash is stored, so this is the one time it can be shown.
+   */
+  async createRecoveryCode(accountId: string): Promise<string> {
+    await this.migrate();
+    if (!(await this.#hasAccount(accountId))) throw new AccountError(404, "not_found", "No such account.");
+    const code = recoveryCode();
+    await this.#db.batch([
+      this.#db.prepare("DELETE FROM tickflare_recovery WHERE account_id = ? AND kind = 'code'").bind(accountId),
+      this.#db
+        .prepare("INSERT INTO tickflare_recovery (token_hash, account_id, kind, created_at, expires_at) VALUES (?, ?, 'code', ?, NULL)")
+        .bind(await sha256(codeKey(code)), accountId, Date.now()),
+    ]);
+    return code;
+  }
+
+  /**
+   * Sets a new password for the account called `name`, given its recovery
+   * code, and ends its sessions. The code is used up: make another once
+   * signed in. Wrong guesses are counted as wrong passwords are.
+   */
+  async recoverWithCode(name: string, code: string, password: string, from = "unknown"): Promise<Identity> {
+    await this.migrate();
+    checkPassword(password);
+    const keys = [`recover:${nameKey(name.trim())}`, `address:${from}`];
+    await this.#checkThrottle(keys);
+    const account = await this.#db
+      .prepare("SELECT id, name FROM tickflare_accounts WHERE name_key = ?")
+      .bind(nameKey(name.trim()))
+      .first<{ id: string; name: string }>();
+    // Deleting it is what uses it: of two requests with the same code, one finds it gone.
+    const used = account
+      ? await this.#db
+          .prepare("DELETE FROM tickflare_recovery WHERE token_hash = ? AND account_id = ? AND kind = 'code'")
+          .bind(await sha256(codeKey(code)), account.id)
+          .run()
+      : null;
+    if (!account || !used || used.meta.changes === 0) {
+      await this.#recordFailure(keys);
+      throw new AccountError(401, "invalid_code", "Wrong name or recovery code.");
+    }
+    await this.setPassword(account.id, password);
+    await this.#db.prepare("DELETE FROM tickflare_sign_in_failures WHERE key = ?").bind(keys[0]).run();
+    return { id: account.id, name: account.name, guest: false };
+  }
+
+  /**
+   * Makes a password reset token for the account with this name, or for
+   * each account with this email address, and returns what to send to whom.
+   * Empty if there is no such account or it has no email address. A token
+   * replaces the one the account was sent before. `POST /forgot` calls this
+   * and hands each result to `sendPasswordReset`.
+   */
+  async startPasswordReset(who: { name?: string; email?: string }): Promise<PasswordReset[]> {
+    await this.migrate();
+    const found =
+      who.email !== undefined
+        ? await this.#db
+            .prepare(`SELECT id, name, email FROM tickflare_accounts WHERE lower(email) = lower(?) ORDER BY created_at LIMIT ${MAX_RESETS_PER_EMAIL}`)
+            .bind(who.email.trim())
+            .all<{ id: string; name: string; email: string | null }>()
+        : await this.#db
+            .prepare("SELECT id, name, email FROM tickflare_accounts WHERE name_key = ?")
+            .bind(nameKey((who.name ?? "").trim()))
+            .all<{ id: string; name: string; email: string | null }>();
+    const now = Date.now();
+    const expiresAt = now + this.#resetTtl * 1000;
+    const resets: PasswordReset[] = [];
+    const statements = [this.#db.prepare("DELETE FROM tickflare_recovery WHERE expires_at IS NOT NULL AND expires_at <= ?").bind(now)];
+    for (const account of found.results) {
+      if (!account.email) continue;
+      const token = randomToken();
+      resets.push({ id: account.id, name: account.name, email: account.email, token, expiresAt });
+      statements.push(
+        this.#db.prepare("DELETE FROM tickflare_recovery WHERE account_id = ? AND kind = 'reset'").bind(account.id),
+        this.#db
+          .prepare("INSERT INTO tickflare_recovery (token_hash, account_id, kind, created_at, expires_at) VALUES (?, ?, 'reset', ?, ?)")
+          .bind(await sha256(token), account.id, now, expiresAt),
+      );
+    }
+    await this.#db.batch(statements);
+    return resets;
+  }
+
+  /** Sets a new password with a token from `startPasswordReset`, once, and ends the account's sessions. */
+  async resetPassword(token: string, password: string): Promise<Identity> {
+    await this.migrate();
+    checkPassword(password);
+    const hash = await sha256(token);
+    const row = await this.#db
+      .prepare(
+        `SELECT a.id AS id, a.name AS name FROM tickflare_recovery r JOIN tickflare_accounts a ON a.id = r.account_id
+         WHERE r.token_hash = ? AND r.kind = 'reset' AND r.expires_at > ?`,
+      )
+      .bind(hash, Date.now())
+      .first<{ id: string; name: string }>();
+    const used = row
+      ? await this.#db.prepare("DELETE FROM tickflare_recovery WHERE token_hash = ? AND kind = 'reset'").bind(hash).run()
+      : null;
+    if (!row || !used || used.meta.changes === 0) {
+      throw new AccountError(400, "invalid_token", "That link no longer works. Ask for a new one.");
+    }
+    await this.setPassword(row.id, password);
+    return { id: row.id, name: row.name, guest: false };
   }
 
   /** Starts a session for an account and returns its token. Usually done for you by `/login`. */
@@ -641,6 +860,7 @@ export class Accounts {
     await this.migrate();
     await this.#db.batch([
       this.#db.prepare("DELETE FROM tickflare_sessions WHERE account_id = ?").bind(accountId),
+      this.#db.prepare("DELETE FROM tickflare_recovery WHERE account_id = ?").bind(accountId),
       this.#db.prepare("DELETE FROM tickflare_player_data WHERE player = ?").bind(accountId),
       this.#db.prepare("DELETE FROM tickflare_player_stats WHERE player = ?").bind(accountId),
       this.#db.prepare("DELETE FROM tickflare_accounts WHERE id = ?").bind(accountId),
@@ -685,6 +905,7 @@ export class Accounts {
         email: account.email,
         createdAt: account.created_at,
         passwordChangedAt: account.password_changed_at,
+        recoveryCode: await this.#hasRecoveryCode(accountId),
       },
       sessions: sessions.results.map((session) => ({ createdAt: session.created_at, expiresAt: session.expires_at })),
       data: await this.#allData(accountId),
@@ -708,9 +929,18 @@ export class Accounts {
       name: account.name,
       email: account.email,
       createdAt: account.created_at,
+      recoveryCode: await this.#hasRecoveryCode(accountId),
       data: await this.#allData(accountId),
       stats: await this.stats(accountId),
     };
+  }
+
+  async #hasRecoveryCode(accountId: string): Promise<boolean> {
+    const row = await this.#db
+      .prepare("SELECT 1 FROM tickflare_recovery WHERE account_id = ? AND kind = 'code'")
+      .bind(accountId)
+      .first();
+    return row !== null;
   }
 
   /** A player's public profile, or null if there is no account with that id. */
@@ -1014,9 +1244,13 @@ export class Accounts {
     const now = Date.now();
     for (const row of rows.results) {
       if (now - row.window_start >= FAILURE_WINDOW_MS) continue;
-      const limit = row.key.startsWith("name:") ? MAX_FAILURES_PER_NAME : MAX_FAILURES_PER_ADDRESS;
+      const limit = row.key.startsWith("forgot:")
+        ? MAX_RESET_REQUESTS
+        : row.key.startsWith("address:") || row.key.startsWith("forgot-address:")
+          ? MAX_FAILURES_PER_ADDRESS
+          : MAX_FAILURES_PER_NAME;
       if (row.failures >= limit) {
-        throw new AccountError(429, "too_many_attempts", "Too many failed sign-ins. Try again in a few minutes.");
+        throw new AccountError(429, "too_many_attempts", "Too many attempts. Try again in a few minutes.");
       }
     }
   }
@@ -1198,6 +1432,22 @@ function json(body: unknown, status = 200, headers: Record<string, string> = {})
 
 function clamp(value: number, min: number, max: number): number {
   return Number.isFinite(value) ? Math.min(max, Math.max(min, Math.floor(value))) : min;
+}
+
+/** A recovery code: twenty characters, a hundred bits, in four groups to read and type. */
+function recoveryCode(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(20));
+  const letters = Array.from(bytes, (byte) => CODE_ALPHABET[byte & 31]).join("");
+  return letters.match(/.{5}/g)!.join("-");
+}
+
+/** A recovery code as it is hashed: however it was typed, with the characters people mistake put right. */
+function codeKey(code: string): string {
+  return code
+    .toUpperCase()
+    .replace(/[^0-9A-Z]/g, "")
+    .replace(/O/g, "0")
+    .replace(/[IL]/g, "1");
 }
 
 function randomToken(): string {

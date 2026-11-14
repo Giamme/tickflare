@@ -21,7 +21,11 @@
       { "name": "SHAPES", "class_name": "ShapesRoom" },
       { "name": "PLAIN", "class_name": "PlainShapesRoom" },
       { "name": "SNAPS", "class_name": "SnapRoom" },
-      { "name": "ASKEDSNAPS", "class_name": "AskedSnapRoom" }
+      { "name": "ASKEDSNAPS", "class_name": "AskedSnapRoom" },
+      { "name": "RANKED", "class_name": "RankedMatchmaker" },
+      { "name": "WIDENING", "class_name": "WideningMatchmaker" },
+      { "name": "TRIOS", "class_name": "RankedTrios" },
+      { "name": "REGIONAL", "class_name": "RegionalMatchmaker" }
     ]
   },
   "migrations": [
@@ -29,7 +33,8 @@
     { "tag": "v2", "new_sqlite_classes": ["NameRoom"] },
     { "tag": "v3", "new_sqlite_classes": ["AskedTurnRoom"] },
     { "tag": "v4", "new_sqlite_classes": ["ShapesRoom", "PlainShapesRoom"] },
-    { "tag": "v5", "new_sqlite_classes": ["SnapRoom", "AskedSnapRoom"] }
+    { "tag": "v5", "new_sqlite_classes": ["SnapRoom", "AskedSnapRoom"] },
+    { "tag": "v6", "new_sqlite_classes": ["RankedMatchmaker", "WideningMatchmaker", "RankedTrios", "RegionalMatchmaker"] }
   ],
   "queues": {
     "producers": [{ "binding": "MATCHES", "queue": "tickflare-test-matches" }],
