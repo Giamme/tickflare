@@ -71,26 +71,36 @@ export interface WelcomeFrame<View = unknown> {
   players: Player[];
 }
 
-/** The state changed: this player's whole view. */
+/**
+ * The state changed, and this is the player's whole view: sent when the room
+ * does not know what the player holds, or when the view is not an object and
+ * so cannot be patched.
+ */
 export interface StateFrame<View = unknown> {
   /** Frame type. */
   t: "state";
-  /** One more than the previous change. */
+  /** The room's change counter after this change. */
   seq: number;
-  /** Set while the room is ticking. */
+  /** Ticks run so far. */
   tick?: number;
   /** This player's whole view. */
   state: View;
 }
 
-/** The state changed during a tick: only what differs from what this player last received. */
+/** The state changed: only what differs from what this player last received. */
 export interface PatchFrame {
   /** Frame type. */
   t: "patch";
-  /** One more than the previous change. */
+  /** The room's change counter after this change. */
   seq: number;
-  /** The tick that made the change. */
+  /** Ticks run so far. While the room is ticking, the tick that made the change. */
   tick: number;
+  /**
+   * Outside the simulation, the `seq` of the view this is a patch of. A client
+   * that holds any other has missed something: it must not apply the patch,
+   * and reconnects to be sent its whole view.
+   */
+  from?: number;
   /** Apply it with `applyPatch` to the view you have. */
   p: Patch;
 }

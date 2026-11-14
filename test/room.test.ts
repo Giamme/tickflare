@@ -224,12 +224,32 @@ describe("views", () => {
 
     p1.command({ type: "secret", value: "mine" });
     expect((await p1.next("state")).state.secrets).toEqual({ p1: "mine" });
-    expect((await p2.next("state")).state.secrets).toEqual({});
+    await p1.next("ack");
 
     p2.command({ type: "secret", value: "theirs" });
     expect((await p2.next("state")).state.secrets).toEqual({ p2: "theirs" });
+    await p2.next("ack");
+
+    // A change both can see reaches both, each with their own secret and not the other's.
+    p1.command({ type: "add", n: 1 });
+    expect((await p1.next("state")).state).toMatchObject({ total: 1, secrets: { p1: "mine" } });
+    expect((await p2.next("state")).state).toMatchObject({ total: 1, secrets: { p2: "theirs" } });
+  });
+
+  it("sends a player nothing when a change is not in their view", async () => {
+    const { p1, p2 } = await twoPlayers();
+    p1.command({ type: "secret", value: "mine" });
+    await p1.next("state");
     await p1.next("ack");
-    expect((await p1.next("state")).state.secrets).toEqual({ p1: "mine" });
+    p1.command({ type: "add", n: 1 });
+    await p1.next("state");
+
+    // The first thing p2 hears is the change it can see. That is two changes on from what it
+    // holds, and the patch says so.
+    const frame = await p2.next("state");
+    expect(frame.state).toMatchObject({ total: 1, secrets: {} });
+    expect(p2.patches).toHaveLength(1);
+    expect(p2.patches[0]).toMatchObject({ seq: frame.seq, from: frame.seq - 2, p: { total: [1] } });
   });
 });
 

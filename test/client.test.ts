@@ -160,6 +160,43 @@ describe("RoomClient", () => {
     client.close();
   });
 
+  it("applies a patch of the view it holds, and starts over from one of a view it does not", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { seen, onStatus } = statuses();
+    const states: unknown[] = [];
+    const room = new RoomClient<{ n?: number; m?: number }>("wss://example.test/rooms/r", { onStatus });
+    room.on("state", (state) => states.push(state));
+    const first = FakeSocket.all[0]!;
+    first.welcome();
+
+    first.receive({ t: "patch", seq: 1, tick: 0, from: 0, p: { n: [1] } });
+    expect(room.state).toEqual({ n: 1 });
+    expect(room.seq).toBe(1);
+    // While the room simulates, a patch does not say what it is a patch of: the room keeps
+    // count of what each connection was sent.
+    first.receive({ t: "patch", seq: 4, tick: 9, p: { n: [4] } });
+    expect(room.state).toEqual({ n: 4 });
+
+    // A patch of the view at 6, to a client whose view is of 4: a change went missing.
+    first.receive({ t: "patch", seq: 7, tick: 9, from: 6, p: { m: [7] } });
+    expect(room.state).toEqual({ n: 4 });
+    expect(seen.at(-1)).toBe("connecting:1006:resync");
+    expect(first.readyState).toBe(2);
+    // Nothing more is taken from the connection it gave up on.
+    first.receive({ t: "patch", seq: 8, tick: 9, from: 7, p: { m: [8] } });
+    expect(room.state).toEqual({ n: 4 });
+
+    vi.advanceTimersByTime(1000);
+    const second = FakeSocket.all[1]!;
+    second.readyState = 1;
+    second.receive({ t: "welcome", v: 1, you: "p1", seq: 8, tick: 9, tickRate: 0, state: { n: 4, m: 8 }, players: [] });
+    expect(room.state).toEqual({ n: 4, m: 8 });
+    expect(room.status).toBe("open");
+    expect(states.at(-1)).toEqual({ n: 4, m: 8 });
+    room.close();
+    warn.mockRestore();
+  });
+
   it("follows a handover it is told about before it was ever welcomed", () => {
     const moved: string[] = [];
     const client = new RoomClient("wss://tickflare.test/rooms/old?token=t", { onMoved: (room) => moved.push(room) });

@@ -366,6 +366,12 @@ export class RoomClient<View = unknown, Command = unknown> {
         this.#setState(message.state, message.seq);
         break;
       case "patch":
+        if (message.from !== undefined && message.from !== this.#seq) {
+          // A patch of a view this client does not hold. Applying it would leave the screen
+          // wrong with nothing to show for it, so start again from the whole view.
+          this.#resync();
+          break;
+        }
         this.#tick = message.tick;
         this.#setState(applyPatch(this.#state as View, message.p), message.seq);
         break;
@@ -386,6 +392,20 @@ export class RoomClient<View = unknown, Command = unknown> {
         this.#emit("message", message.d);
         break;
     }
+  }
+
+  /** Drops the connection and opens a new one, which begins with the whole view. */
+  #resync(): void {
+    const socket = this.#socket;
+    if (!socket) return;
+    console.warn("[tickflare] out of step with the room; reconnecting");
+    this.#socket = undefined;
+    try {
+      socket.close(1000, "resync");
+    } catch {
+      // Already closing.
+    }
+    this.#closed(1006, "resync");
   }
 
   #setState(state: View, seq: number): void {

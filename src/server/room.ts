@@ -871,9 +871,10 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
       players: this.players,
     } satisfies ServerMessage);
     server.send(welcome);
-    if (this.tickRate > 0) {
-      // Remember exactly what this socket has, as a copy the simulation cannot touch.
-      this.#deltas.remember(server, (JSON.parse(welcome) as { state: unknown }).state);
+    if (this.#loop !== undefined || this.view !== Room.prototype.view) {
+      // Remember exactly what this socket has, as a copy the room cannot touch. Outside the
+      // simulation and without a custom view there is no need: it has the state as it is saved.
+      this.#deltas.remember(server, (JSON.parse(welcome) as { state: unknown }).state, this.#seq);
     }
     this.#broadcastPresence(server);
 
@@ -1119,7 +1120,6 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
       // Send what changed since the last tick, or it would never go out.
       this.#broadcastTick();
       if (this.#unsaved) this.#writeRoom();
-      this.#deltas.reset();
     }
   }
 
@@ -1364,7 +1364,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
       this.#committed = next;
       this.#stale = !current;
       committed = true;
-      if (stateChanged && !ticking) this.#broadcastState(next.state);
+      if (stateChanged && !ticking) this.#broadcastState(was.state);
       // No await between the two commits, so storage holds both or neither.
       if (seated > 0 && this.#roster.length === 0) this.#apply(() => this.onEmpty());
       return { ok: true };
@@ -1401,28 +1401,34 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     }
   }
 
-  /** Sends everyone their whole view. Used outside the simulation. `json` is the state, as JSON. */
-  #broadcastState(json: string): void {
-    // Whatever the sockets were sent during an earlier simulation is now out of date.
-    this.#deltas.reset();
-    // Without a custom view everyone gets the same frame, so build it once.
-    const shared = this.view === Room.prototype.view ? `{"t":"state","seq":${this.#seq},"state":${json}}` : undefined;
-
-    for (const { ws, id } of this.#seatedSockets()) {
-      try {
-        ws.send(
-          shared ??
-            JSON.stringify({
-              t: "state",
-              seq: this.#seq,
-              state: this.view({ id, connected: true }),
-            }),
-        );
-      } catch (err) {
-        // A view() that threw must not starve the other players.
-        console.error(`[tickflare] could not send state to ${id}:`, err);
-      }
+  /**
+   * Sends everyone what this change did to their view. Used outside the
+   * simulation, where every change is sent as it is made.
+   *
+   * `before` is the state as JSON as it was before the change. Without a
+   * custom view that is what every seated socket holds, since each was sent
+   * every change so far, so a socket nothing is known about (the room has
+   * slept since, or the socket has just joined) can still be sent a patch.
+   * With a custom view only what was actually sent to a socket will do, and
+   * one that nothing is known about gets its whole view.
+   */
+  #broadcastState(before: string): void {
+    const sockets = this.#seatedSockets();
+    if (sockets.length === 0) return;
+    const custom = this.view !== Room.prototype.view;
+    // Not for a room that is about to simulate again: one that was taken out of memory in the
+    // middle of a simulation saved its state some ticks before its players last heard from it.
+    if (!custom && !this.#deltas.knows(sockets) && !this.#wantsTicks(true)) {
+      this.#deltas.seed(sockets, this.#seq - 1, () => JSON.parse(before) as unknown);
     }
+    this.#deltas.send(
+      sockets,
+      this.#seq,
+      this.#tick,
+      this.#state,
+      custom ? (id) => this.view({ id, connected: true }) : undefined,
+      true,
+    );
   }
 
   /** Sends everyone what changed in their view since the last tick. */

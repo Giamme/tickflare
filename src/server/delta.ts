@@ -1,5 +1,15 @@
 import { applyPatch, diff, isPlainObject, jsonEqual } from "../patch.js";
 
+/**
+ * How to bring a socket up to date: a patch as JSON, or its whole view as
+ * JSON, or neither if nothing changed for it. And the snapshot it then holds.
+ */
+interface Update {
+  patch?: string;
+  whole?: string;
+  next: unknown;
+}
+
 export interface SeatedSocket {
   ws: WebSocket;
   /** The player the socket belongs to. */
@@ -7,7 +17,8 @@ export interface SeatedSocket {
 }
 
 /**
- * Sends each socket what changed in its view since the last tick.
+ * Sends each socket what changed in its view since it was last sent
+ * anything: after a tick while the room simulates, after a change otherwise.
  *
  * It remembers, per socket, a copy of what that socket holds. A socket it
  * knows nothing about gets its whole view; the others get a patch, or
@@ -24,22 +35,51 @@ export interface SeatedSocket {
 export class DeltaSender {
   /** What each socket was last sent. Snapshots are never mutated, so sockets may share one. */
   #baselines = new Map<WebSocket, unknown>();
+  /** The `seq` of what each socket was last sent: what its client says its view is of. */
+  #seqs = new Map<WebSocket, number>();
   /** The `seq` of the last send. */
   #sentSeq = -1;
+  /** Without a custom view: the snapshot every socket held after the last send, and the `seq` it is of. */
+  #common: { seq: number; snapshot: unknown } | undefined;
 
-  /** Record exactly what a socket has just been sent in full, as a copy the simulation cannot touch. */
-  remember(ws: WebSocket, snapshot: unknown): void {
+  /** Record exactly what a socket has just been sent in full, as a copy the room cannot touch. */
+  remember(ws: WebSocket, snapshot: unknown, seq: number): void {
     this.#baselines.set(ws, snapshot);
+    this.#seqs.set(ws, seq);
   }
 
   /** Forget what the sockets hold: the next send gives each its whole view. */
   reset(): void {
     this.#baselines.clear();
+    this.#seqs.clear();
+    this.#common = undefined;
+  }
+
+  /** Whether it is known what every one of these sockets holds. */
+  knows(sockets: SeatedSocket[]): boolean {
+    return sockets.every(({ ws }) => this.#baselines.has(ws));
+  }
+
+  /**
+   * For a room without a custom view, whose sockets are known to hold the
+   * state as it was at `seq`: records that for the sockets nothing else is
+   * known about. `snapshot` makes a copy of that state, and is called only
+   * if the copy from the last send is of another `seq` or gone.
+   */
+  seed(sockets: SeatedSocket[], seq: number, snapshot: () => unknown): void {
+    let base = this.#common?.seq === seq ? this.#common.snapshot : undefined;
+    for (const { ws } of sockets) {
+      if (this.#baselines.has(ws)) continue;
+      this.#baselines.set(ws, (base ??= snapshot()));
+      this.#seqs.set(ws, seq);
+    }
   }
 
   /**
    * @param state  the room's state, which is what everyone sees when `viewOf` is undefined
    * @param viewOf what one player sees, when the room has a custom view
+   * @param named  whether a patch says which `seq` it is a patch of, so that a client that
+   *               holds another can tell. For changes sent outside the simulation.
    */
   send(
     sockets: SeatedSocket[],
@@ -47,38 +87,75 @@ export class DeltaSender {
     tick: number,
     state: unknown,
     viewOf: ((playerId: string) => unknown) | undefined,
+    named = false,
   ): void {
-    if (viewOf) return this.#sendViews(sockets, seq, tick, viewOf);
-    if (seq === this.#sentSeq && sockets.every(({ ws }) => this.#baselines.has(ws))) return;
-
+    if (!viewOf && seq === this.#sentSeq && sockets.every(({ ws }) => this.#baselines.has(ws))) return;
+    const head = `"seq":${seq},"tick":${tick}`;
     const baselines = new Map<WebSocket, unknown>();
-    // Sockets that were last sent the same snapshot share one diff, and everyone ends the tick
-    // on the same snapshot.
-    const shared = new Map<unknown, { frame?: string; next: unknown }>();
-    let common: { next: unknown } | undefined;
+    const seqs = new Map<WebSocket, number>();
+    /** Sends a socket its update, and records what it then holds. */
+    const deliver = (ws: WebSocket, update: Update): void => {
+      const held = this.#seqs.get(ws);
+      if (update.patch !== undefined) {
+        ws.send(`{"t":"patch",${head}${named && held !== undefined ? `,"from":${held}` : ""},"p":${update.patch}}`);
+      } else if (update.whole !== undefined) {
+        ws.send(`{"t":"state",${head},"state":${update.whole}}`);
+      }
+      baselines.set(ws, update.next);
+      // A socket that was sent nothing still holds the view of the `seq` it had.
+      seqs.set(ws, update.patch !== undefined || update.whole !== undefined || held === undefined ? seq : held);
+    };
 
+    if (viewOf) this.#sendViews(sockets, viewOf, deliver);
+    else this.#sendState(sockets, state, deliver);
+
+    // A socket that could not be sent to, or whose view() threw, keeps what it had and gets the
+    // difference next time.
+    for (const { ws } of sockets) {
+      if (baselines.has(ws) || !this.#baselines.has(ws)) continue;
+      baselines.set(ws, this.#baselines.get(ws));
+      const held = this.#seqs.get(ws);
+      if (held !== undefined) seqs.set(ws, held);
+    }
+    const common = viewOf ? undefined : this.#latest;
+    this.#baselines = baselines;
+    this.#seqs = seqs;
+    this.#sentSeq = seq;
+    this.#common = common === undefined ? undefined : { seq, snapshot: common };
+    this.#latest = undefined;
+  }
+
+  /** During a send without a custom view: the snapshot everyone ends up holding. */
+  #latest: unknown;
+
+  #sendState(sockets: SeatedSocket[], state: unknown, deliver: (ws: WebSocket, update: Update) => void): void {
+    // Sockets that were last sent the same snapshot share one diff, and everyone ends up
+    // holding the same snapshot.
+    const shared = new Map<unknown, Update>();
+    let common: Update | undefined;
     for (const { ws, id } of sockets) {
       try {
         const base = this.#baselines.get(ws);
         let update = base === undefined ? undefined : shared.get(base);
         if (!update) {
-          update = frameFor(base, state, seq, tick);
+          update = updateFor(base, state);
           if (common) update.next = common.next;
           else common = update;
           if (base !== undefined) shared.set(base, update);
         }
-        if (update.frame) ws.send(update.frame);
-        baselines.set(ws, update.next);
+        deliver(ws, update);
       } catch (err) {
-        console.error(`[tickflare] could not send the tick to ${id}:`, err);
+        console.error(`[tickflare] could not send the state to ${id}:`, err);
       }
     }
-    this.#baselines = baselines;
-    this.#sentSeq = seq;
+    this.#latest = common?.next;
   }
 
-  #sendViews(sockets: SeatedSocket[], seq: number, tick: number, viewOf: (playerId: string) => unknown): void {
-    const head = `"seq":${seq},"tick":${tick}`;
+  #sendViews(
+    sockets: SeatedSocket[],
+    viewOf: (playerId: string) => unknown,
+    deliver: (ws: WebSocket, update: Update) => void,
+  ): void {
     // Every view first, then the diffs: a field shared between views is final by the time it is diffed.
     const views: { ws: WebSocket; id: string; live: unknown }[] = [];
     for (const { ws, id } of sockets) {
@@ -86,30 +163,24 @@ export class DeltaSender {
         views.push({ ws, id, live: viewOf(id) });
       } catch (err) {
         // A view() that threw must not starve the other players.
-        console.error(`[tickflare] could not send the tick to ${id}:`, err);
+        console.error(`[tickflare] could not send the state to ${id}:`, err);
       }
     }
 
     const fields = new FieldCache();
-    const baselines = new Map<WebSocket, unknown>();
     for (const { ws, id, live } of views) {
       try {
         const base = this.#baselines.get(ws);
-        const update = isPlainObject(live) && (base === undefined || isPlainObject(base))
-          ? viewFrame(base, live, head, fields)
-          : frameFor(base, live, seq, tick);
-        if (update.frame) ws.send(update.frame);
-        baselines.set(ws, update.next);
+        deliver(
+          ws,
+          isPlainObject(live) && (base === undefined || isPlainObject(base))
+            ? viewUpdate(base, live, fields)
+            : updateFor(base, live),
+        );
       } catch (err) {
-        console.error(`[tickflare] could not send the tick to ${id}:`, err);
+        console.error(`[tickflare] could not send the state to ${id}:`, err);
       }
     }
-    // A socket whose view() threw keeps what it had, and gets the difference next time.
-    for (const { ws } of sockets) {
-      if (!baselines.has(ws) && this.#baselines.has(ws)) baselines.set(ws, this.#baselines.get(ws));
-    }
-    this.#baselines = baselines;
-    this.#sentSeq = seq;
   }
 }
 
@@ -161,15 +232,14 @@ class FieldCache {
 }
 
 /**
- * The frame that brings a socket from `base` to the view `live`, field by
- * field, so that fields shared with other views cost nothing extra.
+ * What brings a socket from `base` to the view `live`, field by field, so
+ * that fields shared with other views cost nothing extra.
  */
-function viewFrame(
+function viewUpdate(
   base: Record<string, unknown> | undefined,
   live: Record<string, unknown>,
-  head: string,
   fields: FieldCache,
-): { frame?: string; next: unknown } {
+): Update {
   if (base === undefined) {
     const parts: string[] = [];
     const next: Record<string, unknown> = {};
@@ -186,7 +256,7 @@ function viewFrame(
         next[key] = JSON.parse(json);
       }
     }
-    return { frame: `{"t":"state",${head},"state":{${parts.join(",")}}}`, next };
+    return { whole: `{${parts.join(",")}}`, next };
   }
 
   const parts: string[] = [];
@@ -218,20 +288,19 @@ function viewFrame(
     }
   }
   if (parts.length === 0) return { next: base };
-  return { frame: `{"t":"patch",${head},"p":{${parts.join(",")}}}`, next };
+  return { patch: `{${parts.join(",")}}`, next };
 }
 
-/** The frame that brings a socket from `base` to `live`, and the snapshot it will then hold. */
-function frameFor(base: unknown, live: unknown, seq: number, tick: number): { frame?: string; next: unknown } {
-  const head = `"seq":${seq},"tick":${tick}`;
+/** What brings a socket from `base` to `live`, and the snapshot it will then hold. */
+function updateFor(base: unknown, live: unknown): Update {
   if (base !== undefined) {
     const patch = diff(base, live);
     if (patch === undefined) return { next: base };
     if (patch !== null) {
       const json = JSON.stringify(patch);
-      return { frame: `{"t":"patch",${head},"p":${json}}`, next: applyPatch(base, JSON.parse(json)) };
+      return { patch: json, next: applyPatch(base, JSON.parse(json)) };
     }
   }
   const json = JSON.stringify(live) ?? "null";
-  return { frame: `{"t":"state",${head},"state":${json}}`, next: JSON.parse(json) };
+  return { whole: json, next: JSON.parse(json) };
 }

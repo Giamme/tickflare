@@ -1,7 +1,7 @@
 import { exports } from "cloudflare:workers";
 import { afterEach, expect } from "vitest";
 import { applyPatch } from "../src/patch.js";
-import type { ServerMessage } from "../src/protocol.js";
+import type { PatchFrame, ServerMessage } from "../src/protocol.js";
 import type { TestCommand, TestState } from "./worker.js";
 
 type Message = ServerMessage<TestState>;
@@ -20,6 +20,15 @@ export interface Connection {
   raw(frame: string | ArrayBuffer): void;
   /** Resolves when the room closes the connection. */
   closed: Promise<{ code: number; reason: string }>;
+  /**
+   * The patches the room sent, as they came. A change is sent as a patch of
+   * the view this player holds; `next("state")` hands tests the view the
+   * patch leaves, as the client would work it out, so that they can say what
+   * a player ends up seeing without caring how it was sent.
+   */
+  patches: PatchFrame[];
+  /** The type of every frame the room sent, as it came: "patch" where `next` says "state". */
+  kinds: string[];
 }
 
 const open: WebSocket[] = [];
@@ -62,8 +71,18 @@ export async function connect(
 
   const inbox: Message[] = [];
   const waiting: ((message: Message) => void)[] = [];
+  const patches: PatchFrame[] = [];
+  const kinds: string[] = [];
+  let view: TestState | undefined;
   ws.addEventListener("message", (event) => {
-    const message = JSON.parse(event.data as string) as Message;
+    let message = JSON.parse(event.data as string) as Message;
+    kinds.push(message.t);
+    if (message.t === "welcome" || message.t === "state") view = message.state;
+    if (message.t === "patch") {
+      patches.push(message);
+      view = applyPatch(view!, message.p);
+      message = { t: "state", seq: message.seq, tick: message.tick, state: view };
+    }
     const waiter = waiting.shift();
     if (waiter) waiter(message);
     else inbox.push(message);
@@ -88,6 +107,8 @@ export async function connect(
   return {
     ws,
     closed,
+    patches,
+    kinds,
     any,
     async next(t) {
       const message = await any();

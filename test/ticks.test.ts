@@ -289,7 +289,7 @@ describe("state sync", () => {
     // In the lobby a command is saved and sent whole straight away, then acked.
     p1.send({ type: "bump" });
     await until(() => p1.of("ack").length === 2, "the second ack");
-    expect(p1.frames.slice(-2).map((f) => f.t)).toEqual(["state", "ack"]);
+    expect(p1.frames.slice(-2).map((f) => f.t)).toEqual(["patch", "ack"]);
     expect(p1.state!.bumps).toBe(1);
 
     p1.send({ type: "start" });
