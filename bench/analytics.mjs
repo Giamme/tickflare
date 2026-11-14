@@ -67,30 +67,39 @@ if (process.argv.includes("--describe")) {
 
 const window = `datetime_geq: "${since}", datetime_leq: "${until}", namespaceId_in: ${ids}`;
 const accounts = (data) => data?.viewer?.accounts?.[0] ?? null;
+const seconds = (microseconds) => +(microseconds / 1e6).toFixed(3);
 
+// By object: `name` is the room's id, which the load script printed with what it measured there.
 const periodic = accounts(
   await ask(
     "periodic",
     `{ viewer { accounts(filter: { accountTag: "${account}" }) {
       durableObjectsPeriodicGroups(limit: 1000, filter: { ${window} }) {
-        dimensions { namespaceId }
-        sum { activeTime cpuTime inboundWebsocketMsgCount outboundWebsocketMsgCount }
+        dimensions { namespaceId name objectId coloCode }
+        sum { activeTime cpuTime duration rowsWritten inboundWebsocketMsgCount outboundWebsocketMsgCount }
+        max { activeWebsocketConnections }
       }
     } } }`,
   ),
 );
 for (const group of periodic?.durableObjectsPeriodicGroups ?? []) {
-  const { activeTime, cpuTime, inboundWebsocketMsgCount, outboundWebsocketMsgCount } = group.sum;
+  const { dimensions, sum, max } = group;
   console.log(
     "ANALYTICS " +
       JSON.stringify({
         kind: "periodic",
-        namespace: names[group.dimensions.namespaceId] ?? group.dimensions.namespaceId,
-        // Both are counted in microseconds.
-        activeSeconds: +(activeTime / 1e6).toFixed(2),
-        cpuSeconds: +(cpuTime / 1e6).toFixed(2),
-        messagesIn: inboundWebsocketMsgCount,
-        messagesOut: outboundWebsocketMsgCount,
+        class: names[dimensions.namespaceId] ?? dimensions.namespaceId,
+        room: dimensions.name || dimensions.objectId.slice(0, 8),
+        colo: dimensions.coloCode,
+        // Counted in microseconds.
+        activeSeconds: seconds(sum.activeTime),
+        cpuSeconds: seconds(sum.cpuTime),
+        // What is billed, in gigabyte-seconds.
+        duration: +sum.duration.toFixed(3),
+        rowsWritten: sum.rowsWritten,
+        messagesIn: sum.inboundWebsocketMsgCount,
+        messagesOut: sum.outboundWebsocketMsgCount,
+        sockets: max.activeWebsocketConnections,
       }),
   );
 }
@@ -101,20 +110,27 @@ const invocations = accounts(
     "invocations",
     `{ viewer { accounts(filter: { accountTag: "${account}" }) {
       durableObjectsInvocationsAdaptiveGroups(limit: 1000, filter: { ${window} }) {
-        dimensions { namespaceId }
-        sum { requests wallTime }
+        dimensions { namespaceId name objectId type }
+        sum { requests errors wallTime }
+        quantiles { cpuTimeP50 cpuTimeP99 }
       }
     } } }`,
   ),
 );
 for (const group of invocations?.durableObjectsInvocationsAdaptiveGroups ?? []) {
+  const { dimensions, sum, quantiles } = group;
   console.log(
     "ANALYTICS " +
       JSON.stringify({
         kind: "invocations",
-        namespace: names[group.dimensions.namespaceId] ?? group.dimensions.namespaceId,
-        requests: group.sum.requests,
-        wallSeconds: +(group.sum.wallTime / 1e6).toFixed(2),
+        class: names[dimensions.namespaceId] ?? dimensions.namespaceId,
+        room: dimensions.name || dimensions.objectId.slice(0, 8),
+        type: dimensions.type,
+        requests: sum.requests,
+        errors: sum.errors,
+        wallSeconds: seconds(sum.wallTime),
+        cpuP50: quantiles.cpuTimeP50,
+        cpuP99: quantiles.cpuTimeP99,
       }),
   );
 }

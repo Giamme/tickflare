@@ -96,7 +96,8 @@ async function watch(ws, ms, binary) {
 
 /** A room asked for `rate` ticks a second, with everything in it moving on every tick. */
 async function tickRate({ units, rate, sight, players, cps = 0 }) {
-  const sockets = await openMany("/rooms", freshRoom(), players);
+  const room = freshRoom();
+  const sockets = await openMany("/rooms", room, players);
   try {
     command(sockets[0], { type: "setup", units, rate, sight });
     await sleep(2500);
@@ -111,6 +112,8 @@ async function tickRate({ units, rate, sight, players, cps = 0 }) {
     if (timer) clearInterval(timer);
     report({
       kind: "rate",
+      room,
+      ticks: seen.ticks,
       units,
       sight,
       players,
@@ -130,13 +133,15 @@ async function tickRate({ units, rate, sight, players, cps = 0 }) {
 /** What a unit that moves costs on the wire, each tick: one player, 200 units that walk. */
 async function wire({ walkers, deflate, binary }) {
   const units = 200;
-  const sockets = await openMany("/rooms", freshRoom(), 1, { deflate, binary });
+  const room = freshRoom();
+  const sockets = await openMany("/rooms", room, 1, { deflate, binary });
   try {
     command(sockets[0], { type: "setup", units, rate: 20, sight: 0, walkers });
     await sleep(2500);
     const seen = await watch(sockets[0], MEASURE_MS, binary);
     report({
       kind: "wire",
+      room,
       walkers,
       binary,
       asked: deflate,
@@ -166,7 +171,8 @@ async function baseline() {
 
 /** How long a command takes to come back answered, one at a time. */
 async function latency({ ticking, type = "move" }) {
-  const [ws] = await openMany("/rooms", freshRoom(), 1);
+  const room = freshRoom();
+  const [ws] = await openMany("/rooms", room, 1);
   try {
     if (ticking) {
       command(ws, { type: "setup", units: 10, rate: ticking, sight: 0 });
@@ -192,6 +198,7 @@ async function latency({ ticking, type = "move" }) {
     times.sort((a, b) => a - b);
     report({
       kind: "latency",
+      room,
       ticking,
       // "noop" changes nothing, so nothing is stored before it is answered.
       command: type,
@@ -207,7 +214,8 @@ async function latency({ ticking, type = "move" }) {
 
 /** Players connected to a room in which nothing happens, with the keepalive a client sends. */
 async function idle({ players, seconds }) {
-  const sockets = await openMany("/idle", freshRoom(), players);
+  const room = freshRoom();
+  const sockets = await openMany("/idle", room, players);
   const since = new Date().toISOString();
   let pongs = 0;
   for (const ws of sockets) ws.on("message", (data) => data.toString() === "pong" && pongs++);
@@ -220,7 +228,7 @@ async function idle({ players, seconds }) {
   const answered = new Promise((resolve) => ws.once("message", resolve));
   command(ws, { type: "move" });
   const woke = await Promise.race([answered.then(() => true), sleep(5000).then(() => false)]);
-  report({ kind: "idle", players, seconds, since, until: new Date().toISOString(), stillOpen, pongs, woke });
+  report({ kind: "idle", room, players, seconds, since, until: new Date().toISOString(), stillOpen, pongs, woke });
   await closeAll(sockets);
 }
 
