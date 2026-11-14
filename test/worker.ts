@@ -360,12 +360,35 @@ export class AskedTurnRoom extends LockstepRoom<TurnInput> {
   protected override turnClock = "players" as const;
   protected override saveIntervalMs = 500; // a checkpoint every ten turns
   protected override seatTimeoutMs = 400;
+  protected override snapshotIntervalMs = 0;
 
   protected parseInput(raw: unknown): TurnInput {
     const input = raw as { type?: unknown; n?: unknown } | null;
     if (input?.type !== "add" || typeof input.n !== "number") reject("bad_input");
     return { type: "add", n: input.n };
   }
+}
+
+/** A lockstep room at 50 turns a second that takes a snapshot every ten turns. */
+export class SnapRoom extends LockstepRoom<TurnInput> {
+  protected override tickRate = 50;
+  protected override snapshotIntervalMs = 200;
+  protected override maxSnapshotLength = 3_000_000;
+  protected override seatTimeoutMs = 2_000;
+
+  protected parseInput(raw: unknown): TurnInput {
+    const input = raw as { type?: unknown; n?: unknown } | null;
+    if (input?.type !== "add" || typeof input.n !== "number") reject("bad_input");
+    return { type: "add", n: input.n };
+  }
+}
+
+/** The same, with the players asking for the turns: twenty a second, a snapshot every ten. */
+export class AskedSnapRoom extends SnapRoom {
+  protected override tickRate = 20;
+  protected override turnClock = "players" as const;
+  protected override snapshotIntervalMs = 500;
+  protected override saveIntervalMs = 500;
 }
 
 /** A lockstep room at 50 turns a second. */
@@ -610,6 +633,8 @@ export default {
       (await routeToRoom(request, { rooms: env.TICKS, prefix: "/ticks", authenticate: whoIs })) ??
       (await routeToRoom(request, { rooms: env.TURNS, prefix: "/turns", authenticate: whoIs })) ??
       (await routeToRoom(request, { rooms: env.ASKED, prefix: "/asked", authenticate: whoIs })) ??
+      (await routeToRoom(request, { rooms: env.SNAPS, prefix: "/snaps", authenticate: whoIs })) ??
+      (await routeToRoom(request, { rooms: env.ASKEDSNAPS, prefix: "/askedsnaps", authenticate: whoIs })) ??
       (await routeToMatchmaker(request, { matchmakers: env.MATCHMAKER, authenticate: whoIs })) ??
       (await routeToRoom(request, { rooms: env.AWAY, prefix: "/away", authenticate: whoIs })) ??
       (await routeToRoom(request, { rooms: env.SHAPES, prefix: "/shapes", authenticate: whoIs })) ??

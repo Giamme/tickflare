@@ -26,7 +26,7 @@ Extend `LockstepRoom`. The room doesn't run the game at all: it checks inputs, c
 
 **Pick it for** real-time strategy and other games with thousands of units, where sending the state would cost too much. Bandwidth depends on how often players act, not on how big the game is. Matches are recorded for free as their input log, so replays come with it.
 
-**Costs**: your simulation must be bit-for-bit deterministic on every client. Every client sees everything, so there is no hidden information unless you build it into the client. A player who reconnects replays the match from the start to catch up.
+**Costs**: your simulation must be bit-for-bit deterministic on every client. Every client sees everything, so there is no hidden information unless you build it into the client. A player who joins late starts from a snapshot that the other players' clients made, so your simulation has to be able to save and load itself; without that, they replay the match from the start.
 
 See [Lockstep](./lockstep).
 

@@ -1,5 +1,8 @@
 import {
-  runReplay,
+  fingerprint,
+  fingerprintOfText,
+  stepThrough,
+  type CatchUp,
   type LockstepView,
   type Replay,
   type Simulation,
@@ -10,11 +13,19 @@ import { RoomClient, type CloseDetail, type ConnectionStatus } from "./index.js"
 import { TurnPacer } from "./pacer.js";
 import { roomIn, withFreshToken, type TokenSource } from "./token.js";
 
-/** The simulation to run, what to report and how to connect. `create` and `step` are required. */
+/**
+ * The simulation to run, what to report and how to connect. `create` and
+ * `step` are required. With `save` and `load` as well, the client sends the
+ * room snapshots and starts from one when it joins late.
+ */
 export interface LockstepClientOptions<Input, Sim> extends Simulation<Input, Sim> {
   /**
-   * A fingerprint of the simulation. When given, it is sent to the room every
-   * `hashEvery` turns, and the room flags the match if two players disagree.
+   * A fingerprint of the simulation, at most 64 characters long. It is sent
+   * to the room every `hashEvery` turns, and the room flags the match if two
+   * players disagree. A simulation with `save` needs none: its hash is then
+   * `fingerprint` of what `save` returns, which covers everything saved.
+   * Give your own to hash less than that, for speed; a snapshot is then
+   * checked only as far as your hash goes.
    */
   hash?(sim: Sim): string | number;
   /** How often to report the hash, in turns. Defaults to 20. */
@@ -39,17 +50,26 @@ export interface LockstepClientOptions<Input, Sim> extends Simulation<Input, Sim
    * `RoomClientOptions.token`. Also asked before the recording is loaded.
    */
   token?: TokenSource;
-  /** How to load the recording when (re)connecting. Defaults to `fetch` on the room's `/replay` URL. */
-  loadReplay?(url: string): Promise<Replay<Input>>;
+  /**
+   * How to load the recording when (re)connecting. Defaults to `fetch` on
+   * the room's `/replay` URL. The URL says what the client has already, and
+   * the room may answer with only the rest: see `CatchUp`.
+   */
+  loadReplay?(url: string): Promise<Replay<Input> | CatchUp<Input>>;
+  /** How to send the room a snapshot. Defaults to a `POST` of `data` to `url` with `fetch`. */
+  sendSnapshot?(url: string, data: string): Promise<unknown>;
 }
 
 /**
  * Plays in a lockstep room: sends this player's inputs, and runs the
  * simulation over the turns the room sends back.
  *
- * On every (re)connect the simulation is rebuilt from the room's recording
- * and then follows the live turns, so a reload or a dropped connection ends
- * up in exactly the same state as everyone else.
+ * On every (re)connect the simulation catches up with the room and then
+ * follows the live turns, so a reload or a dropped connection ends up in
+ * exactly the same state as everyone else. A client that still has its
+ * simulation is sent the turns it missed. One that has none starts from the
+ * room's latest snapshot if the simulation has `save`, `load` and `hash`,
+ * and from turn 1 of the recording otherwise.
  *
  * In a room whose `turnClock` is `"players"` the client also keeps time for
  * it: one player's client at a time asks the room for each turn as it falls
@@ -62,7 +82,10 @@ export class LockstepClient<Input = unknown, Sim = unknown> {
 
   readonly #room: RoomClient<LockstepView<Input>, unknown>;
   readonly #options: LockstepClientOptions<Input, Sim>;
+  /** The hash to report: the game's own, or a fingerprint of what `save` returns. */
+  readonly #hash: ((sim: Sim) => string) | undefined;
   readonly #replayUrl: string;
+  readonly #snapshotUrl: string;
   /** The room's id, which is what a token is asked for. */
   readonly #roomId: string;
   /** Live turns that arrived while the recording was loading. */
@@ -75,6 +98,12 @@ export class LockstepClient<Input = unknown, Sim = unknown> {
   /** Guards against an older catch-up finishing after a newer one started. */
   #syncId = 0;
   #desyncReported = false;
+  /** The run of the room the simulation was built in: see `CatchUp.epoch`. */
+  #epoch: string | undefined;
+  /** Turns between snapshots, as the room says. 0 when it keeps none. */
+  #snapshotEvery = 0;
+  /** The turn of a snapshot that did not load into what its hash promised. None that old is asked for again. */
+  #distrusted = 0;
   /** The room sleeps between turns and closes them when a player asks. */
   #clocked = false;
   /** This client is the one asking, because the latest turns were closed at its request. */
@@ -87,10 +116,15 @@ export class LockstepClient<Input = unknown, Sim = unknown> {
 
   constructor(url: string | URL, options: LockstepClientOptions<Input, Sim>) {
     this.#options = options;
+    const { hash, save } = options;
+    this.#hash = hash ? (sim) => String(hash(sim)) : save ? (sim) => fingerprint(save(sim)) : undefined;
     const replay = new URL(String(url));
     replay.protocol = replay.protocol === "wss:" ? "https:" : "http:";
     replay.pathname = `${replay.pathname.replace(/\/+$/, "")}/replay`;
     this.#replayUrl = replay.toString();
+    const snapshot = new URL(replay);
+    snapshot.pathname = snapshot.pathname.replace(/replay$/, "snapshot");
+    this.#snapshotUrl = snapshot.toString();
     this.#roomId = roomIn(String(url));
 
     this.#room = new RoomClient<LockstepView<Input>, unknown>(url, {
@@ -157,6 +191,7 @@ export class LockstepClient<Input = unknown, Sim = unknown> {
       this.#desyncReported = true;
       this.#options.onDesync?.(view.desync.turn);
     }
+    this.#snapshotEvery = view.snapshotEvery ?? 0;
     if (this.#needsSync) {
       this.#needsSync = false;
       this.#buffer.clear();
@@ -232,11 +267,19 @@ export class LockstepClient<Input = unknown, Sim = unknown> {
 
   async #catchUp(): Promise<void> {
     const id = ++this.#syncId;
-    let replay: Replay<Input>;
+    const { token, load } = this.#options;
+    const hash = this.#hash;
+    // What the room is told: the turn this simulation is at and the run of the room it got there
+    // in, and whether a snapshot would be of use.
+    const mine = this.#sim !== undefined && this.#epoch !== undefined ? this.#turn : 0;
+    const asked = new URL(this.#replayUrl);
+    asked.searchParams.set("since", String(mine));
+    if (mine > 0) asked.searchParams.set("epoch", this.#epoch!);
+    if (load && hash) asked.searchParams.set("snapshot", String(this.#distrusted));
+    let answer: CatchUp<Input>;
     try {
-      const { token } = this.#options;
-      const url = token ? await withFreshToken(this.#replayUrl, this.#roomId, token) : this.#replayUrl;
-      replay = await (this.#options.loadReplay ?? loadReplay)(url);
+      const url = token ? await withFreshToken(asked.toString(), this.#roomId, token) : asked.toString();
+      answer = await (this.#options.loadReplay ?? loadReplay)(url);
     } catch (err) {
       console.warn("[tickflare] could not load the recording; retrying on the next turn", err);
       if (id === this.#syncId) this.#needsSync = true;
@@ -244,8 +287,45 @@ export class LockstepClient<Input = unknown, Sim = unknown> {
     }
     if (id !== this.#syncId) return;
 
-    this.#sim = runReplay(replay, this.#options);
-    this.#turn = replay.turn;
+    let sim: Sim;
+    let from = 0;
+    if (answer.snapshot && load && hash) {
+      // Somebody else's simulation. It is taken only if it hashes to what the players agreed on.
+      let loaded: Sim | undefined;
+      try {
+        const candidate = load(JSON.parse(answer.snapshot.data));
+        if (hash(candidate) === answer.snapshot.hash) loaded = candidate;
+      } catch {
+        // Not something `load` can read: the same as a wrong hash.
+      }
+      if (loaded === undefined) {
+        console.warn(`[tickflare] the snapshot of turn ${answer.snapshot.turn} did not load into what its hash says; catching up without it`);
+        const again = answer.snapshot.turn <= this.#distrusted;
+        this.#distrusted = Math.max(this.#distrusted, answer.snapshot.turn);
+        // Sent the one it said it had no use for: asking again at once would only repeat that.
+        if (again) this.#needsSync = true;
+        else await this.#catchUp();
+        return;
+      }
+      sim = loaded;
+      from = answer.snapshot.turn;
+    } else if (answer.from !== undefined && answer.from > 0) {
+      if (answer.from !== mine) {
+        // The end of a recording, and nothing it continues from. Ask for all of it.
+        this.#epoch = undefined;
+        if (mine === 0) this.#needsSync = true;
+        else await this.#catchUp();
+        return;
+      }
+      sim = this.#sim as Sim;
+      from = mine;
+    } else {
+      sim = this.#options.create(answer.seed);
+    }
+    stepThrough(sim, answer, this.#options, from);
+    this.#sim = sim;
+    this.#epoch = answer.epoch;
+    this.#turn = Math.max(answer.turn, from);
     // Turns that arrived while the recording was loading continue where it ends.
     for (let turn = this.#turn + 1; this.#buffer.has(turn); turn++) {
       this.#advance(this.#buffer.get(turn)!, turn, false);
@@ -266,17 +346,50 @@ export class LockstepClient<Input = unknown, Sim = unknown> {
     const sim = this.#sim as Sim;
     this.#options.step(sim, entries, turn);
     this.#turn = turn;
-    const { hash, hashEvery = 20 } = this.#options;
+    const { hashEvery = 20, save, load } = this.#options;
+    const hash = this.#hash;
+    // A turn a snapshot can be of is one every client reports, so that the room can tell whether
+    // the players agree on what the snapshot holds.
+    const snapshot = this.#snapshotEvery > 0 && turn % this.#snapshotEvery === 0;
     // Only live turns are reported: hashes of old turns have nobody left to be compared with.
-    if (live && hash && turn % hashEvery === 0) {
-      this.#room.send({ k: "h", n: turn, h: String(hash(sim)) }).catch(() => {});
+    if (live && hash && (snapshot || turn % hashEvery === 0)) {
+      const data = snapshot && save && load && this.#sendsSnapshots() ? JSON.stringify(save(sim)) : undefined;
+      // With no hash of the game's own, the text about to be sent is the text to fingerprint.
+      const reported = data !== undefined && !this.#options.hash ? fingerprintOfText(data) : hash(sim);
+      this.#room.send({ k: "h", n: turn, h: reported }).catch(() => {});
+      if (data !== undefined) void this.#sendSnapshot(data, turn, reported);
     }
     if (live) this.#options.onTurn?.(sim, turn);
   }
+
+  /** One client sends the snapshots: that of the connected player whose id sorts first. */
+  #sendsSnapshots(): boolean {
+    const connected = this.#room.players.filter((player) => player.connected).map((player) => player.id).sort();
+    return connected[0] === this.#room.you;
+  }
+
+  /** Sends the room this simulation as it stood after `turn`. The room may have no use for it: that is not an error. */
+  async #sendSnapshot(data: string, turn: number, hash: string): Promise<void> {
+    try {
+      const to = new URL(this.#snapshotUrl);
+      to.searchParams.set("turn", String(turn));
+      to.searchParams.set("hash", hash);
+      const { token } = this.#options;
+      const url = token ? await withFreshToken(to.toString(), this.#roomId, token) : to.toString();
+      await (this.#options.sendSnapshot ?? sendSnapshot)(url, data);
+    } catch (err) {
+      console.warn("[tickflare] could not send a snapshot; the next one is tried as usual", err);
+    }
+  }
 }
 
-async function loadReplay<Input>(url: string): Promise<Replay<Input>> {
+async function loadReplay<Input>(url: string): Promise<CatchUp<Input>> {
   const response = await fetch(url);
   if (!response.ok) throw new Error(`Replay request failed with ${response.status}`);
-  return (await response.json()) as Replay<Input>;
+  return (await response.json()) as CatchUp<Input>;
+}
+
+async function sendSnapshot(url: string, data: string): Promise<void> {
+  // Sent as plain text, so that a page on another origin needs no preflight for it.
+  await fetch(url, { method: "POST", body: data });
 }

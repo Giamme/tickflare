@@ -10,12 +10,17 @@ export { Room, Rejection, reject, type ActOutcome } from "./room.js";
 export { plain } from "./tracked.js";
 export { LockstepRoom, type LockstepCommand, type LockstepState } from "./lockstep.js";
 export {
+  fingerprint,
   runReplay,
   seededRandom,
+  stepThrough,
+  type CatchUp,
   type LockstepView,
   type TurnsMessage,
   type Replay,
+  type SeededRandom,
   type Simulation,
+  type Snapshot,
   type TurnEntry,
 } from "../lockstep.js";
 export { Matchmaker } from "./matchmaker.js";

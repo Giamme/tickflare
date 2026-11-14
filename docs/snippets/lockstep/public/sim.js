@@ -52,9 +52,8 @@ export function step(sim, entries) {
   }
 }
 
-// A fingerprint of the simulation. The room flags the match if two players' differ.
-export function hash(sim) {
-  let h = 2166136261;
-  for (const unit of sim.units) for (const n of [unit.x, unit.y, unit.hp, unit.down]) h = Math.imul(h ^ n, 16777619);
-  return h >>> 0;
-}
+// The simulation as JSON and back. Players' clients hash what `save` returns,
+// so the room can tell when two of them disagree, and the room keeps a
+// snapshot a minute: a player who reloads starts from it, not from turn 1.
+export const save = (sim) => ({ ...sim, random: sim.random.state });
+export const load = (saved) => ({ ...saved, random: seededRandom(saved.random) });

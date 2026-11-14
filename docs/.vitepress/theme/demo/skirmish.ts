@@ -37,8 +37,11 @@ export interface Sim {
   kills: Record<Who, number>;
   /** Shots fired in the last turn, for drawing. */
   shots: [from: number, to: number][];
-  random: () => number;
+  random: Random;
 }
+
+/** A seeded generator, and the one number that says where it stands. */
+type Random = (() => number) & { readonly state: number };
 
 export const WORLD = 1000;
 export const HP = 5;
@@ -56,15 +59,27 @@ const formation = [
 ] as const;
 
 /** mulberry32, as `seededRandom` in Tickflare: the same numbers for the same seed, on every machine. */
-function seededRandom(seed: number): () => number {
+function seededRandom(seed: number): Random {
   let a = seed >>> 0;
-  return () => {
+  const next = () => {
     a = (a + 0x6d2b79f5) >>> 0;
     let t = a;
     t = Math.imul(t ^ (t >>> 15), t | 1);
     t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
+  return Object.defineProperty(next, "state", { get: () => a }) as Random;
+}
+
+/** The simulation as text, for a snapshot: the generator is saved as the number it stands at. */
+export function save(sim: Sim): string {
+  return JSON.stringify({ ...sim, random: sim.random.state });
+}
+
+/** The simulation `save` was given. */
+export function load(saved: string): Sim {
+  const sim = JSON.parse(saved) as Omit<Sim, "random"> & { random: number };
+  return { ...sim, random: seededRandom(sim.random) };
 }
 
 export function create(seed: number): Sim {

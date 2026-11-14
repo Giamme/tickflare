@@ -88,7 +88,8 @@ Reading it for a game:
 - **Rows written** are the room saving. Measured with Wrangler's local runtime, a room writes:
   - one row for an accepted move in event mode, and one more if the move sets a timer again, as a turn clock does;
   - one row for each save while ticking, every `saveIntervalMs` (five seconds by default);
-  - one row for each lockstep turn that has something in it, in the recording. Empty turns write nothing.
+  - one row for each lockstep turn that has something in it, in the recording. Empty turns write nothing;
+  - one row a minute for a lockstep room's [snapshot](./lockstep#snapshots), which arrives as one request. Thirty of each in a half-hour match: too little to show in the sums below.
 
   A save is one row whatever the size of the state, up to 1.5 MB of JSON. A longer state takes a row for each 1.5 MB.
 - **A second awake costs the same as 1.6 rows.** That one comparison decides most of what follows.

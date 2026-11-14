@@ -1,6 +1,7 @@
-import type { LockstepView, Replay, TurnEntry, TurnsMessage } from "../lockstep.js";
+import type { CatchUp, LockstepView, Replay, Snapshot, TurnEntry, TurnsMessage } from "../lockstep.js";
 import type { Player } from "../protocol.js";
 import { Room, reject } from "./room.js";
+import { pieces } from "./storage.js";
 
 /** What a lockstep room keeps: what clients see, and the inputs waiting for the next turn. */
 export interface LockstepState<Input> extends LockstepView<Input> {
@@ -35,6 +36,9 @@ export type LockstepCommand<Input> =
 
 /** How many turns' worth of reported hashes are kept for comparison. */
 const HASHES_KEPT = 128;
+
+/** How many snapshot turns' hashes are kept, for a snapshot that takes a while to arrive. */
+const SNAPSHOT_TURNS_KEPT = 4;
 
 /**
  * With players asking for the turns: the most one request may close. If
@@ -91,6 +95,27 @@ export abstract class LockstepRoom<Input, Env = Cloudflare.Env> extends Room<
    */
   protected turnClock: "room" | "players" = "room";
 
+  /**
+   * How often the room takes a snapshot of the simulation from its players,
+   * so that someone who joins, reloads or reconnects late starts from it and
+   * not from turn 1. 0 keeps none.
+   *
+   * The room has no simulation of its own. A snapshot is what one player's
+   * client saved, with `save`, at a turn every client agrees on, and it is
+   * kept once the hash it came with is the one another connected player
+   * reported for that turn; a player who is alone is taken at their word.
+   * The client that loads it hashes the result again before trusting it.
+   * Clients whose simulation has no `save`, `load` and `hash` send none and
+   * load none, and catch up from the recording as before.
+   *
+   * Only the latest is kept. The recording is not shortened: it is still the
+   * whole match.
+   */
+  protected snapshotIntervalMs = 60_000;
+
+  /** The longest snapshot the room keeps, in characters of JSON. A longer one is refused. */
+  protected maxSnapshotLength = 8_000_000;
+
   #resumed = false;
   // With players asking for the turns, none of this is in `state`: a change to the state is a
   // row written and a frame to everyone, and here turns change ten times a second.
@@ -106,6 +131,12 @@ export abstract class LockstepRoom<Input, Env = Cloudflare.Env> extends Room<
   #skip = 0;
   /** The first hash reported for each recent turn, and who reported it. */
   #hashes = new Map<number, { hash: string; by: string }>();
+  /** For the latest turns a snapshot could be of: the first hash reported, and everyone who reported that one. */
+  #vouched = new Map<number, { hash: string; by: Set<string> }>();
+  /** A snapshot that has arrived and waits for the other players to report its hash, and who sent it. */
+  #candidate: (Snapshot & { by: string }) | undefined;
+  /** Names this run of the room: see `CatchUp.epoch`. */
+  #epoch: string | undefined;
 
   /**
    * Turn an untrusted client payload into an input. Every client will feed
@@ -159,6 +190,13 @@ export abstract class LockstepRoom<Input, Env = Cloudflare.Env> extends Room<
       this.state.turn = last.n; // Never reuse a number.
       this.state.entries = JSON.parse(last.entries) as TurnEntry<Input>[];
       this.state.pending = [];
+    }
+    // A snapshot is of a turn that has happened. If the saved counter is behind it, every turn in
+    // between was empty, or the recording would have it: carry on from the snapshot's.
+    const kept = this.#kept();
+    if (kept && kept.turn > this.state.turn) {
+      this.state.turn = kept.turn;
+      this.state.entries = [];
     }
     if (this.turnClock === "players") {
       this.#turn = this.state.turn;
@@ -245,7 +283,9 @@ export abstract class LockstepRoom<Input, Env = Cloudflare.Env> extends Room<
 
     // Only turns that have happened, and recently enough to still be compared.
     const turn = clocked ? this.#turn : this.state.turn;
-    if (command.n > turn || command.n <= turn - HASHES_KEPT) return;
+    if (command.n > turn) return;
+    this.#vouch(player.id, command.n, command.h, turn);
+    if (command.n <= turn - HASHES_KEPT) return;
     const first = this.#hashes.get(command.n);
     if (first === undefined) {
       this.#hashes.set(command.n, { hash: command.h, by: player.id });
@@ -257,8 +297,164 @@ export abstract class LockstepRoom<Input, Env = Cloudflare.Env> extends Room<
     } else if (first.by !== player.id && first.hash !== command.h && !this.state.desync) {
       // It takes two players to disagree: one changing their mind proves nothing.
       this.state.desync = { turn: command.n };
+      this.#candidate = undefined; // Nobody can say which simulation a snapshot should be of.
       this.onDesync(command.n);
     }
+  }
+
+  /** Turns between snapshots, or 0 when the room keeps none. */
+  #snapshotEvery(): number {
+    const turns = (this.snapshotIntervalMs * this.tickRate) / 1000;
+    return turns > 0 && Number.isFinite(turns) ? Math.max(1, Math.round(turns)) : 0;
+  }
+
+  /**
+   * Notes that `playerId` reported `hash` for `turn`, if a snapshot could be
+   * of that turn, and keeps the snapshot that was waiting for it.
+   */
+  #vouch(playerId: string, turn: number, hash: string, latest: number): void {
+    const every = this.#snapshotEvery();
+    if (every === 0 || turn <= 0 || turn % every !== 0 || turn <= latest - every * SNAPSHOT_TURNS_KEPT) return;
+    let seen = this.#vouched.get(turn);
+    if (seen === undefined) {
+      seen = { hash, by: new Set() };
+      this.#vouched.set(turn, seen);
+      for (const n of this.#vouched.keys()) {
+        if (n <= latest - every * SNAPSHOT_TURNS_KEPT) this.#vouched.delete(n);
+      }
+    }
+    if (seen.hash === hash) seen.by.add(playerId);
+    const candidate = this.#candidate;
+    if (candidate?.turn === turn && this.#agreed(candidate, candidate.by)) {
+      this.#candidate = undefined;
+      this.#keep(candidate);
+    }
+  }
+
+  /**
+   * Whether a snapshot sent by `by` is one to keep: every other player who
+   * is connected has reported the hash it came with. A player with the room
+   * to themselves has nobody to be wrong about it.
+   */
+  #agreed(snapshot: Snapshot, by: string): boolean {
+    const seen = this.#vouched.get(snapshot.turn);
+    if (seen === undefined || seen.hash !== snapshot.hash) return false;
+    const others = this.players.filter((player) => player.id !== by);
+    if (others.length === 0) return true;
+    const connected = others.filter((player) => player.connected);
+    return connected.length > 0 && connected.every((player) => seen.by.has(player.id));
+  }
+
+  /** Stores a snapshot in place of the one before it. One row, or several for a long one. */
+  #keep(snapshot: Snapshot): void {
+    this.ctx.storage.transactionSync(() => {
+      const sql = this.ctx.storage.sql;
+      sql.exec(
+        "CREATE TABLE IF NOT EXISTS tickflare_snapshot (part INTEGER PRIMARY KEY, turn INTEGER NOT NULL, hash TEXT NOT NULL, data TEXT NOT NULL)",
+      );
+      const parts = pieces(snapshot.data);
+      parts.forEach((piece, part) => {
+        sql.exec(
+          "INSERT OR REPLACE INTO tickflare_snapshot (part, turn, hash, data) VALUES (?, ?, ?, ?)",
+          part,
+          snapshot.turn,
+          snapshot.hash,
+          piece,
+        );
+      });
+      sql.exec("DELETE FROM tickflare_snapshot WHERE part >= ?", parts.length);
+    });
+  }
+
+  /** The turn and hash of the snapshot the room has, if it has one. */
+  #kept(): { turn: number; hash: string } | undefined {
+    const sql = this.ctx.storage.sql;
+    if (sql.exec("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'tickflare_snapshot'").toArray().length === 0) {
+      return undefined;
+    }
+    return sql.exec<{ turn: number; hash: string }>("SELECT turn, hash FROM tickflare_snapshot WHERE part = 0").toArray()[0];
+  }
+
+  /**
+   * A player's client sends the simulation it saved at `turn`. Kept at once
+   * if the other players have reported the same hash already, and held until
+   * they do otherwise.
+   */
+  async #offered(request: Request, params: URLSearchParams, player: Player): Promise<Response> {
+    const every = this.#snapshotEvery();
+    if (every === 0) return new Response("Not found", { status: 404 });
+    if (!this.players.some((seated) => seated.id === player.id && seated.connected)) {
+      return new Response("Only a connected player can send a snapshot", { status: 403 });
+    }
+    const turn = Number(params.get("turn"));
+    const hash = params.get("hash") ?? "";
+    if (!Number.isSafeInteger(turn) || turn <= 0 || turn % every !== 0 || hash === "" || hash.length > 64) {
+      return new Response("Not a snapshot turn, or no hash", { status: 400 });
+    }
+    // Checked before the body is read, so that one of no use costs nothing, and again after:
+    // the room moves on while it waits.
+    const useless = (): boolean => {
+      const latest = Math.max(this.state.turn, this.#turn);
+      const seen = this.#vouched.get(turn);
+      return (
+        !this.#resumed || // This run of the room has closed no turn yet: it cannot tell what has happened.
+        this.state.desync !== null ||
+        turn > latest ||
+        turn <= latest - every * SNAPSHOT_TURNS_KEPT ||
+        turn <= (this.#kept()?.turn ?? 0) ||
+        (this.#candidate !== undefined && turn <= this.#candidate.turn) ||
+        (seen !== undefined && seen.hash !== hash)
+      );
+    };
+    if (useless()) return new Response("Not a snapshot this room can use", { status: 409 });
+    // A character of JSON is at most three bytes on the wire.
+    const data = await textUpTo(request, this.maxSnapshotLength * 3);
+    if (data === undefined || data.length > this.maxSnapshotLength) return new Response("Snapshot too long", { status: 413 });
+    if (data.length === 0) return new Response("Empty snapshot", { status: 400 });
+    if (useless()) return new Response("Not a snapshot this room can use", { status: 409 });
+    const latest = Math.max(this.state.turn, this.#turn);
+    this.#candidate = { turn, hash, data, by: player.id };
+    this.#vouch(player.id, turn, hash, latest);
+    return this.#candidate === undefined
+      ? new Response("Kept", { status: 201 })
+      : new Response("Held until the other players report the same hash", { status: 202 });
+  }
+
+  /**
+   * What a client that is catching up is sent. One that says which turn its
+   * simulation is at, and got there in this run of the room, is sent the
+   * turns after it; one that has fallen a snapshot or more behind, or has no
+   * simulation, is sent the snapshot and the turns after that.
+   */
+  #catchUp(params: URLSearchParams): Replay<Input> | CatchUp<Input> {
+    if (!params.has("since")) return this.replay();
+    const epoch = (this.#epoch ??= crypto.randomUUID().slice(0, 8));
+    const since = Number(params.get("since"));
+    const latest = Math.max(this.state.turn, this.#turn);
+    let from = params.get("epoch") === epoch && Number.isSafeInteger(since) && since > 0 && since <= latest ? since : 0;
+
+    // `snapshot=N`: the client can load one, and has no use for any of turn N or before.
+    const newerThan = params.has("snapshot") ? Number(params.get("snapshot")) : Number.POSITIVE_INFINITY;
+    const kept = this.#kept();
+    let snapshot: Snapshot | undefined;
+    if (kept && kept.turn > newerThan && (from === 0 || kept.turn - from > this.#snapshotEvery())) {
+      const data = this.ctx.storage.sql
+        .exec<{ data: string }>("SELECT data FROM tickflare_snapshot ORDER BY part")
+        .toArray()
+        .map((row) => row.data)
+        .join("");
+      snapshot = { ...kept, data };
+      from = kept.turn;
+    }
+    const recording = this.#recording(from);
+    return {
+      ...recording,
+      // Before this run of the room has closed a turn, a snapshot can be ahead of the saved counter.
+      turn: Math.max(recording.turn, from, kept?.turn ?? 0),
+      epoch,
+      ...(from > 0 ? { from } : {}),
+      ...(snapshot ? { snapshot } : {}),
+    };
   }
 
   protected override onJoin(player: Player): void {
@@ -311,17 +507,35 @@ export abstract class LockstepRoom<Input, Env = Cloudflare.Env> extends Room<
 
   protected override view(): LockstepView<Input> {
     const { seed, turn, entries, desync } = this.state;
-    if (this.turnClock !== "players") return { seed, turn, entries, desync };
+    const every = this.#snapshotEvery();
+    const snapshots = every > 0 ? { snapshotEvery: every } : {};
+    if (this.turnClock !== "players") return { seed, turn, entries, desync, ...snapshots };
     // Before anything has woken this instance up, the checkpoint is all it knows.
     const latest = Math.max(turn, this.#turn);
-    return { seed, turn: latest, entries: latest === this.#turn ? this.#entries : [], desync, clock: "players" };
+    return {
+      seed,
+      turn: latest,
+      entries: latest === this.#turn ? this.#entries : [],
+      desync,
+      clock: "players",
+      ...snapshots,
+    };
   }
 
-  protected override onHttp(request: Request): Response {
-    if (request.method !== "GET" || !new URL(request.url).pathname.endsWith("/replay")) {
-      return new Response("Not found", { status: 404 });
+  /**
+   * `GET …/replay` is the recording, or the end of it for a client that is
+   * catching up. `POST …/snapshot` is a player's client sending a snapshot.
+   * If you override this, pass on what is not yours with `super.onHttp`.
+   */
+  protected override onHttp(request: Request, player: Player): Response | Promise<Response> {
+    const url = new URL(request.url);
+    if (request.method === "GET" && url.pathname.endsWith("/replay")) {
+      return Response.json(this.#catchUp(url.searchParams));
     }
-    return Response.json(this.replay());
+    if (request.method === "POST" && url.pathname.endsWith("/snapshot")) {
+      return this.#offered(request, url.searchParams, player);
+    }
+    return new Response("Not found", { status: 404 });
   }
 
   /** Announces the end of the match and, if `matchBucket` is set, stores the recording as its replay. */
@@ -331,8 +545,15 @@ export abstract class LockstepRoom<Input, Env = Cloudflare.Env> extends Room<
 
   /** The recording so far. */
   protected replay(): Replay<Input> {
+    return this.#recording(0);
+  }
+
+  /** The recording so far, without the turns up to `after`. */
+  #recording(after: number): Replay<Input> {
     const rows = this.#recorded()
-      ? this.ctx.storage.sql.exec<{ n: number; entries: string }>("SELECT n, entries FROM tickflare_turns ORDER BY n").toArray()
+      ? this.ctx.storage.sql
+          .exec<{ n: number; entries: string }>("SELECT n, entries FROM tickflare_turns WHERE n > ? ORDER BY n", after)
+          .toArray()
       : [];
     const turns = rows.map((row): [number, TurnEntry<Input>[]] => [row.n, JSON.parse(row.entries) as TurnEntry<Input>[]]);
     const last = turns[turns.length - 1]?.[0] ?? 0;
@@ -361,4 +582,30 @@ export abstract class LockstepRoom<Input, Env = Cloudflare.Env> extends Room<
   #recorded(): boolean {
     return this.ctx.storage.sql.exec("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'tickflare_turns'").toArray().length > 0;
   }
+}
+
+/** The request's body as text, or undefined if it is longer than `bytes`: no more than that is read. */
+async function textUpTo(request: Request, bytes: number): Promise<string | undefined> {
+  if (Number(request.headers.get("Content-Length") ?? 0) > bytes) return undefined;
+  const reader = request.body?.getReader();
+  if (!reader) return "";
+  const chunks: Uint8Array[] = [];
+  let length = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    length += value.byteLength;
+    if (length > bytes) {
+      await reader.cancel();
+      return undefined;
+    }
+    chunks.push(value);
+  }
+  const all = new Uint8Array(length);
+  let at = 0;
+  for (const chunk of chunks) {
+    all.set(chunk, at);
+    at += chunk.byteLength;
+  }
+  return new TextDecoder().decode(all);
 }

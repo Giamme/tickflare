@@ -4,16 +4,20 @@
  * ten times a second it closes a turn holding whatever orders arrived, and
  * sends both screens the same turns. Each screen runs its own copy of the
  * skirmish over them, and reports a hash so the room can tell they agree.
- * Nothing here talks to a server.
+ * Every few seconds one screen also sends the room its simulation, which the
+ * room keeps as a snapshot once the hashes agree: a screen that comes back
+ * starts from it. Nothing here talks to a server.
  */
 import { reactive, ref } from "vue";
 import { disc, fit, useLoop } from "./demo/loop";
 import { hue, names, other, who, type Who } from "./demo/shared";
-import { HP, WORLD, create, hash, step, type Entry, type Order, type Sim } from "./demo/skirmish";
+import { HP, WORLD, create, hash, load, save, step, type Entry, type Order, type Sim } from "./demo/skirmish";
 import { createWires } from "./demo/wires";
 
 const TURN_MS = 100;
 const HASH_EVERY = 20;
+/** A real room takes a snapshot a minute. Here it is every six seconds, so that there is one to see. */
+const SNAPSHOT_EVERY = 60;
 /** The two players are not equally far from the room. */
 const lag: Record<Who, number> = { ada: 180, grace: 340 };
 const SEED = 20261112;
@@ -24,6 +28,15 @@ let pending: Entry[] = [];
 /** Every turn in which something happened. Empty turns are not kept. */
 const recording = new Map<number, Entry[]>();
 const hashes = new Map<number, Partial<Record<Who, string>>>();
+/** A simulation one screen saved, and the hash it reported with it. */
+interface Snapshot {
+  turn: number;
+  hash: string;
+  data: string;
+}
+/** The snapshot the room has, and one that waits for the other screen to report the same hash. */
+let snapshot: Snapshot | undefined;
+let offered: (Snapshot & { by: Who }) | undefined;
 const joined: Record<Who, boolean> = { ada: true, grace: true };
 
 function describe(entry: Entry): string {
@@ -48,11 +61,19 @@ function closeTurn(): void {
   }
 }
 
-function roomHash(player: Who, turn: number, value: string): void {
+function roomHash(player: Who, turn: number, value: string, data?: string): void {
   if (!joined[player]) return;
   const reported = { ...hashes.get(turn), [player]: value };
   hashes.set(turn, reported);
   hashes.delete(turn - 5 * HASH_EVERY);
+  // A snapshot is kept when the other screen reported the same hash for its turn. The room cannot
+  // check one itself: it has no simulation. A screen on its own is not taken at its word.
+  if (data !== undefined) offered = { turn, hash: value, data, by: player };
+  if (offered?.turn === turn && joined[other(offered.by)] && reported[other(offered.by)] === offered.hash) {
+    snapshot = offered;
+    offered = undefined;
+    ui.snapshot = turn;
+  }
   // Shown once there is something to compare, or nobody else to wait for.
   const compared = Boolean(reported.ada && reported.grace) || !joined[other(player)];
   if (compared && turn >= ui.check.turn) ui.check = { turn, ...reported };
@@ -97,15 +118,24 @@ function apply(player: Who, entries: Entry[], turn: number, live: boolean): void
   ui.at[player] = turn;
   if (live && turn % HASH_EVERY === 0) {
     const value = hash(client.sim);
-    wires.send(clock, player, true, "ack", "hash", () => roomHash(player, turn, value), lag[player]);
+    // One screen sends the snapshots: the first of those connected.
+    const data = turn % SNAPSHOT_EVERY === 0 && who.find((each) => joined[each]) === player ? save(client.sim) : undefined;
+    wires.send(clock, player, true, "ack", data === undefined ? "hash" : "snapshot", () => roomHash(player, turn, value, data), lag[player]);
   }
 }
 
-/** After (re)connecting: run the recording from the first turn, then carry on with the live ones. */
-function catchUp(player: Who, upTo: number): void {
+/**
+ * After (re)connecting: start from the room's snapshot and run the turns
+ * since, or the whole recording if there is no snapshot yet. Then carry on
+ * with the live turns.
+ */
+function catchUp(player: Who, upTo: number, from: Snapshot | undefined): void {
   const client = clients[player];
-  client.sim = create(SEED);
-  for (let turn = 1; turn <= upTo; turn++) step(client.sim, recording.get(turn) ?? []);
+  // A snapshot is another screen's work: it is used only if it hashes to what both reported.
+  const loaded = from && load(from.data);
+  const trusted = loaded !== undefined && hash(loaded) === from!.hash;
+  client.sim = trusted ? loaded : create(SEED);
+  for (let turn = trusted ? from!.turn + 1 : 1; turn <= upTo; turn++) step(client.sim, recording.get(turn) ?? []);
   client.turn = upTo;
   for (let turn = upTo + 1; client.buffer.has(turn); turn++) apply(player, client.buffer.get(turn)!, turn, false);
   client.buffer.clear();
@@ -143,6 +173,8 @@ const ui = reactive({
   connected: { ada: true, grace: true } as Record<Who, boolean>,
   at: { ada: 0, grace: 0 } as Record<Who, number>,
   log: [] as { key: string; turn: number; player: Who; text: string }[],
+  /** The turn of the snapshot the room has. 0 before the first. */
+  snapshot: 0,
   check: { turn: 0 } as { turn: number } & Partial<Record<Who, string>>,
 });
 const narration = ref("Click a screen to send its squad somewhere.");
@@ -188,10 +220,13 @@ function toggleTab(player: Who): void {
     joined[player] = true;
     pending.push({ player, event: "reconnect" });
     const upTo = ui.turn;
-    wires.send(clock, player, false, "welcome", "replay", () => catchUp(player, upTo), 520);
+    const from = snapshot;
+    wires.send(clock, player, false, "welcome", from ? "snapshot" : "replay", () => catchUp(player, upTo, from), 520);
     client.handsOffUntil = 0;
     client.orderAt = clock + 2200;
-    narration.value = `${names[player]} is back. Her screen runs the recording from the first turn and lands where everyone else is.`;
+    narration.value = from
+      ? `${names[player]} is back. Her screen starts from the snapshot of turn ${from.turn}, runs the ${upTo - from.turn} turns since, and lands where everyone else is.`
+      : `${names[player]} is back. There is no snapshot yet, so her screen runs the recording from the first turn and lands where everyone else is.`;
   }
   if (!playing.value) draw();
 }
@@ -373,6 +408,7 @@ const wires = createWires(vertical, lag.ada);
                 </li>
               </ol>
               <p v-else class="none">No orders yet. Empty turns are not kept.</p>
+              <p class="kept">{{ ui.snapshot ? `Snapshot of turn ${ui.snapshot}` : "No snapshot yet" }}</p>
               <div class="beat" aria-hidden="true"><i v-for="n in 10" :key="n" :class="{ on: ui.turn % 10 === n - 1 }" /></div>
             </div>
           </div>
@@ -451,6 +487,14 @@ li i {
   flex: 1;
   margin: 0;
   color: var(--tf-slate);
+}
+
+/* What a screen that comes back starts from. */
+.kept {
+  margin: 6px 0 0;
+  color: var(--tf-slate);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 /* One mark for each turn of the second, lit as the room closes it. */

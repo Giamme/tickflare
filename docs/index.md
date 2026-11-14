@@ -52,7 +52,7 @@ The real thing is about as long as the demo is small: a room with its rules, a W
 </div>
 <div v-show="mode === 'lockstep'">
 
-The room is a dozen lines, because it never runs the game. The game is `sim.js`, which every player's browser runs over the same turns; the client replays the room's recording to catch up after a reload.
+The room is a dozen lines, because it never runs the game. The game is `sim.js`, which every player's browser runs over the same turns; after a reload the client starts from the room's latest snapshot and the turns since.
 
 ::: code-group
 

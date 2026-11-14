@@ -143,7 +143,9 @@ A match that has to reach a result whoever is watching, a ranked one for instanc
 
 ## Lockstep
 
-- **Rejoining replays the match from the first turn.** There are no snapshots to shorten a long match, so a rejoin takes longer the longer the match has run.
+- **A snapshot is as trustworthy as the players who made it.** The room cannot check one against a simulation of its own. It keeps a snapshot only when every other connected player reported the same hash, and the client that loads it hashes it again, so one modified client cannot plant one. All the connected players together could. With a `hash` of your own in place of the built-in fingerprint, the check covers what your hash covers.
+- **A player who is alone among absent opponents makes no snapshots.** The room goes on serving the last one everyone agreed on, and whoever returns runs the turns since.
+- **Without `save` and `load`, rejoining replays the match from the first turn**, and takes longer the longer the match has run.
 - **Every screen holds the whole game.** There is no hidden information, and a modified client can show what the game hides.
 - **A desync is noticed, not settled.** The room knows that two simulations differed and at which turn, not which one is wrong.
 - **Anyone the gateway lets through can read a room's recording**, seated or not.
@@ -175,9 +177,8 @@ Tickflare is at 0.1. It has a test suite that runs against Cloudflare's own runt
 
 In the order we would take them, by how much each removes for the work it needs:
 
-1. **Snapshots for lockstep.** Rejoining a long match at once.
-2. **A binary encoding.** Less bandwidth while ticking.
-3. **Prediction helpers for state sync.**
-4. **Matchmaking by skill and region; account recovery.**
+1. **A binary encoding.** Less bandwidth while ticking.
+2. **Prediction helpers for state sync.**
+3. **Matchmaking by skill and region; account recovery.**
 
 None of these is promised. They are here so that you can see where the edges are, and which of them are meant to move.

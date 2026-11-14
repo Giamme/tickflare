@@ -35,7 +35,7 @@ Shows: `tickRate` and `onTick`, patches, `Interpolator`, `movePlayer` and `onArr
 
 Each tab commands a squad and simulates the whole battle itself, at 10 turns a second. A fingerprint on screen shows the tabs agree.
 
-Shows: `LockstepRoom` and `parseInput`, `LockstepClient`, `seededRandom`, hashes and desync detection, catching up from the recording on reload.
+Shows: `LockstepRoom` and `parseInput`, `LockstepClient`, `seededRandom`, `save` and `load` for snapshots and desync detection, catching up on reload.
 
 ## Ranked tic-tac-toe: matchmaking and results
 

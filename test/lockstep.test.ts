@@ -1,6 +1,6 @@
 import { exports } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
-import { runReplay, seededRandom, type LockstepView, type Replay, type TurnEntry } from "../src/lockstep.js";
+import { fingerprint, runReplay, seededRandom, stepThrough, type LockstepView, type Replay, type TurnEntry } from "../src/lockstep.js";
 import { follow, freshRoom, until } from "./helpers.js";
 import type { TurnInput } from "./worker.js";
 
@@ -190,5 +190,63 @@ describe("seededRandom", () => {
     expect(Array.from({ length: 50 }, () => b())).toEqual(first);
     expect(Array.from({ length: 50 }, () => c())).not.toEqual(first);
     expect(first.every((n) => n >= 0 && n < 1)).toBe(true);
+  });
+
+  it("carries on from its state, which is one whole number", () => {
+    const random = seededRandom(7);
+    for (let i = 0; i < 20; i++) random();
+    const saved = JSON.parse(JSON.stringify({ random: random.state })) as { random: number };
+    expect(Number.isSafeInteger(saved.random)).toBe(true);
+    const resumed = seededRandom(saved.random);
+
+    expect(Array.from({ length: 50 }, () => resumed())).toEqual(Array.from({ length: 50 }, () => random()));
+    expect(resumed.state).toBe(random.state);
+  });
+});
+
+describe("stepThrough", () => {
+  it("takes a simulation from any turn of a recording to any later one", () => {
+    const replay: Replay<TurnInput> = {
+      v: 2,
+      seed: 3,
+      turnRate: 10,
+      turn: 12,
+      turns: [[2, [{ player: "a", input: { type: "add", n: 1 } }]], [7, [{ player: "b", input: { type: "add", n: 5 } }]], [8, [{ player: "a", event: "leave" }]]],
+    };
+    const whole = runReplay(replay, simulation);
+    for (const at of [0, 1, 2, 6, 7, 8, 12]) {
+      const sim = runReplay(replay, simulation, at);
+      stepThrough(sim, replay, simulation, at);
+      expect(sim, `from turn ${at}`).toEqual(whole);
+    }
+    // The end of a recording is enough to carry on from where it starts.
+    const half = runReplay(replay, simulation, 7);
+    stepThrough(half, { ...replay, turns: replay.turns.slice(2) }, simulation, 7, 10);
+    expect(half).toEqual(runReplay(replay, simulation, 10));
+  });
+});
+
+describe("fingerprint", () => {
+  /** The same digest from the runtime's own SHA-256. */
+  async function reference(value: unknown): Promise<string> {
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(value) ?? ""));
+    return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("").slice(0, 32);
+  }
+
+  it("is the start of the SHA-256 of the value's JSON, whatever its length", async () => {
+    const values: unknown[] = [undefined, null, 0, "", "abc", { units: [{ x: 1, y: -2.5 }], name: "é😀" }];
+    // Lengths either side of every edge of a 64-byte block.
+    for (const length of [53, 54, 55, 56, 57, 61, 62, 63, 64, 65, 117, 118, 119, 120, 121, 1000, 70_001]) values.push("x".repeat(length));
+    for (const value of values) {
+      expect(fingerprint(value), JSON.stringify(value)?.slice(0, 40)).toBe(await reference(value));
+    }
+    expect(fingerprint("abc")).toMatch(/^[0-9a-f]{32}$/);
+  });
+
+  it("tells apart simulations that differ anywhere, and not ones that are the same", () => {
+    const sim = { units: [{ x: 1, y: 2 }, { x: 3, y: 4 }], random: 12345 };
+    expect(fingerprint(structuredClone(sim))).toBe(fingerprint(sim));
+    expect(fingerprint({ ...sim, random: 12346 })).not.toBe(fingerprint(sim));
+    expect(fingerprint({ ...sim, units: [sim.units[1], sim.units[0]] })).not.toBe(fingerprint(sim));
   });
 });

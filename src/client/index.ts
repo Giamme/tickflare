@@ -35,12 +35,17 @@ export {
 export { Interpolator } from "./interpolate.js";
 export { LockstepClient, type LockstepClientOptions } from "./lockstep.js";
 export {
+  fingerprint,
   runReplay,
   seededRandom,
+  stepThrough,
+  type CatchUp,
   type LockstepView,
   type TurnsMessage,
   type Replay,
+  type SeededRandom,
   type Simulation,
+  type Snapshot,
   type TurnEntry,
 } from "../lockstep.js";
 

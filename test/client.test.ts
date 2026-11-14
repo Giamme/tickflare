@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { findMatch, LockstepClient, RoomClient, runReplay, type Replay } from "../src/client/index.js";
+import { findMatch, fingerprint, LockstepClient, RoomClient, runReplay, type CatchUp, type Replay } from "../src/client/index.js";
 import { PING, PONG } from "../src/protocol.js";
 
 /** A socket the test drives by hand: nothing happens on it unless the test says so. */
@@ -301,10 +301,228 @@ describe("RoomClient", () => {
       });
       await vi.advanceTimersByTimeAsync(0);
 
-      expect(loaded).toEqual(["https://tickflare.test/rooms/r/replay?token=t2"]);
+      expect(loaded).toEqual(["https://tickflare.test/rooms/r/replay?since=0&token=t2"]);
       expect(askedFor).toEqual(["r", "r"]);
       client.close();
     });
+  });
+});
+
+describe("LockstepClient and snapshots", () => {
+  beforeEach(() => {
+    FakeSocket.all = [];
+    vi.useFakeTimers();
+    vi.stubGlobal("WebSocket", FakeSocket);
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  type Sum = { total: number };
+  const entry = (n: number) => [{ player: "p1", input: { n } }];
+  /** The recording of a match in which 1 was added in turn 2, 10 in turn 12 and 100 in turn 22. */
+  const whole: Replay<{ n: number }> = { v: 2, seed: 1, turnRate: 10, turn: 25, turns: [[2, entry(1)], [12, entry(10)], [22, entry(100)]] };
+  /** Its end, from a snapshot of turn 20. */
+  const fromTwenty = (data: string): CatchUp<{ n: number }> => ({
+    ...whole,
+    turns: [[22, entry(100)]],
+    from: 20,
+    epoch: "e1",
+    snapshot: { turn: 20, hash: "11", data },
+  });
+
+  /** A client connected as `you`, whose catch-up requests `answer` answers. Snapshots are due every ten turns. */
+  async function connected(
+    you: string,
+    answer: (url: URL) => CatchUp<{ n: number }>,
+    simulation: "saves" | "saves, with no hash of its own" | "plain" = "saves",
+  ) {
+    const steps: number[] = [];
+    const asked: URL[] = [];
+    const sent: { url: URL; data: string }[] = [];
+    const client = new LockstepClient<{ n: number }, Sum>("wss://tickflare.test/rooms/r", {
+      create: () => ({ total: 0 }),
+      step(sim, entries, turn) {
+        steps.push(turn);
+        for (const each of entries) sim.total += each.input?.n ?? 0;
+      },
+      ...(simulation === "plain"
+        ? {}
+        : { save: (sim: Sum) => ({ t: sim.total }), load: (saved: unknown) => ({ total: (saved as { t: number }).t }) }),
+      ...(simulation === "saves" ? { hash: (sim: Sum) => sim.total } : {}),
+      bufferTurns: 0,
+      hashEvery: 1000,
+      loadReplay(url) {
+        asked.push(new URL(url));
+        return Promise.resolve(answer(new URL(url)));
+      },
+      sendSnapshot(url, data) {
+        sent.push({ url: new URL(url), data });
+        return Promise.resolve();
+      },
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    const socket = FakeSocket.all.at(-1)!;
+    const welcome = (to: FakeSocket) => {
+      to.readyState = 1;
+      to.receive({
+        t: "welcome", v: 1, you, seq: 0, tick: 0, tickRate: 10,
+        players: [{ id: "p1", connected: true }, { id: "p2", connected: true }],
+        state: { seed: 1, turn: 25, entries: [], desync: null, clock: "players", snapshotEvery: 10 },
+      });
+    };
+    welcome(socket);
+    await vi.advanceTimersByTimeAsync(0);
+    const turns = (to: FakeSocket, n: number, c: number) => to.receive({ t: "msg", d: { tickflare: "turns", n, c, e: [] } });
+    const hashes = (of: FakeSocket) =>
+      of.sent.flatMap((frame) => {
+        const data = frame.startsWith("{") ? (JSON.parse(frame) as { data?: { k?: string; n?: number; h?: string } }).data : undefined;
+        return data?.k === "h" ? [`${data.n}:${data.h}`] : [];
+      });
+    return { client, socket, steps, asked, sent, welcome, turns, hashes };
+  }
+
+  it("starts from the room's snapshot, and runs only the turns after it", async () => {
+    const { client, steps, asked } = await connected("p1", () => fromTwenty('{"t":11}'));
+    expect(asked.map((url) => url.search)).toEqual(["?since=0&snapshot=0"]);
+    expect(steps).toEqual([21, 22, 23, 24, 25]);
+    expect(client.sim).toEqual({ total: 111 });
+    expect(client.turn).toBe(25);
+    expect(client.ready).toBe(true);
+    client.close();
+  });
+
+  it("does not ask for a snapshot when the simulation cannot load one", async () => {
+    const { client, steps, asked } = await connected("p1", () => ({ ...whole, epoch: "e1" }), "plain");
+    expect(asked.map((url) => url.search)).toEqual(["?since=0"]);
+    expect(steps).toHaveLength(25);
+    expect(client.sim).toEqual({ total: 111 });
+    client.close();
+  });
+
+  it.each([
+    ["does not hash to what the players agreed on", '{"t":999}'],
+    ["cannot be read", "not json"],
+  ])("sets aside a snapshot that %s, and catches up from the recording", async (_what, data) => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { client, steps, asked } = await connected("p1", (url) =>
+      url.searchParams.get("snapshot") === "0" ? fromTwenty(data) : { ...whole, epoch: "e1" },
+    );
+    // Asked again, saying which snapshot is of no use.
+    expect(asked.map((url) => url.search)).toEqual(["?since=0&snapshot=0", "?since=0&snapshot=20"]);
+    expect(steps).toHaveLength(25);
+    expect(client.sim).toEqual({ total: 111 });
+    expect(warn).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+    client.close();
+  });
+
+  it("does not ask over and over when the answer is never one it can use", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { client, asked } = await connected("p1", () => fromTwenty('{"t":999}'));
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(asked).toHaveLength(2);
+    expect(client.ready).toBe(false);
+    warn.mockRestore();
+    client.close();
+  });
+
+  it("says which turn it is at when it reconnects, and carries on from its own simulation", async () => {
+    let answers = 0;
+    const { client, socket, steps, asked, welcome, turns } = await connected("p1", (url) => {
+      answers += 1;
+      if (answers === 1) return fromTwenty('{"t":11}');
+      // The room has not restarted: it sends what happened since.
+      expect(url.search).toBe("?since=27&epoch=e1&snapshot=0");
+      return { ...whole, turn: 30, turns: [[29, entry(1000)]], from: 27, epoch: "e1" };
+    });
+    turns(socket, 26, 2);
+    expect(client.turn).toBe(27);
+
+    socket.drop(1006);
+    await vi.advanceTimersByTimeAsync(300);
+    welcome(FakeSocket.all.at(-1)!);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(asked).toHaveLength(2);
+    expect(steps).toEqual([21, 22, 23, 24, 25, 26, 27, 28, 29, 30]);
+    expect(client.sim).toEqual({ total: 1111 });
+    client.close();
+  });
+
+  it("asks for the whole recording when it is sent an end that does not follow from what it has", async () => {
+    let answers = 0;
+    const { client, socket, steps, asked, welcome } = await connected("p1", () => {
+      answers += 1;
+      if (answers === 2) return { ...whole, turn: 30, turns: [], from: 26, epoch: "e1" };
+      return { ...whole, epoch: "e1" };
+    }, "plain");
+    socket.drop(1006);
+    await vi.advanceTimersByTimeAsync(300);
+    welcome(FakeSocket.all.at(-1)!);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(asked.map((url) => url.search)).toEqual(["?since=0", "?since=25&epoch=e1", "?since=0"]);
+    expect(steps).toHaveLength(50);
+    expect(client.sim).toEqual({ total: 111 });
+    client.close();
+  });
+
+  it("sends a snapshot at each snapshot turn if its player's id sorts first, and its hash either way", async () => {
+    const first = await connected("p1", () => fromTwenty('{"t":11}'));
+    first.turns(first.socket, 26, 5);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(first.hashes(first.socket)).toEqual(["30:111"]);
+    expect(first.sent.map(({ url, data }) => `${url.pathname}${url.search} ${data}`)).toEqual([
+      '/rooms/r/snapshot?turn=30&hash=111 {"t":111}',
+    ]);
+    first.client.close();
+
+    const second = await connected("p2", () => fromTwenty('{"t":11}'));
+    second.turns(second.socket, 26, 5);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(second.hashes(second.socket)).toEqual(["30:111"]);
+    expect(second.sent).toEqual([]);
+    second.client.close();
+  });
+
+  it("hashes what `save` returns when the simulation has no hash of its own", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const saved = '{"t":11}';
+    const good = { ...fromTwenty(saved), snapshot: { turn: 20, hash: fingerprint({ t: 11 }), data: saved } };
+    const { client, steps, asked, socket, turns, hashes, sent } = await connected("p1", () => good, "saves, with no hash of its own");
+    expect(asked.map((url) => url.search)).toEqual(["?since=0&snapshot=0"]);
+    expect(steps).toEqual([21, 22, 23, 24, 25]);
+    expect(client.sim).toEqual({ total: 111 });
+
+    // What it reports and what it sends are the same text's fingerprint and the text.
+    turns(socket, 26, 5);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(hashes(socket)).toEqual([`30:${fingerprint({ t: 111 })}`]);
+    expect(sent.map(({ url, data }) => `${url.search} ${data}`)).toEqual([`?turn=30&hash=${fingerprint({ t: 111 })} {"t":111}`]);
+    client.close();
+
+    // And a snapshot that is not what its fingerprint says is set aside.
+    const bad = await connected("p1", (url) => (url.searchParams.get("snapshot") === "0" ? { ...good, snapshot: { ...good.snapshot, data: '{"t":12}' } } : { ...whole, epoch: "e1" }), "saves, with no hash of its own");
+    expect(bad.asked).toHaveLength(2);
+    expect(bad.client.sim).toEqual({ total: 111 });
+    expect(warn).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+    bad.client.close();
+  });
+
+  it("sends none for the turns it runs while catching up, or without a way to save", async () => {
+    const caughtUp = await connected("p1", () => ({ ...whole, epoch: "e1" }));
+    expect(caughtUp.steps).toHaveLength(25);
+    expect(caughtUp.sent).toEqual([]);
+    expect(caughtUp.hashes(caughtUp.socket)).toEqual([]);
+    caughtUp.client.close();
+
+    const plain = await connected("p1", () => ({ ...whole, epoch: "e1" }), "plain");
+    plain.turns(plain.socket, 26, 5);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(plain.sent).toEqual([]);
+    plain.client.close();
   });
 });
 

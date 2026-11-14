@@ -61,7 +61,7 @@
     </main>
 
     <script type="module">
-      import { LockstepClient, seededRandom } from "./tickflare-client.js";
+      import { LockstepClient, fingerprint, seededRandom } from "./tickflare-client.js";
 
       const SIZE = 480;
       const SQUAD = 5;
@@ -110,16 +110,15 @@
             }
           }
         },
-        hash(sim) {
-          let h = 2166136261;
-          for (const [id, squad] of Object.entries(sim.squads)) {
-            for (const ch of id) h = Math.imul(h ^ ch.charCodeAt(0), 16777619);
-            for (const unit of squad.units) {
-              h = Math.imul(h ^ unit.x, 16777619);
-              h = Math.imul(h ^ unit.y, 16777619);
-            }
-          }
-          return (h >>> 0).toString(16).padStart(8, "0");
+        // The battle as JSON and back. With these two the room keeps a snapshot a minute, and a
+        // player who joins or reloads late starts from it instead of running the battle again
+        // from its first turn. What `save` returns is also what the clients hash, every twenty
+        // turns, so that the room can tell when two of them disagree.
+        save(sim) {
+          return { random: sim.random.state, squads: sim.squads };
+        },
+        load(saved) {
+          return { random: seededRandom(saved.random), squads: saved.squads };
         },
       };
 
@@ -143,6 +142,9 @@
       addEventListener("hashchange", () => location.reload());
 
       let turnAt = performance.now();
+      /** What the screen shows of the simulation's fingerprint, worked out once a turn. */
+      let shown = "";
+      const print = (sim) => fingerprint(simulation.save(sim)).slice(0, 8);
       /** Where the player last clicked. An order takes a turn or two to come back from the room. */
       let marker = null;
       let desyncAt = null;
@@ -154,6 +156,10 @@
         ...simulation,
         onTurn() {
           turnAt = performance.now();
+          shown = print(client.sim);
+        },
+        onReady(sim) {
+          shown = print(sim);
         },
         onDesync(turn) {
           desyncAt = turn;
@@ -170,7 +176,7 @@
         },
       });
       // For the console, and for the end-to-end test.
-      window.skirmish = { client, fingerprint: () => (client.sim ? simulation.hash(client.sim) : null) };
+      window.skirmish = { client, fingerprint: () => (client.sim ? print(client.sim) : null) };
 
       canvas.addEventListener("pointerdown", (event) => {
         const box = canvas.getBoundingClientRect();
@@ -185,7 +191,7 @@
         if (client.status === "closed") statusEl.textContent = closedBecause;
         else if (!client.ready) statusEl.textContent = "Catching up…";
         else if (desyncAt !== null) statusEl.textContent = `Out of sync since turn ${desyncAt}.`;
-        else statusEl.textContent = `Turn ${client.turn} · fingerprint ${simulation.hash(client.sim)}`;
+        else statusEl.textContent = `Turn ${client.turn} · fingerprint ${shown}`;
 
         if (client.ready) {
           // Glide from where each unit was last turn to where it is now.

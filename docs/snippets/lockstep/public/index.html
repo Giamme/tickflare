@@ -4,7 +4,7 @@
 <canvas id="field" width="600" height="600" style="max-width: 100%; border-radius: 14px"></canvas>
 <script type="module">
   import { AccountClient, LockstepClient } from "./tickflare-client.js";
-  import { create, hash, step } from "./sim.js";
+  import { create, load, save, step } from "./sim.js";
 
   const canvas = document.querySelector("#field");
   const ctx = canvas.getContext("2d");
@@ -13,12 +13,13 @@
   const accounts = new AccountClient(); // a guest until they sign up
   const scheme = location.protocol === "https:" ? "wss" : "ws";
   // The client runs the simulation over the room's turns. After a reload it
-  // replays the room's recording from the first turn, then carries on live.
+  // starts from the room's latest snapshot, then carries on live.
   const game = new LockstepClient(`${scheme}://${location.host}/rooms/skirmish`, {
     token: accounts.tokenSource,
     create,
     step,
-    hash,
+    save,
+    load,
     onDesync: (turn) => console.error(`The simulations differ at turn ${turn}`),
   });
 

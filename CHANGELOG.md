@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+**Lockstep snapshots: joining late no longer means running the match again.** A client that connected to a lockstep room rebuilt its simulation from turn 1 of the recording, every time, so a reload half an hour into a match ran eighteen thousand turns before it showed anything.
+
+- **Give the simulation `save` and `load`** and the room keeps a snapshot a minute (`snapshotIntervalMs`; 0 for none). `save` returns the simulation as JSON, `load` rebuilds it. A client with no simulation starts from the latest snapshot and the turns since.
+- **The players make the snapshots, and have to agree on them.** The room has no simulation to take one from. One client sends what `save` returned; the room keeps it once every other connected player has reported the same hash for that turn, and the client that loads it hashes it again before using it. A player alone in the room is taken at their word. A player whose opponents are away is not.
+- **`fingerprint(value)`**, a new export, is the hash for this: the first 32 hex digits of the SHA-256 of a value's JSON. A simulation with `save` and no `hash` reports `fingerprint(save(sim))`, so desync detection now comes with `save` and needs no hash of your own. If old clients with a `hash` of their own are still playing, keep it in the new client until they are gone: two clients that hash differently look like a desync.
+- **`seededRandom(seed).state`** is where a generator stands, as one whole number, and `seededRandom(state)` carries on from it. That is how `save` and `load` keep a simulation's randomness.
+- **A client that drops and comes back with its simulation is sent only the turns it missed**, unless the room restarted meanwhile. It used to replay the recording from turn 1 then too.
+- **After a restart a room resumes at its snapshot's turn or later**, so that the snapshot and the recording always fit together.
+- **`stepThrough(sim, replay, simulation, from, upTo)`** advances a simulation you already have over a recording, for a replay viewer's play button.
+- `GET …/replay` without a query is the whole recording, as before. A client that is catching up adds `since`, `epoch` and `snapshot`, and may be answered with the end of the recording: see `CatchUp` and the wire protocol in the reference. `POST …/snapshot` is how a client sends one. If you override `onHttp` in a lockstep room, pass on what is not yours with `super.onHttp(request, player)`.
+- The view of a lockstep room has a new field, `snapshotEvery`.
+
 **Event mode sends what changed, and a state may be longer than one row.**
 
 - **A change in event mode is sent as a patch.** Every change used to send every player their whole view. Now each player is sent what the change did to their view, as ticking rooms already did, and a player whose view it did not touch is sent nothing. The client applies patches as before, so `room.state` and the `state` event are unchanged. Without a custom `view()` this holds after the room has slept as well; with one, the first change after a sleep sends whole views, since what each player was sent is remembered only in memory.

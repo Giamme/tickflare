@@ -19,14 +19,17 @@
       { "name": "FLAKY", "class_name": "FlakyLobby" },
       { "name": "NAMES", "class_name": "NameRoom" },
       { "name": "SHAPES", "class_name": "ShapesRoom" },
-      { "name": "PLAIN", "class_name": "PlainShapesRoom" }
+      { "name": "PLAIN", "class_name": "PlainShapesRoom" },
+      { "name": "SNAPS", "class_name": "SnapRoom" },
+      { "name": "ASKEDSNAPS", "class_name": "AskedSnapRoom" }
     ]
   },
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["TestRoom", "TickRoom", "TurnRoom", "TestMatchmaker", "AwayRoom", "PatientMatchmaker", "EdgeRoom", "LazyTickRoom", "HalfRate", "SlowLobby", "FlakyLobby"] },
     { "tag": "v2", "new_sqlite_classes": ["NameRoom"] },
     { "tag": "v3", "new_sqlite_classes": ["AskedTurnRoom"] },
-    { "tag": "v4", "new_sqlite_classes": ["ShapesRoom", "PlainShapesRoom"] }
+    { "tag": "v4", "new_sqlite_classes": ["ShapesRoom", "PlainShapesRoom"] },
+    { "tag": "v5", "new_sqlite_classes": ["SnapRoom", "AskedSnapRoom"] }
   ],
   "queues": {
     "producers": [{ "binding": "MATCHES", "queue": "tickflare-test-matches" }],

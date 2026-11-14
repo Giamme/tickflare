@@ -60,6 +60,7 @@ The room saves every change before anyone hears about it, rolls back what `rejec
 
 - **Three sync modes** on one room kernel: [event mode](docs/guide/rooms.md) for turn-based games, [state sync](docs/guide/state-sync.md) for real-time ones, [lockstep](docs/guide/lockstep.md) for strategy games with many units.
 - **Patches, not snapshots**: a player is sent what changed in their own [view](docs/guide/state-and-views.md) of the state, after a move as after a tick.
+- **[Lockstep snapshots](docs/guide/lockstep.md#snapshots)**: a player who joins or reloads late starts from a simulation the other players' clients saved and agreed on, not from the first turn.
 - **[Rooms that end](docs/guide/rooms.md#when-a-room-is-over)**: a hook for when the last player is gone, rooms that delete themselves with their storage, and matches that [play on](docs/guide/state-sync.md#playing-on-with-nobody-connected) with nobody connected.
 - **[Identity](docs/guide/identity.md)** decided once, at the gateway, with signed join tokens.
 - **[Accounts](docs/guide/accounts.md)** on D1: guests, sign-up, sessions, player data, stats and leaderboards.
