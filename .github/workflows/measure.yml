@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "measure: all of it. analytics: only ask what Cloudflare counted for an earlier run. describe: what its analytics can be asked. delete: remove a Worker that was kept."
+        description: "measure: all of it. analytics: only ask what Cloudflare counted for an earlier run. report: tools/rooms-report.mjs on the namespaces of an earlier run. describe: what its analytics can be asked. delete: remove a Worker that was kept."
         required: false
         default: "measure"
       scenarios:
@@ -35,11 +35,11 @@ on:
         required: false
         default: ""
       namespaces:
-        description: "analytics: the namespaces, as the run printed them."
+        description: "analytics and report: the namespaces, as the run printed them."
         required: false
         default: "[]"
       since:
-        description: "analytics: from when, as 2026-01-31T12:00:00Z."
+        description: "analytics and report: from when, as 2026-01-31T12:00:00Z."
         required: false
         default: ""
 
@@ -144,6 +144,16 @@ jobs:
           NAMESPACES: ${{ inputs.namespaces }}
           SINCE: ${{ inputs.since }}
         run: node bench/analytics.mjs
+
+      - name: Which rooms an earlier run was billed for
+        if: inputs.mode == 'report'
+        env:
+          NAMESPACES: ${{ inputs.namespaces }}
+          SINCE: ${{ inputs.since }}
+        run: |
+          ARGS=()
+          for id in $(echo "$NAMESPACES" | jq -r '.[].id'); do ARGS+=(--namespace "$id"); done
+          node tools/rooms-report.mjs "${ARGS[@]}" --since "$SINCE"
 
       - name: What Cloudflare's analytics can be asked
         if: inputs.mode == 'describe'
