@@ -11,13 +11,21 @@ on:
         required: false
         default: "measure"
       scenarios:
-        description: "measure: which of idle, latency, wire, rates. Empty runs all."
+        description: "measure: which of idle, latency, wire, rates, or soak (alone, the better part of an hour). Empty runs all but soak."
         required: false
         default: ""
       analytics_wait:
         description: "measure: the longest to wait for Cloudflare's analytics, which lag by some minutes, in seconds."
         required: false
         default: "900"
+      silent_ms:
+        description: "measure: silentAfterMs for the rooms, if not Tickflare's default. 0 never closes a silent connection."
+        required: false
+        default: ""
+      soak_minutes:
+        description: "soak: for how long rooms are played and left."
+        required: false
+        default: "40"
       keep:
         description: "measure: 'yes' leaves the Worker deployed, to ask its analytics later. Delete it with mode delete."
         required: false
@@ -38,14 +46,15 @@ on:
 permissions:
   contents: read
 
+# Each run deploys a Worker of its own, so runs with different settings can go side by side.
 concurrency:
-  group: measure
+  group: measure-${{ inputs.mode }}-${{ inputs.scenarios }}-${{ inputs.silent_ms }}
   cancel-in-progress: false
 
 jobs:
   measure:
     runs-on: ubuntu-latest
-    timeout-minutes: 50
+    timeout-minutes: 110
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -75,11 +84,15 @@ jobs:
 
       - name: Deploy the benchmark Worker
         if: inputs.mode == 'measure'
+        env:
+          SILENT_MS: ${{ inputs.silent_ms }}
         run: |
           set -euo pipefail
           # Cloudflare's API sometimes does not know a Worker yet in the moment after it was uploaded.
           for attempt in 1 2 3; do
-            if npx wrangler deploy --config bench/wrangler.jsonc --name "$WORKER" --var "BENCH_KEY:$BENCH_KEY" > deploy.log 2>&1; then break; fi
+            SILENT=()
+            if [ -n "$SILENT_MS" ]; then SILENT=(--var "BENCH_SILENT_MS:$SILENT_MS"); fi
+            if npx wrangler deploy --config bench/wrangler.jsonc --name "$WORKER" --var "BENCH_KEY:$BENCH_KEY" "${SILENT[@]}" > deploy.log 2>&1; then break; fi
             sed "s/$BENCH_KEY/[key]/g" deploy.log | tail -12
             if [ "$attempt" = 3 ]; then exit 1; fi
             sleep 10
@@ -104,17 +117,26 @@ jobs:
         env:
           BENCH_URL: wss://${{ env.BENCH_HOST }}
           SCENARIOS: ${{ inputs.scenarios }}
+          BENCH_SOAK_MINUTES: ${{ inputs.soak_minutes }}
         run: |
           set -o pipefail
           echo "SINCE=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
           node bench/load.mjs $SCENARIOS 2>&1 | tee results.log
 
       - name: What Cloudflare counted
-        if: inputs.mode == 'measure'
+        if: inputs.mode == 'measure' && inputs.scenarios != 'soak'
         continue-on-error: true
         env:
           WAIT_SECONDS: ${{ inputs.analytics_wait }}
         run: node bench/analytics.mjs
+
+      - name: What Cloudflare billed each room for, against the time it had players
+        if: inputs.mode == 'measure' && inputs.scenarios == 'soak'
+        continue-on-error: true
+        env:
+          BENCH_URL: wss://${{ env.BENCH_HOST }}
+          WAIT_SECONDS: ${{ inputs.analytics_wait }}
+        run: node bench/soak-report.mjs
 
       - name: What Cloudflare counted, for an earlier run
         if: inputs.mode == 'analytics'

@@ -28,13 +28,20 @@ interface State {
 type Command =
   | { type: "setup"; units: number; rate: number; sight: number; walkers?: "int" | "dec1" | "float" }
   | { type: "move" }
-  | { type: "noop" };
+  | { type: "noop" }
+  /** Makes the room restart itself a moment after this command, as Cloudflare might. */
+  | { type: "restart" };
 
 interface Env {
   ROOMS: DurableObjectNamespace;
   IDLE: DurableObjectNamespace;
   BENCH_KEY: string;
+  /** `silentAfterMs` for the rooms of this deployment, if not the default. */
+  BENCH_SILENT_MS?: string;
 }
+
+/** The most lines a room keeps in its log. */
+const LOG_LINES = 400;
 
 export class Bench extends Room<State, Command, Env> {
   protected override tickRate = 10;
@@ -44,15 +51,66 @@ export class Bench extends Room<State, Command, Env> {
   /** How many times this room has been started: once, unless Cloudflare took it out of memory. */
   #starts: number;
 
+  /** When the last line about ticking went into the log. */
+  #loggedTickAt = 0;
+
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
+    if (env.BENCH_SILENT_MS !== undefined && env.BENCH_SILENT_MS !== "") this.silentAfterMs = Number(env.BENCH_SILENT_MS);
     ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS bench_starts (id INTEGER PRIMARY KEY, n INTEGER NOT NULL)");
     ctx.storage.sql.exec("INSERT INTO bench_starts (id, n) VALUES (1, 1) ON CONFLICT (id) DO UPDATE SET n = n + 1");
     this.#starts = ctx.storage.sql.exec<{ n: number }>("SELECT n FROM bench_starts WHERE id = 1").one().n;
+    ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS bench_log (n INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, line TEXT NOT NULL)");
+    this.#log(`started, time ${this.#starts}`);
   }
 
-  /** How the room is, for the load script to ask once its players have gone. */
-  protected override onHttp(): Response {
+  /** A line in the room's own log, which outlasts restarts. Only the last `LOG_LINES` are kept. */
+  #log(line: string): void {
+    const sql = this.ctx.storage.sql;
+    sql.exec("INSERT INTO bench_log (at, line) VALUES (?, ?)", Date.now(), line);
+    sql.exec("DELETE FROM bench_log WHERE n <= (SELECT MAX(n) FROM bench_log) - ?", LOG_LINES);
+  }
+
+  /** What the room's connections are, in one line. */
+  #sockets(): string {
+    const states = [0, 0, 0, 0];
+    for (const ws of this.ctx.getWebSockets()) states[ws.readyState] = (states[ws.readyState] ?? 0) + 1;
+    return `sockets open ${states[1]}, closing ${states[2]}, closed ${states[3]}; players connected ${this.players.filter((p) => p.connected).length} of ${this.players.length}`;
+  }
+
+  override async webSocketClose(ws: WebSocket, code: number, reason: string): Promise<void> {
+    this.#log(`close ${code}${reason ? ` ${reason}` : ""} from ${this.ctx.getTags(ws)[0] ?? "?"}`);
+    await super.webSocketClose(ws, code, reason);
+  }
+
+  override async webSocketError(ws: WebSocket): Promise<void> {
+    this.#log(`error on ${this.ctx.getTags(ws)[0] ?? "?"}`);
+    await super.webSocketError(ws);
+  }
+
+  override async alarm(): Promise<void> {
+    await super.alarm();
+    // After: before it, a room that has just started does not know its players yet.
+    this.#log(`alarm; ${this.#sockets()}`);
+  }
+
+  protected override onDisconnect(player: Player): void {
+    this.#log(`${player.id} away`);
+  }
+
+  protected override onEmpty(): void {
+    this.#log("empty");
+  }
+
+  /** How the room is, for the load script to ask once its players have gone. With `?log=1`, its log. */
+  protected override onHttp(request: Request): Response {
+    if (new URL(request.url).searchParams.get("log") === "1") {
+      const lines = this.ctx.storage.sql
+        .exec<{ at: number; line: string }>("SELECT at, line FROM bench_log ORDER BY n")
+        .toArray()
+        .map(({ at, line }) => `${new Date(at).toISOString()} ${line}`);
+      return Response.json({ lines, now: new Date().toISOString(), tick: this.tick, starts: this.#starts });
+    }
     const states = [0, 0, 0, 0];
     for (const ws of this.ctx.getWebSockets()) states[ws.readyState] = (states[ws.readyState] ?? 0) + 1;
     return Response.json({
@@ -98,6 +156,16 @@ export class Bench extends Room<State, Command, Env> {
         return;
       }
       this.state.units = Array.from({ length: command.units }, (_, i) => ({ x: (i * 37) % 1000, y: (i * 91) % 1000, hp: 100 }));
+    } else if (command.type === "restart") {
+      this.#log("asked to restart");
+      // After the command is answered: what is lost then is what a restart loses.
+      setTimeout(() => {
+        try {
+          this.ctx.abort("asked to restart");
+        } catch {
+          // Aborting throws in the caller.
+        }
+      }, 20);
     } else if (command.type === "move") {
       this.state.moves += 1;
     } else if (command.type !== "noop") {
@@ -106,6 +174,12 @@ export class Bench extends Room<State, Command, Env> {
   }
 
   protected override onTick(): void {
+    // Every 30 seconds, and on the first tick of an instance: who the room thinks is there.
+    const now = Date.now();
+    if (now - this.#loggedTickAt >= 30_000) {
+      this.#loggedTickAt = now;
+      this.#log(`tick ${this.tick}; ${this.#sockets()}`);
+    }
     // Things walk in straight lines and turn now and then, as units in a game do.
     for (const thing of Object.values(this.state.things)) {
       if (thing.vx === 0 || Math.random() < 0.05) {

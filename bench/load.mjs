@@ -287,6 +287,130 @@ async function idle({ players, seconds }) {
   await closeAll(sockets);
 }
 
+/**
+ * Rooms played and left in every way a room can be left, for `minutes`, in `lanes` at once.
+ * Each cycle is a room of its own, so that what Cloudflare bills each room for can be set
+ * against the time it had players. Nothing here asks a room how it is: that is an event, and
+ * would wake a room that ought to be asleep, or keep one awake.
+ */
+async function soak({ lanes, minutes }) {
+  const modes = ["clean", "terminate", "close-with-restart", "restart-stay", "quiet", "clean", "terminate"];
+  const ends = Date.now() + minutes * 60_000;
+  const cycles = [];
+  const since = new Date().toISOString();
+  const random = (low, high) => low + Math.floor(Math.random() * (high - low + 1));
+
+  async function cycle(lane, index) {
+    const mode = modes[(lane + index) % modes.length];
+    const room = freshRoom();
+    const players = mode === "quiet" ? random(3, 12) : random(20, 100);
+    const record = { lane, room, mode, players, stalls: [] };
+    let sockets = [];
+    const timers = [];
+    try {
+      sockets = await openMany("/rooms", room, players);
+      record.joinedAt = Date.now();
+      // As clients do: a keepalive every 25 seconds.
+      for (const ws of sockets) timers.push(setInterval(() => ws.readyState === WebSocket.OPEN && ws.send("ping"), 25_000));
+      // One player watches the ticks: when they stop, and whether the room says hello again.
+      const watcher = { lastTickAt: Date.now(), welcomes: 0, closed: null };
+      sockets[0].on("message", (data, isBinary) => {
+        if (isBinary) return;
+        const text = data.toString();
+        if (text === "pong") return;
+        const frame = JSON.parse(text);
+        if (frame.t === "welcome") watcher.welcomes += 1;
+        if (frame.t === "patch" || frame.t === "state" || frame.t === "welcome") {
+          const gap = Date.now() - watcher.lastTickAt;
+          if (gap > 3_000 && record.setupAt) record.stalls.push({ at: new Date(watcher.lastTickAt).toISOString(), seconds: +(gap / 1000).toFixed(1) });
+          watcher.lastTickAt = Date.now();
+        }
+      });
+      const codes = {};
+      for (const ws of sockets) {
+        ws.on("close", (code) => {
+          if (!record.leaving) codes[code] = (codes[code] ?? 0) + 1;
+        });
+      }
+      command(sockets[0], { type: "setup", units: 30, rate: 10, sight: 0 });
+      record.setupAt = Date.now();
+      // Moves now and then, from players in turn. A quiet room has none: only keepalives reach it.
+      if (mode !== "quiet") timers.push(setInterval(() => command(sockets[random(0, sockets.length - 1)], { type: "move" }), 500));
+      await sleep(mode === "quiet" ? random(240, 300) * 1000 : random(20, 60) * 1000);
+
+      if (mode === "restart-stay") {
+        // The room restarts with its players in it. If that closes their connections, they come
+        // back as a client does; if it does not, the room has to find them again by itself.
+        const welcomes = watcher.welcomes;
+        const asked = Date.now();
+        command(sockets[0], { type: "restart" });
+        await sleep(1_000);
+        while (Date.now() - asked < 90_000 && watcher.welcomes === welcomes && sockets[0].readyState === WebSocket.OPEN) await sleep(250);
+        const kept = sockets.filter((ws) => ws.readyState === WebSocket.OPEN).length;
+        let seconds = null;
+        if (watcher.welcomes > welcomes) {
+          const after = Date.now();
+          while (Date.now() - after < 10_000 && watcher.lastTickAt < after) await sleep(100);
+          seconds = +((watcher.lastTickAt - asked) / 1000).toFixed(1);
+        } else if (kept === 0) {
+          for (const timer of timers.splice(0)) clearInterval(timer);
+          await sleep(500);
+          sockets = await openMany("/rooms", room, players);
+          for (const ws of sockets) timers.push(setInterval(() => ws.readyState === WebSocket.OPEN && ws.send("ping"), 25_000));
+          timers.push(setInterval(() => command(sockets[random(0, sockets.length - 1)], { type: "move" }), 500));
+          const ticked = await new Promise((resolve) => {
+            const timeout = setTimeout(() => resolve(false), 10_000);
+            sockets[0].on("message", (data, isBinary) => {
+              if (!isBinary && JSON.parse(data.toString()).t === "patch") {
+                clearTimeout(timeout);
+                resolve(true);
+              }
+            });
+          });
+          if (ticked) seconds = +((Date.now() - asked) / 1000).toFixed(1);
+        }
+        record.restart = { connectionsKept: kept, reconnected: kept === 0, ticking: seconds !== null, seconds };
+        await sleep(5_000);
+      }
+
+      record.leaving = true;
+      record.closedByRoom = codes;
+      if (mode === "close-with-restart") command(sockets[0], { type: "restart" });
+      if (mode === "terminate") for (const ws of sockets) ws.terminate();
+      else for (const ws of sockets) ws.close();
+      record.lastLeftAt = Date.now();
+    } catch (error) {
+      record.error = String(error?.message ?? error).replaceAll(KEY, "…");
+      record.lastLeftAt = Date.now();
+      for (const ws of sockets) ws.terminate();
+    } finally {
+      for (const timer of timers) clearInterval(timer);
+    }
+    record.playedSeconds = record.joinedAt ? +((record.lastLeftAt - record.joinedAt) / 1000).toFixed(1) : 0;
+    record.joinedAt = record.joinedAt && new Date(record.joinedAt).toISOString();
+    record.lastLeftAt = new Date(record.lastLeftAt).toISOString();
+    delete record.leaving;
+    delete record.setupAt;
+    cycles.push(record);
+    report({ kind: "soak-cycle", ...record });
+  }
+
+  await Promise.all(
+    Array.from({ length: lanes }, async (_, lane) => {
+      // Lanes start apart, so that they do not all join and leave in the same moments.
+      await sleep(lane * 3_000);
+      // A quiet cycle takes up to five minutes; none starts that would end after the soak.
+      for (let index = 0; Date.now() + 6 * 60_000 < ends; index++) {
+        await cycle(lane, index);
+        await sleep(5_000);
+      }
+    }),
+  );
+  const { writeFileSync } = await import("node:fs");
+  writeFileSync("soak.json", JSON.stringify({ since, until: new Date().toISOString(), cycles }, null, 2));
+  report({ kind: "soak", cycles: cycles.length, since });
+}
+
 async function attempt(name, run) {
   try {
     await run();
@@ -300,6 +424,13 @@ try {
   report({ kind: "where", colo: /colo=(\w+)/.exec(trace)?.[1] ?? null, loc: /loc=(\w+)/.exec(trace)?.[1] ?? null });
 } catch {
   report({ kind: "where", colo: null });
+}
+
+// Not in "everything": it takes the better part of an hour.
+if (wanted.includes("soak")) {
+  await attempt("soak", () =>
+    soak({ lanes: Number(process.env.BENCH_SOAK_LANES ?? 10), minutes: Number(process.env.BENCH_SOAK_MINUTES ?? 40) }),
+  );
 }
 
 if (runs("idle")) await attempt("idle", () => idle({ players: 5, seconds: Number(process.env.BENCH_IDLE_SECONDS ?? 90) }));
