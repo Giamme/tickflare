@@ -16,7 +16,7 @@ Set `tickRate` and the room calls `onTick(dt)` that many times a second while pl
 
 **Pick it for** action games, co-op, `.io`-style games, and anything where the server must simulate continuously and hide information (fog of war). The server is the only one running the game, so clients can't cheat on its rules.
 
-**Costs**: the room is awake for as long as the simulation runs, and bandwidth grows with how much changes per tick. Up to a few hundred moving things per room works well.
+**Costs**: the room is awake for as long as the simulation runs, and bandwidth grows with how much changes per tick. Up to a few hundred moving things per room works well. A player's own move shows a round trip later, unless you [predict it](./state-sync#showing-a-player-s-own-moves-at-once).
 
 See [State sync](./state-sync).
 

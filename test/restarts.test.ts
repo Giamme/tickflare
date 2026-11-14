@@ -1,9 +1,17 @@
 import { abortAllDurableObjects, evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { env, exports } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { LockstepView, Replay } from "../src/lockstep.js";
 import { connect, follow, freshRoom, sleep, until } from "./helpers.js";
 import type { TickState, TurnInput } from "./worker.js";
+
+/** Resolves once `seen` has been sent nothing for `ms`. */
+async function quiet(seen: { frames: unknown[] }, ms = 300): Promise<void> {
+  for (let count = -1; count !== seen.frames.length; ) {
+    count = seen.frames.length;
+    await sleep(ms);
+  }
+}
 
 /**
  * What a deploy or a crash leaves behind is whatever is in storage. These
@@ -39,6 +47,60 @@ describe("a ticking room that is torn down", () => {
       bumps: (JSON.parse(state.storage.sql.exec<{ state: string }>("SELECT state FROM tickflare_room").one().state) as TickState).bumps,
     }));
     expect(after).toEqual({ owed: 0, bumps: 99 });
+  });
+});
+
+describe("a ticking room that is taken out of memory with its players connected", () => {
+  it("welcomes them again when it comes back, since what they hold may be newer than what it saved", async () => {
+    const room = freshRoom();
+    const stub = env.TICKS.get(env.TICKS.idFromName(room));
+    const p1 = await follow<TickState>("/ticks", room, "p1");
+    const p2 = await follow<TickState>("/ticks", room, "p2");
+    await until(() => p1.tick >= 8 && p2.tick >= 8, "some ticks");
+
+    // A room cannot be taken out of memory while its simulation runs, short of a crash. One whose
+    // ticks keep failing pauses, and can be: it is still due to simulate, and its players are
+    // still connected, which is how a room looks that went down in the middle of a simulation.
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    p1.send({ type: "break" });
+    await until(() => p1.state!.broken === true, "the break");
+    await quiet(p1); // the simulation has paused
+    await evictDurableObject(stub);
+    const [seen1, seen2] = [p1.frames.length, p2.frames.length];
+    // Nothing runs until something reaches the room. Here it is a command from p2.
+    p2.send({ type: "fix" });
+    await until(() => p1.of("welcome").length === 2 && p2.of("welcome").length === 2, "the second welcome");
+    errors.mockRestore();
+
+    // The welcome comes first, to both, on the connections they had.
+    expect(p1.frames[seen1]!.t).toBe("welcome");
+    expect(p2.frames[seen2]!.t).toBe("welcome");
+    const again = p1.of("welcome")[1]!;
+    expect(again.players.map((player) => player.id)).toEqual(["p1", "p2"]);
+    expect(again.you).toBe("p1");
+
+    // And the simulation carries on from there, in patches of what the welcome gave them.
+    await until(() => p1.state!.broken === false && p2.state!.broken === false, "the fix");
+    const from = p1.frames.length;
+    await until(() => p1.frames.length >= from + 5, "ticks after the fix");
+    expect(p1.frames.slice(seen1 + 1).filter((frame) => frame.t === "state")).toEqual([]);
+    const tick = Math.min(p1.tick, p2.tick);
+    await until(() => p1.history.has(tick) && p2.history.has(tick));
+    expect(p1.history.get(tick)!.count).toBe(p2.history.get(tick)!.count);
+  });
+
+  it("does not welcome anyone again when it wakes from sleep", async () => {
+    const room = freshRoom();
+    const stub = env.TICKS.get(env.TICKS.idFromName(room));
+    const p1 = await follow<TickState>("/ticks", room, "p1");
+    p1.send({ type: "stop" });
+    await until(() => p1.state!.phase === "lobby" && p1.of("ack").length === 1, "the simulation stopped");
+
+    // What hibernation does to a room that is not simulating.
+    await evictDurableObject(stub);
+    p1.send({ type: "bump" });
+    await until(() => p1.state!.bumps === 1, "the bump");
+    expect(p1.of("welcome")).toHaveLength(1);
   });
 });
 

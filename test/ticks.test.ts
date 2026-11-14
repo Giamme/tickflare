@@ -62,15 +62,63 @@ describe("state sync", () => {
     expect(p2.state!.ballast).toEqual(p1.state!.ballast);
   });
 
-  it("acks a command at once and delivers its effect with a later tick", async () => {
+  it("answers a command with the tick that shows its effect, and says so in that tick's frame", async () => {
     const p1 = await join(freshRoom(), "p1");
+    await until(() => p1.tick >= 3);
     p1.send({ type: "bump" });
-    await until(() => p1.state!.bumps === 1, "the bump");
+    const id = p1.frames.length; // `send` numbers a command by the frames seen so far, plus one
+    await until(() => p1.of("ack").length === 1, "the ack");
 
-    const frames = p1.frames.map((f) => f.t);
-    expect(frames.indexOf("ack")).toBeGreaterThan(0);
+    // The frame before the ack is the patch that carries the bump, marked as the one that shows
+    // this player's command. So by the time a client hears "applied", its state has the effect.
+    const at = p1.frames.findIndex((frame) => frame.t === "ack");
+    const shows = p1.frames[at - 1]!;
+    expect(shows).toMatchObject({ t: "patch", c: id + 1, p: { bumps: [1] } });
+    expect(p1.frames[at]).toEqual({ t: "ack", id: id + 1, seq: (shows as { seq: number }).seq, tick: (shows as { tick: number }).tick });
+    expect(p1.frames.filter((frame) => "c" in frame)).toHaveLength(1);
     expect(p1.of("state")).toHaveLength(0);
-    expect(p1.of("patch").some((f) => "bumps" in f.p)).toBe(true);
+  });
+
+  it("answers a command that changes nothing the player sees after the tick, without a frame for it", async () => {
+    // A room whose ticks change nothing, so that no patch is due unless a command makes one.
+    const p1 = await join(`still-${freshRoom()}`, "p1");
+    p1.send({ type: "bump" });
+    await until(() => p1.of("ack").length === 1, "the first ack");
+    expect(p1.of("patch")).toHaveLength(1);
+    expect(p1.of("patch")[0]).toMatchObject({ p: { bumps: [1] } });
+
+    // Setting a timer changes nothing in the state: there is no frame to carry the answer.
+    p1.send({ type: "timer", ms: 60_000 });
+    p1.send({ type: "timer", ms: 60_000 });
+    await until(() => p1.of("ack").length === 3, "the acks");
+    expect(p1.of("patch")).toHaveLength(1);
+    const [, first, second] = p1.of("ack") as { tick?: number }[];
+    // Each says which tick the view is now of, which is a later one than the patch was.
+    expect(first!.tick).toBeGreaterThan(p1.of("patch")[0]!.tick);
+    expect(second!.tick).toBeGreaterThanOrEqual(first!.tick!);
+  });
+
+  it("answers at once what was still owed when the simulation stops or the player leaves", async () => {
+    const room = freshRoom();
+    const p1 = await join(room, "p1");
+    const p2 = await join(room, "p2");
+    await until(() => p1.tick >= 3);
+    // A command that stops the simulation: there is no next tick to wait for.
+    p1.send({ type: "stop" });
+    await until(() => p1.of("ack").length === 1, "the ack of the command that stopped it");
+    expect(p1.state!.phase).toBe("lobby");
+    const stopped = p1.frames.findIndex((frame) => frame.t === "ack");
+    expect(p1.frames[stopped - 1]).toMatchObject({ t: "patch", p: { phase: ["lobby"] } });
+
+    p1.send({ type: "start" });
+    await until(() => p2.state!.phase === "playing" && p2.tick >= p1.tick);
+    // A bump and a leave in one breath: the bump is answered before the leave is.
+    p2.send({ type: "bump" });
+    p2.ws.send(JSON.stringify({ t: "leave", id: 9000 }));
+    await until(() => p2.of("ack").length === 2, "both acks");
+    const ids = p2.of("ack").map((frame) => frame.id);
+    expect(ids[1]).toBe(9000);
+    expect(ids[0]).toBeLessThan(9000);
   });
 
   it("rolls a rejected command back to the present, not to the last save", async () => {

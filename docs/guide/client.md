@@ -40,6 +40,7 @@ What it holds, all read-only:
 | `you` | This player's id, once connected |
 | `status` | `connecting`, `open` or `closed` |
 | `tick`, `tickRate` | Ticks run so far, and ticks a second (0 in event mode) |
+| `unconfirmed` | The commands sent that `state` does not show yet, oldest first |
 
 ### Sending commands
 
@@ -51,7 +52,7 @@ try {
 }
 ```
 
-`send()` resolves once the room has applied the command. In event mode, `room.state` already shows the result by then. It rejects with a `CommandRejected` whose `reason` is what the room passed to `reject()`, or:
+`send()` resolves once the room has applied the command and `room.state` shows the result: at once in event mode, with the next tick in a room that is ticking. Until then the command is in `room.unconfirmed`, and [`Predictor`](./state-sync#showing-a-player-s-own-moves-at-once) can show its effect before the room does. It rejects with a `CommandRejected` whose `reason` is what the room passed to `reject()`, or:
 
 - `invalid_command`: `parseCommand` threw something other than `reject()`;
 - `internal_error`: a hook threw;

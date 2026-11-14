@@ -128,7 +128,7 @@ If your hooks need plain objects everywhere, set `trackChanges = false`. Every h
 
 **Persistence.** Every accepted change is written to the room's storage before anyone hears about it. A room that hibernates, is evicted or is redeployed picks up where it left off, timers included.
 
-**Ordering.** Each change gets the next `seq`. In event mode the sender's acknowledgement arrives after the state it caused, so when `room.send()` resolves on the client, `room.state` already shows the result.
+**Ordering.** Each change gets the next `seq`. The sender's acknowledgement arrives after the state the command caused, so when `room.send()` resolves on the client, `room.state` already shows the result. In a room that is [ticking](./state-sync#what-changes-while-a-room-ticks) that is with the next tick.
 
 **One connection per player.** A newer connection for the same player closes the older one with `CloseCode.Replaced`.
 

@@ -27,10 +27,10 @@ Send a `ping` every 25 seconds or so. A connection that hears nothing back for a
 | Frame | Meaning |
 | --- | --- |
 | `{ "t": "welcome", "v", "you", "seq", "tick", "tickRate", "state", "players" }` | First frame on every connection |
-| `{ "t": "patch", "seq", "tick", "from"?, "p" }` | The state changed: only the difference from what this player last received |
-| `{ "t": "state", "seq", "tick", "state" }` | The state changed, and this is the player's whole view: the room does not know what they hold, or the view is not an object |
+| `{ "t": "patch", "seq", "tick", "from"?, "c"?, "p" }` | The state changed: only the difference from what this player last received |
+| `{ "t": "state", "seq", "tick", "c"?, "state" }` | The state changed, and this is the player's whole view: the room does not know what they hold, or the view is not an object |
 | `{ "t": "presence", "players" }` | Someone joined, dropped or came back |
-| `{ "t": "ack", "id", "seq" }` | The command or leave with this `id` was applied |
+| `{ "t": "ack", "id", "seq", "tick"? }` | The command or leave with this `id` was applied, and the view the player holds shows it |
 | `{ "t": "reject", "id", "reason" }` | The command or leave with this `id` was refused; nothing changed |
 | `{ "t": "msg", "d" }` | A message the room sent with `send` or `broadcast` |
 | `{ "t": "error", "reason" }` | The room couldn't read a frame at all |
@@ -41,7 +41,9 @@ Fields:
 - `seq` counts changes to the state. A `state` or `patch` carries the `seq` of the change it brings the player up to. That need not be the next one: a ticking room sends one patch for all the changes since the last tick, and a change that leaves a player's view as it was is not sent to them at all.
 - `from`, on a patch sent outside a simulation, is the `seq` of the view the patch is a patch of. A client whose view is of another `seq` has missed something. It must not apply the patch; the way back is to reconnect, which begins with a `welcome` and the whole view. A ticking room leaves `from` out.
 - `tick` and `tickRate` are the ticks run so far and the ticks a second; both 0 in event mode.
-- In event mode, the `ack` for a command comes after the `patch` or `state` frame it caused.
+- An `ack` means that the view the player holds shows the command. In event mode it comes straight after the `patch` or `state` frame the command caused. In a room that is ticking, a command's effect is sent with the next tick, and so is its `ack`, after that tick's `patch`; the `ack` then carries the `tick` the view is of, since a tick that leaves a player's view as it was sends them no patch. A `leave` is always answered at once, after any acks still owed.
+- `c`, on a `patch` or `state`, is the `id` of the latest of this player's own commands that the frame is the first to show. That command and every earlier one have been applied; their `ack` frames follow. A client that draws its own commands ahead of the room drops them at this frame, in the same step as it takes the new state, so that none is shown twice or not at all.
+- A `welcome` can arrive on a connection that is already open. The room was taken out of memory in the middle of a simulation and has resumed from its last save: take the whole view from it, and give up the commands you were waiting to hear about.
 - `reject` reasons are what the room passed to `reject()`, or `invalid_command`, `internal_error` or `rate_limited`.
 - `error` reasons are `invalid_json`, `invalid_message`, `message_too_large`, `binary_not_supported` or `rate_limited`.
 

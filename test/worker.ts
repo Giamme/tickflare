@@ -301,6 +301,8 @@ export class TickRoom extends Room<TickState, TickCommand> {
 
   protected override onTick(): void {
     if (this.state.broken) throw new TypeError("tick kaboom");
+    // Rooms named "still-…" tick without anything happening in them.
+    if (this.roomId?.startsWith("still-")) return;
     this.state.count += 1;
     if (this.ticksWhileEmpty() && this.state.count >= 150) this.state.phase = "over";
     this.players.forEach((player, seat) => {

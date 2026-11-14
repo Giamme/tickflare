@@ -83,6 +83,8 @@ export interface StateFrame<View = unknown> {
   seq: number;
   /** Ticks run so far. */
   tick?: number;
+  /** As in `PatchFrame`. */
+  c?: number;
   /** This player's whole view. */
   state: View;
 }
@@ -101,6 +103,13 @@ export interface PatchFrame {
    * and reconnects to be sent its whole view.
    */
   from?: number;
+  /**
+   * The `id` of the latest command of this player's that the view now
+   * reflects: that one and every earlier one have been applied, and their
+   * `ack` frames follow. Present when the frame is the first to show a
+   * command of theirs.
+   */
+  c?: number;
   /** Apply it with `applyPatch` to the view you have. */
   p: Patch;
 }
@@ -113,7 +122,13 @@ export interface PresenceFrame {
   players: Player[];
 }
 
-/** The command or leave with this `id` was applied. In event mode it follows the `state` frame it caused. */
+/**
+ * The command or leave with this `id` was applied, and the view this player
+ * holds reflects it. It follows the `state` or `patch` frame that shows the
+ * command's effect: at once in event mode, and after the next tick in a room
+ * that is ticking, since that is when the effect is sent. A leave is always
+ * answered at once.
+ */
 export interface AckFrame {
   /** Frame type. */
   t: "ack";
@@ -121,6 +136,8 @@ export interface AckFrame {
   id: number;
   /** The change it made, or the current one if it changed nothing. */
   seq: number;
+  /** In a room that is ticking: the tick the view is now of, whether or not a frame was sent for it. */
+  tick?: number;
 }
 
 /** The command or leave with this `id` was refused, and nothing changed. */

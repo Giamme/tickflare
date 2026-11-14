@@ -62,7 +62,7 @@ export class Arena extends Room<State, Command> {
 
 **A patch for each tick, not for each change.** After each tick, every player gets a `patch` frame with only what changed in their own `view()` since the last one they received. The client applies it for you, so `room.state` and the `state` event work as before. In the arena example a tick is about 110 bytes of JSON, against 740 for the whole state, and the connection [compresses](./limits#bandwidth) what is sent.
 
-**Commands take effect with the next tick.** A command is applied the moment it arrives and acknowledged at once, but its effect reaches clients with the next tick's patch. So `room.send()` resolving no longer means `room.state` already shows the result.
+**Commands show with the next tick.** A command is applied the moment it arrives, and its effect reaches clients with the next tick's patch. The room answers the command then, not before: `room.send()` resolves when `room.state` shows the result, a tick later at most. To show a player their own move sooner than that, [predict it](#showing-a-player-s-own-moves-at-once).
 
 **Saving.** The state is written to storage every `saveIntervalMs` (5 seconds by default) and whenever the simulation stops, not on every change. A room torn down mid-simulation by a deploy or a crash resumes from the last write. Seats, timers, finished matches and handovers are still saved the moment they change, and the state is written with them, so storage never holds one without the other. The same goes for whatever `onTimer` does and for any hook that calls `this.saveNow()`.
 
@@ -122,7 +122,55 @@ requestAnimationFrame(frame);
 
 Because it always starts from what is on screen, a late or bunched update bends the motion instead of making it jump. Use `room.tickRate` once connected to set the duration: `new Interpolator(1000 / room.tickRate, ["x", "y"])`.
 
+## Showing a player's own moves at once
+
+A player who clicks waits for the click to reach the room, for the next tick, and for the patch to come back before anything moves: a tenth of a second on a good connection, a quarter on a poor one. `Predictor` shows the move straight away and lets the room correct it:
+
+```ts
+import { Predictor, RoomClient } from "tickflare/client";
+
+const room = new RoomClient<State, Command>(url, { token });
+const predicted = new Predictor(room, {
+  // What the room's onCommand does with this player's command.
+  apply(state, command, you) {
+    const dot = state.dots[you];
+    if (dot) Object.assign(dot, { tx: command.x, ty: command.y });
+  },
+  // What the room's onTick does to this player's own dot.
+  tick(state, you) {
+    const dot = state.dots[you];
+    if (dot) walk(dot, 1 / 20);
+  },
+});
+
+canvas.onclick = (event) => predicted.send({ type: "move", x: event.offsetX, y: event.offsetY });
+// When drawing: the player's own dot from the prediction, everyone else's from the room.
+const mine = predicted.state?.dots[room.you!];
+```
+
+`predicted.state` is the room's state with this player's unconfirmed commands applied on top. Send through `predicted.send`, which resolves and rejects as `room.send` does.
+
+- **`apply` is your `onCommand`, for one player.** It is handed a draft of the state to change in place, exactly as a hook changes `this.state`. The room's state is never touched, and parts the prediction did not change are the same objects as in `room.state`. Put the logic both sides share in one function and call it from both.
+- **The room's word is final.** When its state arrives, the guess is thrown away and made again from it: commands the room has applied are part of the state now, a command it refused is dropped and its effect disappears, and commands still on their way are applied again. A wrong guess lasts until the room answers.
+- **`tick` is for things a command sets in motion.** Without it the dot above would get its new target at once and still not move until the room's next patch. With it, the prediction runs `tick` as many times as the room will have ticked by the time a command sent now shows up there, so the dot sets off on the click and is drawn where the room will have it. How far ahead that is, `predicted.lead` ticks, is measured from the commands sent so far.
+- **Predict what the player controls, and nothing else.** `tick` is called with the whole state, but where other players' dots will be is not this player's to know: leave them to the room and to `Interpolator`.
+- **With `tick`, read `predicted.state` when you draw.** It moves on with time, between the room's frames too. `onState` tells you about the room's frames and about commands.
+
+The arena example does this: the player's own dot is drawn from the prediction through an `Interpolator` of its own, the others from the room's state.
+
+It works in event mode as well, without `tick`: a piece placed on a board appears on the click and is taken back if the room says no.
+
+```ts
+const predicted = new Predictor(room, {
+  apply(state, command, you) {
+    if (state.board[command.cell] === null) state.board[command.cell] = state.marks[you];
+  },
+});
+```
+
+`produce(state, change)` is the function underneath, should you want it yourself: it returns what `change` makes of a state without touching the state, copying only what changed.
+
 ## What is not there yet
 
-- There are no client-side prediction helpers: a player sees the effect of their own input one round trip later. For many games, interpolating everything and showing the player's own target straight away (as the arena example does with the click marker) is enough.
+- Prediction is for a player's own commands. There is nothing for guessing where other players will be, and no rollback of a whole simulation.
 - When a tick runs late, the simulation slows down instead of catching up.

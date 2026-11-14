@@ -31,8 +31,9 @@ describe.each([
 
     expect(p1.kinds).toEqual(["welcome", "patch", "ack", "patch", "ack"]);
     expect(p1.patches).toEqual([
-      { t: "patch", seq: 1, tick: 0, from: 0, p: { units: { a: { x: [6] } }, meta: { round: [1] } } },
-      { t: "patch", seq: 2, tick: 0, from: 1, p: { units: { a: 0 }, order: [["b"]] } },
+      // `c`: the frame says which of the player's own commands it is the first to show. Here every command is sent as number 1.
+      { t: "patch", seq: 1, tick: 0, from: 0, c: 1, p: { units: { a: { x: [6] } }, meta: { round: [1] } } },
+      { t: "patch", seq: 2, tick: 0, from: 1, c: 1, p: { units: { a: 0 }, order: [["b"]] } },
     ]);
   });
 
@@ -51,7 +52,8 @@ describe.each([
 
     for (const player of [p1, p2]) {
       expect((await player.next("state")).state).toEqual(after("move", "mark"));
-      expect(player.patches.at(-1)).toEqual({ t: "patch", seq: 2, tick: 0, from: 1, p: { total: [1] } });
+      // Only the player whose command it was is told so.
+      expect(player.patches.at(-1)).toEqual({ t: "patch", seq: 2, tick: 0, from: 1, ...(player === p1 ? { c: 1 } : {}), p: { total: [1] } });
     }
   });
 
@@ -73,7 +75,7 @@ describe.each([
 
     for (const player of [p1, p2]) {
       expect((await player.next("state")).state).toEqual(after("spawn", "mark"));
-      expect(player.patches.at(-1)).toEqual({ t: "patch", seq: 2, tick: 0, from: 1, p: { total: [1] } });
+      expect(player.patches.at(-1)).toEqual({ t: "patch", seq: 2, tick: 0, from: 1, ...(player === p2 ? { c: 1 } : {}), p: { total: [1] } });
     }
   });
 

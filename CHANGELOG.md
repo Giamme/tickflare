@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+**Prediction: a player's own move shows on the click.**
+
+- **`Predictor`**, in `tickflare/client`, draws a player's unconfirmed commands over the room's state. You give it `apply`, which does to a draft of the state what the room's `onCommand` does, and it gives you `state` and `send`. When the room's state arrives the guess is made again from it; a refused command's effect is taken back. With a `tick` as well, for things a command sets in motion, it runs as many ticks ahead of the room as a command takes to come back, measured as it goes. It works in event mode too.
+- **`room.unconfirmed`** lists the commands sent that `room.state` does not show yet. A command leaves it in the same step as the state changes to show it.
+- **`produce(state, change)`** returns what `change` makes of a state without touching the state, copying only what changed.
+- **In a ticking room a command is now answered with the tick that shows its effect**, after that tick's patch, not the moment it arrives. `room.send()` so resolves up to one tick later than before, and when it does `room.state` has the result, as it always had in event mode and as the documentation said it did. A refusal still comes at once.
+- **The frame that first shows a player's command says so**, in a new `c` field on `patch` and `state` frames, and the `ack` of a ticking room says which `tick` the view is of. If you speak the protocol yourself, nothing you do today breaks: the `ack` frames still follow.
+- **A room that comes back in the middle of a simulation welcomes its players again** on the connections they have, instead of sending them whole `state` frames at the next tick. The client takes the view from the `welcome` and rejects what was in flight with `disconnected`, since the room no longer knows of it.
+
 **Lockstep snapshots: joining late no longer means running the match again.** A client that connected to a lockstep room rebuilt its simulation from turn 1 of the recording, every time, so a reload half an hour into a match ran eighteen thousand turns before it showed anything.
 
 - **Give the simulation `save` and `load`** and the room keeps a snapshot a minute (`snapshotIntervalMs`; 0 for none). `save` returns the simulation as JSON, `load` rebuilds it. A client with no simulation starts from the latest snapshot and the turns since.

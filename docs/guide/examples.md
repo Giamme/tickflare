@@ -25,9 +25,9 @@ Shows: commands and `reject()`, seats and `seatTimeoutMs`, a turn clock with `se
 
 [`examples/arena`](https://github.com/Giamme/tickflare/tree/main/examples/arena)
 
-A real-time room at 20 ticks a second: click to move a dot and eat pellets. It is also a row of rooms: walk into the left or right wall and the dot is handed to the arena next door, and dots near a wall are visible from the other side.
+A real-time room at 20 ticks a second: click to move a dot and eat pellets. Your own dot sets off on the click, ahead of the room's answer. It is also a row of rooms: walk into the left or right wall and the dot is handed to the arena next door, and dots near a wall are visible from the other side.
 
-Shows: `tickRate` and `onTick`, patches, `Interpolator`, `movePlayer` and `onArrive`, `signal` and `onSignal`.
+Shows: `tickRate` and `onTick`, patches, `Interpolator`, `Predictor`, `movePlayer` and `onArrive`, `signal` and `onSignal`.
 
 ## Skirmish: lockstep
 

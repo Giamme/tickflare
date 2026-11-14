@@ -66,7 +66,7 @@ The room saves every change before anyone hears about it, rolls back what `rejec
 - **[Accounts](docs/guide/accounts.md)** on D1: guests, sign-up, sessions, player data, stats and leaderboards.
 - **[Matchmaking](docs/guide/matchmaking.md)** that reserves a room near its players, and **[match results](docs/guide/match-results.md)** through a Queue into D1, with replays in R2.
 - **[Worlds across rooms](docs/guide/worlds.md)**: handover between rooms and seeing across borders.
-- **[A client](docs/guide/client.md)** for browsers and Node that reconnects on its own.
+- **[A client](docs/guide/client.md)** for browsers and Node that reconnects on its own, and **[prediction](docs/guide/state-sync.md#showing-a-players-own-moves-at-once)**: a player's own move shows on the click and is corrected by the room.
 
 ## Install
 

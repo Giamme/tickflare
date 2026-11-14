@@ -174,6 +174,33 @@ export class Arena extends Room<State, Command> {
 <div class="tf-recipe">
 <div>
 
+### Moves that show on the click
+
+The page applies a player's own command before the room has answered, and the room's state corrects it when it arrives. A refused move is taken back. [Prediction](/guide/state-sync#showing-a-player-s-own-moves-at-once)
+
+</div>
+<div>
+
+```ts
+const predicted = new Predictor(room, {
+  // What the room's onCommand does, for this player.
+  apply(state, command, you) {
+    Object.assign(state.dots[you], { tx: command.x, ty: command.y });
+  },
+  // What its onTick does to their own dot.
+  tick: (state, you) => walk(state.dots[you], 1 / 20),
+});
+
+canvas.onclick = (e) => predicted.send({ type: "move", x: e.offsetX, y: e.offsetY });
+draw(predicted.state);
+```
+
+</div>
+</div>
+
+<div class="tf-recipe">
+<div>
+
 ### Hidden information
 
 Each player receives their own view of the state. Hands, fog of war and secret roles never reach the wrong screen. [State and views](/guide/state-and-views)

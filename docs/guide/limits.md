@@ -113,13 +113,15 @@ Tickflare places a room near whoever asks for it first. A room made by a [matchm
 
 **What would lift it.** Matchmaking that weighs a player's distance when putting matches together. Not built.
 
-## No prediction and no rollback
+## Prediction is for a player's own moves
 
-In state sync a player sees their own input one round trip later. Tickflare has no helpers for predicting it on the screen, nor for correcting the prediction when the room disagrees. In lockstep an order waits for the next turn.
+In state sync a player's own command can be [shown on the click](./state-sync#showing-a-player-s-own-moves-at-once), ahead of the room, and is corrected when the room answers. That is all `Predictor` does:
 
-**What you can do today.** Acknowledge the input on the screen at once, a selection ring or a sound, and let the result follow. For movement, draw toward the target while the room's answer is on its way.
-
-**What would lift it.** Client-side prediction and reconciliation for state sync. Not built.
+- **Other players are not predicted.** They are drawn where the room last said they were, a tick or so in the past, so two players can each see themselves reach a pellet first. The room decides, and the loser's screen is corrected.
+- **A correction is a jump.** When a guess was wrong, the state changes to the room's in one step. Draw through an `Interpolator` and it becomes a short glide.
+- **You write the game's rules twice**, or share them: `apply` and `tick` have to do what `onCommand` and `onTick` do, for one player. Where they differ, the room wins and the player sees a correction every time.
+- **The lead is measured, not known.** How far ahead the prediction runs comes from how long recent commands took. When the connection's delay changes, it is off by a tick until the next few commands have come back.
+- **There is no rollback of a whole simulation**, as fighting games do it. In lockstep an order waits for the next turn.
 
 ## Restarts and deploys
 
@@ -191,8 +193,7 @@ Tickflare is at 0.1. It has a test suite that runs against Cloudflare's own runt
 
 In the order we would take them, by how much each removes for the work it needs:
 
-1. **Prediction helpers for state sync.**
-2. **Arrays patched by element.** An array that changes is sent whole today, which is why things that change one at a time belong in objects keyed by id.
-3. **Matchmaking by skill and region; account recovery.**
+1. **Arrays patched by element.** An array that changes is sent whole today, which is why things that change one at a time belong in objects keyed by id.
+2. **Matchmaking by skill and region; account recovery.**
 
 None of these is promised. They are here so that you can see where the edges are, and which of them are meant to move.

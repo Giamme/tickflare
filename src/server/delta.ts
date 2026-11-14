@@ -80,6 +80,8 @@ export class DeltaSender {
    * @param viewOf what one player sees, when the room has a custom view
    * @param named  whether a patch says which `seq` it is a patch of, so that a client that
    *               holds another can tell. For changes sent outside the simulation.
+   * @param shows  for the sockets whose commands this state is the first to show: the id of
+   *               the latest of them, which their frame then carries as `c`
    */
   send(
     sockets: SeatedSocket[],
@@ -88,6 +90,7 @@ export class DeltaSender {
     state: unknown,
     viewOf: ((playerId: string) => unknown) | undefined,
     named = false,
+    shows?: Map<WebSocket, number>,
   ): void {
     if (!viewOf && seq === this.#sentSeq && sockets.every(({ ws }) => this.#baselines.has(ws))) return;
     const head = `"seq":${seq},"tick":${tick}`;
@@ -96,10 +99,12 @@ export class DeltaSender {
     /** Sends a socket its update, and records what it then holds. */
     const deliver = (ws: WebSocket, update: Update): void => {
       const held = this.#seqs.get(ws);
+      const shown = shows?.get(ws);
+      const c = shown === undefined ? "" : `,"c":${shown}`;
       if (update.patch !== undefined) {
-        ws.send(`{"t":"patch",${head}${named && held !== undefined ? `,"from":${held}` : ""},"p":${update.patch}}`);
+        ws.send(`{"t":"patch",${head}${named && held !== undefined ? `,"from":${held}` : ""}${c},"p":${update.patch}}`);
       } else if (update.whole !== undefined) {
-        ws.send(`{"t":"state",${head},"state":${update.whole}}`);
+        ws.send(`{"t":"state",${head}${c},"state":${update.whole}}`);
       }
       baselines.set(ws, update.next);
       // A socket that was sent nothing still holds the view of the `seq` it had.

@@ -33,6 +33,8 @@ export {
   type Profile,
 } from "./accounts.js";
 export { Interpolator } from "./interpolate.js";
+export { Predictor, type PredictorOptions } from "./predict.js";
+export { produce } from "./draft.js";
 export { LockstepClient, type LockstepClientOptions } from "./lockstep.js";
 export {
   fingerprint,
@@ -125,6 +127,14 @@ export interface RoomClientOptions<View> {
   pingIntervalMs?: number;
 }
 
+/** A command on its way: sent, and not yet shown by the room's state. */
+export interface SentCommand<Command = unknown> {
+  /** The number it was sent under. They go up with every command. */
+  id: number;
+  /** The command. */
+  command: Command;
+}
+
 /** A command or leave the room refused, or one that was in flight when the connection dropped. */
 export class CommandRejected extends Error {
   /** What the room passed to `reject()`, or `not_connected` or `disconnected`. */
@@ -159,6 +169,8 @@ export class RoomClient<View = unknown, Command = unknown> {
   #socket: WebSocket | undefined;
   #nextId = 1;
   #pending = new Map<number, { resolve(): void; reject(error: Error): void }>();
+  /** Commands sent that `#state` does not show yet, oldest first. Replaced, never changed, so that it can be compared by reference. */
+  #unconfirmed: readonly SentCommand<Command>[] = [];
   #attempt = 0;
   #stopped = false;
   #retryTimer: ReturnType<typeof setTimeout> | undefined;
@@ -208,6 +220,17 @@ export class RoomClient<View = unknown, Command = unknown> {
   }
 
   /**
+   * The commands sent with `send` that `state` does not show yet, oldest
+   * first: the room has not applied them, or has and the news is on its way.
+   * A command leaves the list in the same moment `state` changes to show it,
+   * or when the room refuses it. `Predictor` draws them over `state`. The
+   * array is a new one whenever it changes.
+   */
+  get unconfirmed(): readonly SentCommand<Command>[] {
+    return this.#unconfirmed;
+  }
+
+  /**
    * Listen for `state`, `presence`, `message`, `status` or `moved`, in
    * addition to the `on…` options. Returns a function that stops listening,
    * which suits UI frameworks:
@@ -240,11 +263,15 @@ export class RoomClient<View = unknown, Command = unknown> {
 
   /**
    * Send a command. Resolves once the room applied it, by which time `state`
-   * already reflects it. Rejects with `CommandRejected` if the room refused
+   * already reflects it: at once in event mode, and with the next tick in a
+   * room that is ticking. Rejects with `CommandRejected` if the room refused
    * it or the connection dropped first.
    */
   send(command: Command): Promise<void> {
-    return this.#request((id) => ({ t: "cmd", id, data: command }));
+    return this.#request((id) => {
+      this.#unconfirmed = [...this.#unconfirmed, { id, command }];
+      return { t: "cmd", id, data: command };
+    });
   }
 
   /**
@@ -326,10 +353,7 @@ export class RoomClient<View = unknown, Command = unknown> {
   #closed(code: number, reason: string): void {
     this.#socket = undefined;
     this.#stopPing();
-    for (const pending of this.#pending.values()) {
-      pending.reject(new CommandRejected("disconnected"));
-    }
-    this.#pending.clear();
+    this.#forget();
 
     if (code === CloseCode.Moved && reason && !this.#stopped) {
       // Handed over to another room: same URL, with that room's id as the last path segment.
@@ -352,9 +376,35 @@ export class RoomClient<View = unknown, Command = unknown> {
     this.#retryTimer = setTimeout(() => this.#open(), backoff / 2 + Math.random() * (backoff / 2));
   }
 
+  /** What was in flight is lost: the connection is, or the room started again from its last save. */
+  #forget(): void {
+    for (const pending of this.#pending.values()) {
+      pending.reject(new CommandRejected("disconnected"));
+    }
+    this.#pending.clear();
+    if (this.#unconfirmed.length > 0) this.#unconfirmed = [];
+  }
+
+  /** The state about to be set shows this player's commands up to `id`: they are no longer unconfirmed. */
+  #shown(id: number | undefined): void {
+    if (id === undefined || this.#unconfirmed.length === 0) return;
+    const left = this.#unconfirmed.filter((sent) => sent.id > id);
+    if (left.length !== this.#unconfirmed.length) this.#unconfirmed = left;
+  }
+
+  /** Resolves the commands up to `id`, whose effect `state` now has. */
+  #resolveUpTo(id: number | undefined): void {
+    if (id === undefined) return;
+    for (const pending of [...this.#pending.keys()]) {
+      if (pending <= id) this.#settle(pending)?.resolve();
+    }
+  }
+
   #handle(message: ServerMessage<View>): void {
     switch (message.t) {
       case "welcome": {
+        // On a connection that was open already: the room came back from its last save.
+        this.#forget();
         this.#attempt = 0;
         this.#you = message.you;
         this.#players = message.players;
@@ -368,7 +418,9 @@ export class RoomClient<View = unknown, Command = unknown> {
       }
       case "state":
         if (message.tick !== undefined) this.#tick = message.tick;
+        this.#shown(message.c);
         this.#setState(message.state, message.seq);
+        this.#resolveUpTo(message.c);
         break;
       case "patch":
         if (message.from !== undefined && message.from !== this.#seq) {
@@ -378,16 +430,24 @@ export class RoomClient<View = unknown, Command = unknown> {
           break;
         }
         this.#tick = message.tick;
+        this.#shown(message.c);
         this.#setState(applyPatch(this.#state as View, message.p), message.seq);
+        this.#resolveUpTo(message.c);
         break;
       case "presence":
         this.#players = message.players;
         this.#emit("presence", this.#players);
         break;
       case "ack":
+        // The view is of this tick even if nothing in it changed and no frame said so.
+        if (message.tick !== undefined && message.tick > this.#tick) this.#tick = message.tick;
+        this.#shown(message.id);
         this.#settle(message.id)?.resolve();
         break;
       case "reject":
+        if (this.#unconfirmed.some((sent) => sent.id === message.id)) {
+          this.#unconfirmed = this.#unconfirmed.filter((sent) => sent.id !== message.id);
+        }
         this.#settle(message.id)?.reject(new CommandRejected(message.reason));
         break;
       case "error":

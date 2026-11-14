@@ -234,6 +234,10 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
   #signals: Signal[] = [];
   /** Messages for players, as frames, waiting for the end of the event. `to` null is everyone. */
   #mail: { to: string | null; frame: string }[] = [];
+  /** While ticking: the commands each socket has had applied and not yet been told about. */
+  #owed = new Map<WebSocket, number[]>();
+  /** The command being handled, and who sent it. */
+  #answering: { ws: WebSocket; id: number } | undefined;
   /** Work for after the event, from `defer`. */
   #deferred: (() => unknown)[] = [];
   /** Deferred tasks that have started and not finished. */
@@ -859,31 +863,36 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     // One connection per player: the newest wins.
     this.#replaceSockets(playerId);
     this.ctx.acceptWebSocket(server, [playerId]);
+    this.#welcome(server, player, this.#loop !== undefined);
+    this.#broadcastPresence(server);
 
+    return new Response(null, { status: 101, webSocket: client });
+  }
+
+  /** Sends a socket everything from the start: who they are, the players and their whole view. */
+  #welcome(ws: WebSocket, player: Player, ticking: boolean): void {
     const welcome = JSON.stringify({
       t: "welcome",
       v: PROTOCOL_VERSION,
-      you: playerId,
+      you: player.id,
       seq: this.#seq,
       tick: this.#tick,
       tickRate: this.tickRate,
       state: this.view(player),
       players: this.players,
     } satisfies ServerMessage);
-    server.send(welcome);
-    if (this.#loop !== undefined || this.view !== Room.prototype.view) {
+    ws.send(welcome);
+    if (ticking || this.view !== Room.prototype.view) {
       // Remember exactly what this socket has, as a copy the room cannot touch. Outside the
       // simulation and without a custom view there is no need: it has the state as it is saved.
-      this.#deltas.remember(server, (JSON.parse(welcome) as { state: unknown }).state, this.#seq);
+      this.#deltas.remember(ws, (JSON.parse(welcome) as { state: unknown }).state, this.#seq);
     }
-    this.#broadcastPresence(server);
-
-    return new Response(null, { status: 101, webSocket: client });
   }
 
   /** Closes a player's open connections because a newer one is taking over. */
   #replaceSockets(playerId: string): void {
     for (const old of this.ctx.getWebSockets(playerId)) {
+      this.#owed.delete(old);
       try {
         // Marked, so that its close is not taken for the player dropping.
         old.serializeAttachment({ replaced: true });
@@ -925,11 +934,15 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
 
     const player: Player = { id: playerId, connected: true };
     let outcome: Outcome;
+    // While the simulation runs, what a command changed is sent with the next tick.
+    const ticking = this.#loop !== undefined;
     if (frame.t === "leave") {
       outcome = this.#apply(() => {
         this.onLeave(player);
         this.removePlayer(playerId, "left");
       });
+      // They are going: what they were still waiting to hear is said now.
+      if (outcome.ok) this.#answer(ws);
     } else {
       let command: Command;
       try {
@@ -938,14 +951,38 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
         const reason = err instanceof Rejection ? err.reason : "invalid_command";
         return this.#send(ws, { t: "reject", id: frame.id, reason });
       }
-      outcome = this.#apply(() => this.onCommand(player, command));
+      // If this changes what the player sees, the frame that says so says whose command it shows.
+      this.#answering = { ws, id: frame.id };
+      try {
+        outcome = this.#apply(() => this.onCommand(player, command));
+      } finally {
+        this.#answering = undefined;
+      }
     }
 
     if (!outcome.ok) {
       return this.#send(ws, { t: "reject", id: frame.id, reason: outcome.reason });
     }
-    // The state frame, if any, has already gone out: an ack means "you have seen the result".
+    if (ticking && frame.t === "cmd") {
+      // An ack means "you have seen the result", and the result goes out with the tick.
+      const owed = this.#owed.get(ws);
+      if (owed) owed.push(frame.id);
+      else this.#owed.set(ws, [frame.id]);
+      return;
+    }
+    // The state frame, if any, has already gone out.
     this.#send(ws, { t: "ack", id: frame.id, seq: this.#seq });
+  }
+
+  /** Acks the commands `ws` is still owed an answer to, or everyone's. */
+  #answer(ws?: WebSocket): void {
+    if (this.#owed.size === 0) return;
+    const owed = ws ? new Map([[ws, this.#owed.get(ws) ?? []]]) : this.#owed;
+    if (ws) this.#owed.delete(ws);
+    else this.#owed = new Map();
+    for (const [to, ids] of owed) {
+      for (const id of ids) this.#send(to, { t: "ack", id, seq: this.#seq, tick: this.#tick });
+    }
   }
 
   #dropped(ws: WebSocket): void {
@@ -1176,6 +1213,23 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     // Start from the JSON round-trip, so new and resumed rooms behave the same.
     this.#restore();
     this.#loaded = true;
+
+    // A room that comes back with its simulation due and players connected was taken out of
+    // memory while it ran. It resumes from its last save, which is older than what the players
+    // hold, and whatever they were waiting to hear is gone with the old instance. So each of them
+    // starts again from the whole view, as after a reconnect, without having to reconnect.
+    if (this.tickRate > 0) {
+      const sockets = this.#seatedSockets();
+      if (sockets.length > 0 && this.#wantsTicks(true)) {
+        for (const { ws, id } of sockets) {
+          try {
+            this.#welcome(ws, { id, connected: true }, true);
+          } catch (err) {
+            console.error(`[tickflare] could not send the state to ${id}:`, err);
+          }
+        }
+      }
+    }
 
     // Seats left by players who dropped while no timeout was running for them (the option was
     // added or shortened since, or the room was torn down mid-event) get one now.
@@ -1421,6 +1475,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     if (!custom && !this.#deltas.knows(sockets) && !this.#wantsTicks(true)) {
       this.#deltas.seed(sockets, this.#seq - 1, () => JSON.parse(before) as unknown);
     }
+    const answering = this.#answering;
     this.#deltas.send(
       sockets,
       this.#seq,
@@ -1428,19 +1483,29 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
       this.#state,
       custom ? (id) => this.view({ id, connected: true }) : undefined,
       true,
+      answering && new Map([[answering.ws, answering.id]]),
     );
   }
 
   /** Sends everyone what changed in their view since the last tick. */
   #broadcastTick(): void {
     const custom = this.view !== Room.prototype.view;
+    // Commands handled since the last tick: this is the state that shows them.
+    let shows: Map<WebSocket, number> | undefined;
+    if (this.#owed.size > 0) {
+      shows = new Map();
+      for (const [ws, ids] of this.#owed) shows.set(ws, ids[ids.length - 1]!);
+    }
     this.#deltas.send(
       this.#seatedSockets(),
       this.#seq,
       this.#tick,
       this.#state,
       custom ? (id) => this.view({ id, connected: true }) : undefined,
+      false,
+      shows,
     );
+    this.#answer();
   }
 
   #broadcastPresence(except?: WebSocket): void {
