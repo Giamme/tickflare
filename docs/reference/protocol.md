@@ -65,6 +65,8 @@ The TypeScript types for every frame are exported from `tickflare` as `ClientMes
 
 A client of version 3 is sent whichever form is shorter, so it has to read both. The whole list also comes when the room no longer knows what its players hold, after it was out of memory.
 
+In a room with more than 64 connections, the room tells who is here at most ten times a second: players who arrive or drop in the same moment are told of together, in one frame. A client that connected in between is sent the whole list with that frame.
+
 ## Patches
 
 A patch mirrors the shape of the view it changes. For each key it holds one of:

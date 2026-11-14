@@ -206,6 +206,8 @@ func _test_event_room(server: String) -> void:
 	_check(plain.unconfirmed.is_empty() and packed.unconfirmed.is_empty(), "nothing is left unconfirmed")
 
 	# Who is there is told as it changes: a third player comes, drops, comes back and leaves.
+	# The first two came together, so which of them is first is the room's to say.
+	var two: Array = plain.players.duplicate(true)
 	var third := _join("%s/shapes/%s?player=p3" % [server, room_name])
 	await _until(func() -> bool: return plain.players.size() == 3 and packed.players.size() == 3, "a third player")
 	_check_same(packed.players, plain.players, "both know the third player")
@@ -218,7 +220,8 @@ func _test_event_room(server: String) -> void:
 	var gone: Dictionary = await again.leave()
 	_check(gone["ok"], "the third player may leave")
 	await _until(func() -> bool: return plain.players.size() == 2 and packed.players.size() == 2, "the third to be seen leaving")
-	_check_same(packed.players, [{"id": "p1", "connected": true}, {"id": "p2", "connected": true}], "the two who stayed, in the order they came")
+	_check_same(packed.players, two, "the two who stayed, in the order they came")
+	_check_same(plain.players, two, "the same two for the other client")
 	third.queue_free()
 	again.queue_free()
 

@@ -2,8 +2,8 @@ import { evictDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RoomClient } from "../src/client/index.js";
-import { PROTOCOL_VERSION, type Player } from "../src/protocol.js";
-import { connect, freshRoom, sleep, until } from "./helpers.js";
+import { PROTOCOL_VERSION, type Player, type ServerMessage } from "../src/protocol.js";
+import { connect, freshRoom, sleep, until, upgrade } from "./helpers.js";
 import { WorkerSocket } from "./worker-socket.js";
 
 /** Rooms in which a join changes nothing but who is there. */
@@ -86,6 +86,61 @@ describe("presence", () => {
     // From here on it knows again.
     p3.leave();
     expect(await p1.next("presence")).toEqual({ t: "presence", gone: ["p3"] });
+  });
+});
+
+describe("presence in a crowded room", () => {
+  /** A seat that only counts the presence frames it is sent and keeps the list they lead to. */
+  async function seat(room: string, player: string) {
+    const response = await upgrade(`${ROOMS}/${room}?player=${player}&v=3`);
+    const ws = response.webSocket!;
+    let players: Player[] = [];
+    let told = 0;
+    ws.addEventListener("message", (event) => {
+      const frame = JSON.parse(event.data as string) as ServerMessage;
+      if (frame.t === "welcome") players = frame.players;
+      if (frame.t !== "presence") return;
+      told += 1;
+      if (frame.players) {
+        players = frame.players;
+        return;
+      }
+      const gone = new Set(frame.gone ?? []);
+      const set = new Map((frame.set ?? []).map((player) => [player.id, player]));
+      players = players.filter((player) => !gone.has(player.id)).map((player) => set.get(player.id) ?? player);
+      for (const player of frame.set ?? []) if (!players.some((known) => known.id === player.id)) players.push(player);
+    });
+    ws.accept();
+    return { ws, players: () => players, told: () => told };
+  }
+  const names = (players: Player[]) => players.map((player) => `${player.id}${player.connected ? "" : "-"}`).join(" ");
+
+  it("tells of many who come or go at once in a few frames, and everyone ends with the same list", async () => {
+    const room = freshRoom();
+    const crowd: Awaited<ReturnType<typeof seat>>[] = [];
+    for (let n = 0; n < 70; n++) crowd.push(await seat(room, `c${n}`));
+    await until(() => crowd[0]!.players().length === 70, "the crowd");
+    await sleep(150);
+    const before = crowd[0]!.told();
+
+    // Thirty more in one moment.
+    const late = await Promise.all(Array.from({ length: 30 }, (_, n) => seat(room, `l${n}`)));
+    await until(() => crowd.concat(late).every((one) => one.players().length === 100), "everyone to know all hundred");
+    await sleep(250);
+    // One frame for the first of them and a few for the rest together, where it used to be thirty.
+    expect(crowd[0]!.told() - before).toBeLessThanOrEqual(8);
+    const list = names(crowd[0]!.players());
+    for (const one of crowd.concat(late)) expect(names(one.players())).toBe(list);
+    expect(list.startsWith("c0 c1 c2 ")).toBe(true);
+
+    // And when they all drop at once.
+    const told = crowd[0]!.told();
+    for (const one of late) one.ws.close(1000, "bye");
+    await until(() => crowd[0]!.players().filter((player) => !player.connected).length === 30, "the drops");
+    await sleep(250);
+    expect(crowd[0]!.told() - told).toBeLessThanOrEqual(8);
+    for (const one of crowd) expect(names(one.players())).toBe(names(crowd[0]!.players()));
+    for (const one of crowd) one.ws.close(1000, "test_done");
   });
 });
 

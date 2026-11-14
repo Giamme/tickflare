@@ -6,6 +6,7 @@
 
 - Every join, drop and leave used to send every player the whole list of players. In a full room that is what a join cost: for a thousand players, a thousand frames of a thousand players each, and it is what broke rooms of that size when we measured on Cloudflare.
 - This is version 3 of the protocol. A `presence` frame can now say who is new or different, in `set`, and who is gone, in `gone`, in place of `players`. `RoomClient` and the Godot and Unity clients ask for it; a client that asks for version 1 or 2 is sent the whole list as before. `PresenceFrame.players` is optional in the types for that reason.
+- In a room with more than 64 connections, who is here is told at most ten times a second, so players who arrive or drop in the same moment are one frame to everyone and not one each. Smaller rooms are told of every change at once, as before.
 
 **A ticking room closes connections that have gone silent.**
 

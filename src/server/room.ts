@@ -71,6 +71,15 @@ const V2_TAG = "\u0001v=2";
 /** Marks the socket of a client that speaks version 3: it is told who came and went, not the whole list of players. */
 const V3_TAG = "\u0001v=3";
 const isMark = (tag: string) => tag.charCodeAt(0) === 1;
+/**
+ * In a room with more than `PRESENCE_CROWD` connections, the least time
+ * between two tellings of who is here, in milliseconds. What changes sooner
+ * than that after the last is told together when it is up: a hundred players
+ * who arrive or drop in the same moment are one frame to everyone, not a
+ * hundred. In a smaller room every change is told at once.
+ */
+const PRESENCE_GAP_MS = 100;
+const PRESENCE_CROWD = 64;
 /** Prefix of every timer name the kernel keeps for itself. */
 const KERNEL_TIMER = "tickflare:";
 /** Prefix of the kernel's own timers, which give up the seats of players who stay away. */
@@ -284,6 +293,15 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
    * time the whole list goes out.
    */
   #told: Map<string, Player> | undefined;
+  /** When who is here was last told to everyone. */
+  #toldAt = 0;
+  /** Set while a telling is put off until `PRESENCE_GAP_MS` after the last. */
+  #tellLater: ReturnType<typeof setTimeout> | undefined;
+  /**
+   * The connections welcomed since the last telling. Each holds the list as
+   * it was when it connected, which is not what `#told` says.
+   */
+  #welcomed = new Set<WebSocket>();
   /** Finished matches announced by the current hook, not yet committed. */
   #finished: { message: MatchResult; replay?: string }[] = [];
   /** There are finished matches or handovers in storage that still have to be delivered. */
@@ -927,6 +945,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
       players: this.players,
     } satisfies ServerMessage);
     ws.send(welcome);
+    this.#welcomed.add(ws);
     if (ticking || this.view !== Room.prototype.view) {
       // Remember exactly what this socket has, as a copy the room cannot touch. Outside the
       // simulation and without a custom view there is no need: it has the state as it is saved.
@@ -1599,14 +1618,40 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
    * room of a thousand is a thousand frames of a thousand players each.
    */
   #broadcastPresence(except?: WebSocket): void {
+    const sockets = this.#seatedSockets();
+    const now = Date.now();
+    const wait = this.#toldAt + PRESENCE_GAP_MS - now;
+    if (wait > 0 && sockets.length > PRESENCE_CROWD) {
+      // Told a moment ago. This goes out with whatever else changes until the moment is up.
+      this.#tellLater ??= setTimeout(() => {
+        this.#tellLater = undefined;
+        try {
+          this.#broadcastPresence();
+        } catch (err) {
+          console.error("[tickflare] could not tell the players who is here:", err);
+        }
+      }, wait);
+      return;
+    }
+    if (this.#tellLater !== undefined) {
+      clearTimeout(this.#tellLater);
+      this.#tellLater = undefined;
+    }
+    this.#toldAt = now;
+    // Whoever connected since the last telling has the list of that moment, which a change
+    // counted from the last telling would not bring up to date: they get the whole list. The
+    // one whose joining this tells of has it as it is now.
+    const fresh = this.#welcomed;
+    this.#welcomed = new Set();
+
     const players = this.players;
     const change = this.#presenceChange(players);
     let whole: string | undefined;
     let brief: string | undefined;
-    for (const { ws } of this.#seatedSockets()) {
+    for (const { ws } of sockets) {
       if (ws === except) continue;
       let frame: string;
-      if (change !== "whole" && this.ctx.getTags(ws).includes(V3_TAG)) {
+      if (change !== "whole" && !fresh.has(ws) && this.ctx.getTags(ws).includes(V3_TAG)) {
         // Nothing they do not know already.
         if (!change) continue;
         frame = brief ??= JSON.stringify({ t: "presence", ...change } satisfies ServerMessage);

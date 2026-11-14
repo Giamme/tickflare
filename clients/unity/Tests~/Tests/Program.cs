@@ -522,17 +522,20 @@ namespace Tickflare.Tests
             Check(plain.Unconfirmed.Count == 0 && packed.Unconfirmed.Count == 0, "nothing is left unconfirmed");
 
             // Who is there is told as it changes: a third player comes, drops, comes back and leaves.
+            // The first two came together, so which of them is first is the room's to say.
+            string two = Names(plain.Players);
+            CheckSame(Names(packed.Players), two, "both know each other, in the same order");
             TickflareRoom third = Join(server + "/shapes/" + name + "?player=p3");
             await Until(() => plain.Players.Count == 3 && packed.Players.Count == 3, "a third player");
-            CheckSame(Names(packed.Players), "p1, p2, p3", "the third player is last, and connected");
-            CheckSame(Names(plain.Players), Names(packed.Players), "both know the third player");
+            CheckSame(Names(packed.Players), two + ", p3", "the third player is last, and connected");
+            CheckSame(Names(plain.Players), two + ", p3", "both know the third player");
             Done(third);
-            await Until(() => Names(plain.Players) == "p1, p2, p3 (away)" && Names(packed.Players) == "p1, p2, p3 (away)", "the third to be seen dropping");
+            await Until(() => Names(plain.Players) == two + ", p3 (away)" && Names(packed.Players) == two + ", p3 (away)", "the third to be seen dropping");
             TickflareRoom again = Join(server + "/shapes/" + name + "?player=p3");
-            await Until(() => again.Status == TickflareStatus.Open && Names(plain.Players) == "p1, p2, p3" && Names(packed.Players) == "p1, p2, p3", "the third to be seen coming back");
-            CheckSame(Names(again.Players), "p1, p2, p3", "the one who came back knows everyone");
+            await Until(() => again.Status == TickflareStatus.Open && Names(plain.Players) == two + ", p3" && Names(packed.Players) == two + ", p3", "the third to be seen coming back");
+            CheckSame(Names(again.Players), two + ", p3", "the one who came back knows everyone");
             Check(await Answer(again.LeaveAsync()) == null, "the third player may leave");
-            await Until(() => Names(plain.Players) == "p1, p2" && Names(packed.Players) == "p1, p2", "the third to be seen leaving");
+            await Until(() => Names(plain.Players) == two && Names(packed.Players) == two, "the third to be seen leaving");
             Done(again);
 
             Done(plain, packed);
