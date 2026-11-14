@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+**Clients for Godot and Unity.**
+
+- `clients/godot` is a client in GDScript for Godot 4, and `clients/unity` one in C# for Unity 2021.3 and later, as a package with no dependencies. Both connect and reconnect, keep the room's state up to date from JSON or binary patches, send commands and report the room's answer, and follow a player who is moved to another room. They ask for binary patches by default. Lockstep, prediction and interpolation remain in the TypeScript client only.
+- Both are tested in CI against a Worker with two of the test rooms: the Godot client in Godot 4.5, the Unity client compiled as Unity compiles it and run on .NET.
+
 **Arrays are patched element by element.** An array that changed was sent whole, however little of it changed, which made `units: Unit[]` the expensive way to write a state.
 
 - A change to an array is now `[changes, length]` in a patch: the elements that changed, by index, and the array's new length. A unit that moves costs its new position, in an array as in an object. An array whose elements shifted, because one was taken out before the end, is still sent whole, so things that come and go are still better kept in an object keyed by id.

@@ -376,9 +376,9 @@ export class Zone extends Room<State, Command, Env> {
 <div class="tf-recipe">
 <div>
 
-### Clients outside the browser
+### Godot and Unity
 
-The protocol is JSON over one WebSocket, and it is written down. A client in an engine whose WebSocket is not compressed can ask for its patches in binary, a little over a third of the size, and check its decoder against the test vectors. [Wire protocol](/reference/protocol#binary-patches)
+Both have a client: connect, reconnect, the state kept up to date, commands with the room's answer. They ask for their patches in binary, a little over a third of the size, because an engine's WebSocket is not compressed. For other engines the protocol is written down, with test vectors. [Godot and Unity](/guide/engines)
 
 </div>
 <div>

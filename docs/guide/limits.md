@@ -14,7 +14,7 @@ Every limit here is one of three kinds: Cloudflare's, which nobody can lift; Tic
 | A room nobody is in | Stands still and stays, until your code says otherwise | Tickflare |
 | Storage | 10 GB a room, 10 GB for accounts and match history | Cloudflare |
 | Where a room runs | Where it was created; it does not move | Cloudflare |
-| Clients | TypeScript and JavaScript | Not built |
+| Clients | TypeScript, Godot and Unity; lockstep and prediction in TypeScript only | Not built |
 
 Cloudflare's own numbers are on its [Durable Objects limits](https://developers.cloudflare.com/durable-objects/platform/limits/) page.
 
@@ -191,7 +191,9 @@ Seeing across a border is a recipe built on `signal`, not something a room does 
 
 ## Clients
 
-The client is TypeScript, for browsers and Node. There is none for Unity, Godot or native code. [The protocol](../reference/protocol) is JSON over a WebSocket and is written down, so one can be written. For an engine whose WebSocket is not compressed there are [binary patches](../reference/protocol#binary-patches), with test vectors to check a decoder against. What `Predictor`, `Interpolator` and `LockstepClient` do, such a client has to do for itself.
+The full client is TypeScript, for browsers and Node. The clients for [Godot and Unity](./engines) connect, reconnect, keep the state and send commands, in event mode and state sync: what `Predictor`, `Interpolator` and `LockstepClient` do, a game in those engines has to do for itself for now. Neither has been used in a shipped game yet. The Unity client is tested on .NET and not inside the Unity editor, and a WebGL build needs a socket of its own.
+
+There is no client for native code or other engines. [The protocol](../reference/protocol) is JSON over a WebSocket and is written down, so one can be written. For an engine whose WebSocket is not compressed there are [binary patches](../reference/protocol#binary-patches), with test vectors to check a decoder against.
 
 ## How far it has been tested
 

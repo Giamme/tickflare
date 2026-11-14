@@ -53,7 +53,10 @@ const guide: DefaultTheme.SidebarItem[] = [
   },
   {
     text: "Client",
-    items: [{ text: "Connecting from the client", link: "/guide/client" }],
+    items: [
+      { text: "Connecting from the client", link: "/guide/client" },
+      { text: "Godot and Unity", link: "/guide/engines" },
+    ],
   },
   {
     text: "Shipping",
