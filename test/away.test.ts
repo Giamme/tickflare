@@ -20,7 +20,7 @@ describe("seatTimeoutMs", () => {
     const { room, p1, p2 } = await pair();
     p2.ws.close(1000, "bye");
     expect((await p1.next("state")).state.log).toContain("leave:p2");
-    expect((await p1.next("presence")).players[1]).toEqual({ id: "p2", connected: false });
+    expect((await p1.next("presence")).players![1]).toEqual({ id: "p2", connected: false });
 
     // 150 ms later the seat is gone, and onLeave has run.
     expect((await p1.next("state")).state.log.slice(-1)).toEqual(["left:p2"]);

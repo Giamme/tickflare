@@ -2,7 +2,7 @@
 
 Rooms and clients talk over one WebSocket per player, in JSON text frames. `tickflare/client` speaks this protocol for you; this page is for writing a client in another language, and for reading frames in your browser's developer tools.
 
-The protocol is at version 2. A client says which version it speaks with `v` in the query when it connects, `?v=2`, and the room's `welcome` frame says which one it will use on that connection: the one asked for, or its own latest if that is older. A client that does not say is spoken to in version 1, so a client written for version 1 goes on working. Version 2 added [array patches](#patches).
+The protocol is at version 3. A client says which version it speaks with `v` in the query when it connects, `?v=3`, and the room's `welcome` frame says which one it will use on that connection: the one asked for, or its own latest if that is older. A client that does not say is spoken to in version 1, so a client written for version 1 goes on working. Version 2 added [array patches](#patches). Version 3 added [presence as changes](#presence).
 
 Offer `permessage-deflate` when you connect, as browsers do. Cloudflare then compresses the frames, which makes patches of rounded numbers four to five times smaller on the wire; a client that does not offer it is sent them as they are. If your WebSocket library cannot do that, ask for [binary patches](#binary-patches) instead, which are a little over a third of the size of the JSON ones.
 
@@ -22,6 +22,8 @@ The room's first frame on every connection, reconnects included, is `welcome`.
 
 Send a `ping` every 25 seconds or so. A connection that hears nothing back for a whole interval is best treated as dead.
 
+The room does the same from its side while it is ticking: a connection that has sent nothing for two minutes, neither a frame nor a `ping`, is closed with code 4100. A room that is not ticking is asleep and closes nobody. A game can change the two minutes with `silentAfterMs`, so a client written for one game should not send its `ping`s much further apart than every 25 seconds.
+
 ## Room to client
 
 | Frame | Meaning |
@@ -29,7 +31,7 @@ Send a `ping` every 25 seconds or so. A connection that hears nothing back for a
 | `{ "t": "welcome", "v", "you", "seq", "tick", "tickRate", "state", "players" }` | First frame on every connection |
 | `{ "t": "patch", "seq", "tick", "from"?, "c"?, "p" }` | The state changed: only the difference from what this player last received |
 | `{ "t": "state", "seq", "tick", "c"?, "state" }` | The state changed, and this is the player's whole view: the room does not know what they hold, or the view is not an object |
-| `{ "t": "presence", "players" }` | Someone joined, dropped or came back |
+| `{ "t": "presence", "players" }` or `{ "t": "presence", "set"?, "gone"? }` | Someone joined, dropped, came back or left: see [Presence](#presence) |
 | `{ "t": "ack", "id", "seq", "tick"? }` | The command or leave with this `id` was applied, and the view the player holds shows it |
 | `{ "t": "reject", "id", "reason" }` | The command or leave with this `id` was refused; nothing changed |
 | `{ "t": "msg", "d" }` | A message the room sent with `send` or `broadcast` |
@@ -49,6 +51,20 @@ Fields:
 
 The TypeScript types for every frame are exported from `tickflare` as `ClientMessage`, `ServerMessage` and the individual frame types (`WelcomeFrame`, `PatchFrame`, …).
 
+## Presence
+
+`players` in the `welcome` frame is everyone with a seat, in the order they joined, each as `{ "id", "connected", "name"? }`. A `presence` frame keeps that list current, in one of two forms:
+
+```json
+{ "t": "presence", "players": [{ "id": "ada", "connected": true }, { "id": "bo", "connected": false }] }
+{ "t": "presence", "set": [{ "id": "bo", "connected": true }, { "id": "cy", "connected": true }], "gone": ["ada"] }
+```
+
+- With `players`, the frame is the whole list: replace yours with it. This is the only form a client of version 1 or 2 is sent.
+- Without it, the frame says what changed. Take out the players whose ids are in `gone`. Then, for each player in `set`: one whose id the list already has replaces the entry it has, where it is; one it does not have is new, and goes to the end, in the order `set` gives them.
+
+A client of version 3 is sent whichever form is shorter, so it has to read both. The whole list also comes when the room no longer knows what its players hold, after it was out of memory.
+
 ## Patches
 
 A patch mirrors the shape of the view it changes. For each key it holds one of:
@@ -66,7 +82,7 @@ This patch moves unit `u7`, removes unit `u3`, sets `phase`, and makes `path` th
 
 ## Binary patches
 
-A client can ask for its patches in binary: add `patches=b1` to the query when it connects, `wss://my-game.example/rooms/lobby?token=<token>&v=2&patches=b1`. Every `patch` frame then arrives as a binary WebSocket message in the format below. Everything else stays as it is: `welcome`, `state`, `presence`, `ack`, `reject`, `msg` and `error` are JSON text messages, and so is everything the client sends. A patch that cannot be said in binary is sent as JSON, so read whichever arrives: a text message is JSON, a binary message is a patch.
+A client can ask for its patches in binary: add `patches=b1` to the query when it connects, `wss://my-game.example/rooms/lobby?token=<token>&v=3&patches=b1`. Every `patch` frame then arrives as a binary WebSocket message in the format below. Everything else stays as it is: `welcome`, `state`, `presence`, `ack`, `reject`, `msg` and `error` are JSON text messages, and so is everything the client sends. A patch that cannot be said in binary is sent as JSON, so read whichever arrives: a text message is JSON, a binary message is a patch.
 
 It is for clients whose WebSocket is not compressed, such as the ones for [Godot and Unity](../guide/engines), whose decoders are two more to read: [GDScript](https://github.com/Giamme/tickflare/blob/main/clients/godot/addons/tickflare/tickflare_binary.gd) and [C#](https://github.com/Giamme/tickflare/blob/main/clients/unity/Runtime/TickflareBinaryReader.cs). Compressed, the JSON is already smaller than these frames are uncompressed; [the measurements](../guide/limits#bandwidth) are in the guide. `RoomClient` asks for binary with its `binary` option, and `decodePatchFrame`, exported from `tickflare` and `tickflare/client`, is the reference decoder.
 
@@ -148,8 +164,9 @@ If a frame does not read as this format, or uses a key number you have no name f
 | 4002 | Join refused by `onJoin`, or `not_invited` to a reserved room. The reason says why | no |
 | 4003 | The seat is gone: `left`, `away`, or the reason given to `removePlayer` | no |
 | 4004 | Moved to another room, whose id is the close reason | yes, to that room |
+| 4100 | Silent: a ticking room heard nothing on the connection for two minutes and took it for dead | yes |
 
-Any other close is unexpected: reconnect with a backoff. Codes 4000 to 4099 are reserved for the room.
+Any other close is unexpected: reconnect with a backoff. Codes 4000 to 4099 are reserved for the room, and are the ones not to reconnect after, 4004 apart.
 
 ## Matchmaking
 

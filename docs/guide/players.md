@@ -31,6 +31,8 @@ leave() ──────────▶ seat given up ◀───────
 
 **Dropping and coming back.** When a seated player's last connection closes, `onDisconnect(player)` runs and they keep their seat. When they connect again, `onReconnect(player)` runs and they get the current state in the first frame. There is nothing to replay.
 
+**Going silent.** A connection can die without the room being told: a phone out of signal, a laptop lid. While a room is ticking it closes any connection that has sent nothing for two minutes, not even the keepalive the client sends every 25 seconds, and the player is away as after any other drop. This matters for the bill as much as for the game: a room ticks, and is billed, for as long as it believes someone is connected. `silentAfterMs` changes the two minutes, and 0 turns it off.
+
 **Leaving.** A player who calls `room.leave()` on the client gives up their seat. `onLeave(player)` runs first, with `player.connected` true. Tidy up their part of the state there, or call `reject(reason)` to make them stay (the client's `leave()` then rejects with that reason). When `onLeave` returns, the seat is gone and the connection is closed with `CloseCode.Removed` and `left`. A later connection from them is a new join.
 
 **Timing out.** Set `seatTimeoutMs` and a player who stays away that long loses their seat as if they had left: `onLeave(player)` runs, with `player.connected` false, and the seat is freed with the reason `away`.

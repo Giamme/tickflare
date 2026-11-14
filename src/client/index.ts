@@ -471,7 +471,7 @@ export class RoomClient<View = unknown, Command = unknown> {
         this.#resolveUpTo(message.c);
         break;
       case "presence":
-        this.#players = message.players;
+        this.#players = message.players ?? withPresence(this.#players, message.set, message.gone);
         this.#emit("presence", this.#players);
         break;
       case "ack":
@@ -554,4 +554,20 @@ export class RoomClient<View = unknown, Command = unknown> {
     this.#status = status;
     this.#emit("status", status, detail);
   }
+}
+
+/** The list of players after a `presence` frame that says what changed: a new array, in join order. */
+function withPresence(players: Player[], set: Player[] = [], gone: string[] = []): Player[] {
+  const changed = new Map(set.map((player) => [player.id, player]));
+  const left = new Set(gone);
+  const out: Player[] = [];
+  for (const player of players) {
+    if (left.has(player.id)) continue;
+    const now = changed.get(player.id);
+    out.push(now ?? player);
+    if (now) changed.delete(player.id);
+  }
+  // Whoever is left is new, and goes to the end in the order the room gave.
+  for (const player of set) if (changed.has(player.id)) out.push(player);
+  return out;
 }

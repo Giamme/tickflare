@@ -469,6 +469,15 @@ export class RegionalMatchmaker extends TestMatchmaker {
   }
 }
 
+/** TickRoom that takes a connection for dead after 600 ms of silence, and writes down who dropped. */
+export class QuietRoom extends TickRoom {
+  protected override silentAfterMs = 600;
+
+  protected override onDisconnect(player: Player): void {
+    this.state.log.push(`gone:${player.id}`);
+  }
+}
+
 /** Signs the join tokens accepted under /secure. */
 export const TEST_SECRET = "test-secret-0123456789";
 
@@ -678,6 +687,7 @@ export default {
       (await routeToRoom(request, { rooms: env.NAMES, prefix: "/greet", authenticate: whoIs })) ??
       (await routeToRoom(request, { rooms: env.ROOMS, authenticate: whoIs })) ??
       (await routeToRoom(request, { rooms: env.TICKS, prefix: "/ticks", authenticate: whoIs })) ??
+      (await routeToRoom(request, { rooms: env.QUIET, prefix: "/quiet", authenticate: whoIs })) ??
       (await routeToRoom(request, { rooms: env.TURNS, prefix: "/turns", authenticate: whoIs })) ??
       (await routeToRoom(request, { rooms: env.ASKED, prefix: "/asked", authenticate: whoIs })) ??
       (await routeToRoom(request, { rooms: env.SNAPS, prefix: "/snaps", authenticate: whoIs })) ??

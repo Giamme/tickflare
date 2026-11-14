@@ -75,7 +75,7 @@ It stops, with `closed`, after the close codes that mean trying again won't help
 
 `binary: true` asks the room for its patches [in binary](../reference/protocol#binary-patches). Leave it off in a browser and in Node: the connection is compressed there, so it saves little, and JSON frames can be read in the developer tools. It exists for clients in engines whose WebSocket does not compress, and this client is how the format is tested.
 
-A keepalive goes out every 25 seconds (`pingIntervalMs`). A connection that goes a whole interval without hearing anything back is taken for dead and replaced, so a phone that changed networks reconnects in seconds instead of minutes.
+A keepalive goes out every 25 seconds (`pingIntervalMs`). Keep it well under the room's `silentAfterMs`, two minutes by default: a ticking room [closes a connection](./players) it has heard nothing from for that long. A connection that goes a whole interval without hearing anything back is taken for dead and replaced, so a phone that changed networks reconnects in seconds instead of minutes.
 
 ### Tokens
 

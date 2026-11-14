@@ -19,7 +19,7 @@ const freshRoom = () => `r${stamp}-${rooms++}`;
 const report = (result) => console.log("RESULT " + JSON.stringify(result));
 
 function open(prefix, room, n, { deflate = true, binary = false } = {}) {
-  const url = `${BASE}${prefix}/${room}?player=p${n}&v=2${binary ? "&patches=b1" : ""}&key=${KEY}`;
+  const url = `${BASE}${prefix}/${room}?player=p${n}&v=3${binary ? "&patches=b1" : ""}&key=${KEY}`;
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(url, { perMessageDeflate: deflate, handshakeTimeout: 20_000 });
     ws.once("open", () => {

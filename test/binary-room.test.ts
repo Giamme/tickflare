@@ -2,6 +2,7 @@ import { evictDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RoomClient } from "../src/client/index.js";
+import { PROTOCOL_VERSION } from "../src/protocol.js";
 import { connect, follow, freshRoom, until, type Connection } from "./helpers.js";
 import { initialShapes, SCRIPTS, type Holder, type Shapes } from "./shapes.js";
 import { WorkerSocket } from "./worker-socket.js";
@@ -199,10 +200,10 @@ describe("RoomClient with `binary`", () => {
   it.each([
     ["in JSON", {}],
     ["in binary", { binary: true }],
-  ])("asks for version 2, and follows a state full of arrays %s", async (_how, options) => {
+  ])("asks for the latest version, and follows a state full of arrays %s", async (_how, options) => {
     const client = play<Shapes, { script: string }>(`/shapes/${freshRoom()}?player=p1`, options);
     await until(() => client.state !== undefined, "the welcome");
-    expect(new URL(WorkerSocket.all[0]!.url).searchParams.get("v")).toBe("2");
+    expect(new URL(WorkerSocket.all[0]!.url).searchParams.get("v")).toBe(String(PROTOCOL_VERSION));
     const done: string[] = [];
     for (const script of ["spawn", "copy", "shuffle", "move", "replace", "remove", "mark"]) {
       await client.send({ script });

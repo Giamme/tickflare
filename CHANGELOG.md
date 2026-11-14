@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+**A join is told as a join, not as the whole list of players.**
+
+- Every join, drop and leave used to send every player the whole list of players. In a full room that is what a join cost: for a thousand players, a thousand frames of a thousand players each, and it is what broke rooms of that size when we measured on Cloudflare.
+- This is version 3 of the protocol. A `presence` frame can now say who is new or different, in `set`, and who is gone, in `gone`, in place of `players`. `RoomClient` and the Godot and Unity clients ask for it; a client that asks for version 1 or 2 is sent the whole list as before. `PresenceFrame.players` is optional in the types for that reason.
+
+**A ticking room closes connections that have gone silent.**
+
+- A room ticks, and is billed, for as long as someone is connected. A connection whose other end is gone without the room being told kept it awake for nobody. A ticking room now closes a connection that has sent nothing for two minutes, neither a frame nor a keepalive, with the new close code 4100, `CloseCode.Silent`; the player is away as after any other drop, and a client that is there after all reconnects.
+- `silentAfterMs` sets how long, and 0 turns it off. Tickflare's clients send a keepalive every 25 seconds. **A client of your own that sends no `ping` and can go two minutes without a command now has to send one**, or set a longer time in the room.
+
 **Measured on Cloudflare.**
 
 - `bench/` holds a Worker with a room in which everything moves on every tick, a script that plays in it, and one that asks Cloudflare's analytics what it counted. The workflow *Measure on Cloudflare* deploys the Worker under a key made for the run, measures, and deletes it.

@@ -68,6 +68,8 @@ const SOCKET_OPEN = 1;
 const BINARY_TAG = "\u0001patches=b1";
 /** Marks the socket of a client that speaks version 2 of the protocol: it knows array patches. */
 const V2_TAG = "\u0001v=2";
+/** Marks the socket of a client that speaks version 3: it is told who came and went, not the whole list of players. */
+const V3_TAG = "\u0001v=3";
 const isMark = (tag: string) => tag.charCodeAt(0) === 1;
 /** Prefix of every timer name the kernel keeps for itself. */
 const KERNEL_TIMER = "tickflare:";
@@ -168,6 +170,22 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
   protected saveIntervalMs = 5_000;
 
   /**
+   * While the room is ticking, how long a connection may send nothing, not
+   * a command and not a keepalive, before it is taken for dead and closed
+   * with `CloseCode.Silent`. The player is then away, as after any other
+   * drop: `onDisconnect` runs and their seat timeout starts.
+   *
+   * A room ticks for as long as someone is connected, and is billed for it.
+   * A connection whose other end is gone without the room being told would
+   * keep it awake for nobody, and this is what ends that. Tickflare's
+   * clients send a keepalive every 25 seconds, so the default of two
+   * minutes never closes one that is there; a client of your own has to
+   * send `ping` at least this often. 0 never closes a connection for
+   * silence. A room that is not ticking never does either: it is asleep.
+   */
+  protected silentAfterMs = 120_000;
+
+  /**
    * Whether the kernel follows what each hook writes to the state, rather
    * than turning the whole state into JSON after every hook to see what
    * changed and to be able to undo it. On by default: a hook then costs what
@@ -254,6 +272,18 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
   #flushing = false;
   /** Seats changed in a way the remaining players have not been told about yet. */
   #presenceStale = false;
+  /** When each connection last sent a frame, while this instance has been in memory. */
+  #heard = new WeakMap<WebSocket, number>();
+  /** Since when this instance has been in memory: what it knows of no connection's silence before. */
+  readonly #since = Date.now();
+  /** When connections are next looked at for silence. */
+  #sweepAt = 0;
+  /**
+   * The players as they were last told to everyone, by id. Clients that are
+   * told changes hold this list. Unknown after a restart, until the next
+   * time the whole list goes out.
+   */
+  #told: Map<string, Player> | undefined;
   /** Finished matches announced by the current hook, not yet committed. */
   #finished: { message: MatchResult; replay?: string }[] = [];
   /** There are finished matches or handovers in storage that still have to be delivered. */
@@ -713,6 +743,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     const marks: string[] = [];
     if (asked.get("patches") === BINARY_PATCHES) marks.push(BINARY_TAG);
     if (Number(asked.get("v")) >= 2) marks.push(V2_TAG);
+    if (Number(asked.get("v")) >= 3) marks.push(V3_TAG);
     const response = this.#connect(playerId, name, marks);
     await this.#finish();
     return response;
@@ -720,6 +751,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
 
   /** Durable Object entry point for incoming frames. Tickflare's: override `parseCommand` and `onCommand` instead. */
   override async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
+    this.#heard.set(ws, Date.now());
     this.#load();
     this.#receive(ws, message);
     await this.#finish();
@@ -875,6 +907,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     this.#replaceSockets(playerId);
     // What the client asked for is kept with the socket, where it outlasts the room's sleep.
     this.ctx.acceptWebSocket(server, [playerId, ...marks]);
+    this.#heard.set(server, Date.now());
     this.#welcome(server, player, this.#loop !== undefined);
     this.#broadcastPresence(server);
 
@@ -885,7 +918,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
   #welcome(ws: WebSocket, player: Player, ticking: boolean): void {
     const welcome = JSON.stringify({
       t: "welcome",
-      v: this.ctx.getTags(ws).includes(V2_TAG) ? PROTOCOL_VERSION : 1,
+      v: this.#versionOf(ws),
       you: player.id,
       seq: this.#seq,
       tick: this.#tick,
@@ -997,13 +1030,15 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     }
   }
 
-  #dropped(ws: WebSocket): void {
+  #dropped(ws: WebSocket, silent = false): void {
     const playerId = this.#playerOf(ws);
     // Players who left or were removed are not "disconnected": their seat is gone.
     if (!playerId || !this.#roster.includes(playerId)) return;
     // A newer connection for the same player took over: nothing to announce, now or
     // when this close arrives after the newer connection has itself gone.
-    if ((ws.deserializeAttachment() as { replaced?: boolean } | null)?.replaced) return;
+    const mark = ws.deserializeAttachment() as { replaced?: boolean; silent?: boolean } | null;
+    // Or it was closed for its silence, and the player's going was dealt with then.
+    if (mark?.replaced || (mark?.silent && !silent)) return;
     if (this.#isConnected(playerId, ws)) return;
 
     this.#apply(() => this.onDisconnect({ id: playerId, connected: false }));
@@ -1183,12 +1218,44 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
       this.#stalled = true;
     }
 
+    const now = Date.now();
+    if (this.silentAfterMs > 0 && now >= this.#sweepAt) {
+      this.#sweepAt = now + Math.min(5_000, this.silentAfterMs / 2);
+      this.#closeSilent(now);
+    }
+
     if (++this.#ticksSinceSave * 1000 >= this.saveIntervalMs * this.tickRate) {
       this.#ticksSinceSave = 0;
       if (this.#unsaved) this.#writeRoom();
     }
     this.#broadcastTick();
     this.#finish(false).catch((err) => console.error("[tickflare] tick cleanup failed:", err));
+  }
+
+  /**
+   * Closes the connections that have sent nothing for `silentAfterMs`. What
+   * counts as sending: a frame, or a keepalive, which Cloudflare answers
+   * without waking the room but remembers the time of.
+   */
+  #closeSilent(now: number): void {
+    for (const ws of this.ctx.getWebSockets()) {
+      if (ws.readyState !== SOCKET_OPEN) continue;
+      const heard = Math.max(
+        this.#since,
+        this.#heard.get(ws) ?? 0,
+        this.ctx.getWebSocketAutoResponseTimestamp(ws)?.getTime() ?? 0,
+      );
+      if (now - heard <= this.silentAfterMs) continue;
+      try {
+        // Marked: the player drops now, once. If the other end is there after all and answers
+        // the close, that is not a second drop.
+        ws.serializeAttachment({ silent: true });
+        ws.close(CloseCode.Silent, "silent");
+      } catch {
+        // Already closed.
+      }
+      this.#dropped(ws, true);
+    }
   }
 
   /** Reads the room from storage the first time an event arrives after a (re)start. */
@@ -1520,16 +1587,59 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     this.#answer();
   }
 
+  /** The version of the protocol spoken on this socket: the one its client asked for, or the newest this room knows. */
+  #versionOf(ws: WebSocket): number {
+    const tags = this.ctx.getTags(ws);
+    return tags.includes(V3_TAG) ? PROTOCOL_VERSION : tags.includes(V2_TAG) ? 2 : 1;
+  }
+
+  /**
+   * Tells everyone who is here. Clients of version 3 are told what changed
+   * since the last time, the others the whole list: with it, a join in a
+   * room of a thousand is a thousand frames of a thousand players each.
+   */
   #broadcastPresence(except?: WebSocket): void {
-    const frame = JSON.stringify({ t: "presence", players: this.players });
+    const players = this.players;
+    const change = this.#presenceChange(players);
+    let whole: string | undefined;
+    let brief: string | undefined;
     for (const { ws } of this.#seatedSockets()) {
       if (ws === except) continue;
+      let frame: string;
+      if (change !== "whole" && this.ctx.getTags(ws).includes(V3_TAG)) {
+        // Nothing they do not know already.
+        if (!change) continue;
+        frame = brief ??= JSON.stringify({ t: "presence", ...change } satisfies ServerMessage);
+      } else {
+        frame = whole ??= JSON.stringify({ t: "presence", players } satisfies ServerMessage);
+      }
       try {
         ws.send(frame);
       } catch {
         // Socket is closing.
       }
     }
+  }
+
+  /**
+   * How `players` differs from what was last told, and remembers it as told.
+   * "whole" when that is not known, or when saying it takes as long as the
+   * list; undefined when nothing changed.
+   */
+  #presenceChange(players: Player[]): { set?: Player[]; gone?: string[] } | "whole" | undefined {
+    const told = this.#told;
+    const now = new Map(players.map((player) => [player.id, player]));
+    this.#told = now;
+    if (!told) return "whole";
+    const set = players.filter((player) => {
+      const was = told.get(player.id);
+      return !was || was.connected !== player.connected || was.name !== player.name;
+    });
+    const gone: string[] = [];
+    for (const id of told.keys()) if (!now.has(id)) gone.push(id);
+    if (set.length === 0 && gone.length === 0) return undefined;
+    if (set.length + gone.length >= players.length) return "whole";
+    return { ...(set.length > 0 ? { set } : {}), ...(gone.length > 0 ? { gone } : {}) };
   }
 
   #send(ws: WebSocket, message: ServerMessage): void {

@@ -15,8 +15,11 @@ import type { Patch } from "./patch.js";
  *
  * Version 2 adds array patches: an array that changes can be sent element
  * by element, as `[changes, length]` in a patch.
+ *
+ * Version 3 adds presence as changes: a `presence` frame can say who is new
+ * or different (`set`) and who is gone (`gone`) in place of the whole list.
  */
-export const PROTOCOL_VERSION = 2;
+export const PROTOCOL_VERSION = 3;
 
 /** The keepalive a client sends, as a plain text frame. @internal */
 export const PING = "ping";
@@ -122,12 +125,24 @@ export interface PatchFrame {
   p: Patch;
 }
 
-/** Someone joined, dropped or came back. */
+/**
+ * Someone joined, dropped, came back or left. Either the whole list, in
+ * `players`, or what changed in it since the last frame, in `set` and
+ * `gone`: a client of version 3 or later is sent whichever is shorter.
+ */
 export interface PresenceFrame {
   /** Frame type. */
   t: "presence";
-  /** Everyone with a seat, in join order. */
-  players: Player[];
+  /** Everyone with a seat, in join order. When present, it replaces the list. */
+  players?: Player[];
+  /**
+   * Players who are new, or whose `connected` or `name` changed. One the
+   * list has already takes the place of the old entry; a new one goes to
+   * the end, in the order given.
+   */
+  set?: Player[];
+  /** The ids of players who no longer have a seat. */
+  gone?: string[];
 }
 
 /**
@@ -188,7 +203,7 @@ export type ServerMessage<View = unknown> =
   | ErrorFrame
   | MessageFrame;
 
-/** WebSocket close codes the room uses. The client does not reconnect after these. */
+/** WebSocket close codes the room uses. The client does not reconnect after those from 4000 to 4099. */
 export const CloseCode = {
   /** The same player opened a newer connection. */
   Replaced: 4000,
@@ -203,6 +218,12 @@ export const CloseCode = {
    * room's id. The client reconnects there by itself.
    */
   Moved: 4004,
+  /**
+   * A ticking room heard nothing on this connection for `silentAfterMs`, not
+   * even a keepalive, and took it for dead. A client that is there after
+   * all connects again: this code is outside those it gives up on.
+   */
+  Silent: 4100,
 } as const;
 
 /** Sent by a matchmaker to every player of a match it has just put together. */

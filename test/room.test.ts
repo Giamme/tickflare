@@ -279,7 +279,7 @@ describe("connections", () => {
       { id: "p2", connected: true },
     ]);
     expect((await p1.next("state")).state.log).toContain("back:p2");
-    expect((await p1.next("presence")).players[1]).toEqual({ id: "p2", connected: true });
+    expect((await p1.next("presence")).players![1]).toEqual({ id: "p2", connected: true });
   });
 
   it("lets the newest connection of a player replace the older one", async () => {
@@ -293,7 +293,7 @@ describe("connections", () => {
     // The replaced socket closing must not count as p1 leaving.
     again.command({ type: "add", n: 1 });
     expect((await again.next("state")).state.log).toEqual(["join:p1", "join:p2"]);
-    expect((await p2.next("presence")).players[0]).toEqual({ id: "p1", connected: true });
+    expect((await p2.next("presence")).players![0]).toEqual({ id: "p1", connected: true });
   });
 
   it("reports a player dropping once, even when an older connection of theirs closes later", async () => {

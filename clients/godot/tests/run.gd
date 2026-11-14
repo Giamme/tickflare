@@ -24,6 +24,7 @@ func _run() -> void:
 	_test_patches()
 	_test_vectors()
 	_test_bad_frames()
+	_test_presence()
 	_test_urls()
 	var server := OS.get_environment("TICKFLARE_TEST_URL")
 	if server == "":
@@ -134,6 +135,14 @@ func _test_bad_frames() -> void:
 	_check(BinaryReader.new().decode("b104000001016101013f".hex_decode()) == null, "a kind of value from a later version is refused")
 
 
+func _test_presence() -> void:
+	var known := [{"id": "a", "connected": true}, {"id": "b", "connected": true}, {"id": "c", "connected": false}]
+	var after: Array = Room._with_presence(known, [{"id": "d", "connected": true}, {"id": "b", "connected": false}, {"id": "e", "connected": true}], ["a", "nobody"])
+	_check_same(after, [{"id": "b", "connected": false}, {"id": "c", "connected": false}, {"id": "d", "connected": true}, {"id": "e", "connected": true}], "a list of players changed by who is new, different and gone")
+	_check(known.size() == 3 and known[1]["connected"] == true, "the list it was made from is as it was")
+	_check_same(Room._with_presence([], [], []), [], "nothing changed in an empty list")
+
+
 func _test_urls() -> void:
 	_check_same(Room._with_param("ws://h/rooms/r", "v", "2"), "ws://h/rooms/r?v=2", "a parameter added to a URL without a query")
 	_check_same(Room._with_param("ws://h/rooms/r?token=old&lang=it", "token", "a b"), "ws://h/rooms/r?lang=it&token=a%20b", "a parameter replaced")
@@ -173,7 +182,7 @@ func _test_event_room(server: String) -> void:
 	if not welcomed:
 		return
 	_check(plain.you == "p1" and packed.you == "p2", "each client is told who it is")
-	_check(plain.protocol == 2 and packed.protocol == 2, "the room speaks version 2 to both")
+	_check(plain.protocol == 3 and packed.protocol == 3, "the room speaks version 3 to both")
 	await _until(func() -> bool: return packed.players.size() == 2 and plain.players.size() == 2, "both to hear of the other")
 	_check_same(packed.state, plain.state, "both are welcomed with the same state")
 	_check_same(plain.state["order"], ["a", "b"], "the state is the room's")
@@ -195,6 +204,24 @@ func _test_event_room(server: String) -> void:
 	_check(not plain.state["units"].has("a") and plain.state["units"].has("c"), "a unit removed and one added")
 	_check(seen[0] >= 8, "state_changed fired for every change")
 	_check(plain.unconfirmed.is_empty() and packed.unconfirmed.is_empty(), "nothing is left unconfirmed")
+
+	# Who is there is told as it changes: a third player comes, drops, comes back and leaves.
+	var third := _join("%s/shapes/%s?player=p3" % [server, room_name])
+	await _until(func() -> bool: return plain.players.size() == 3 and packed.players.size() == 3, "a third player")
+	_check_same(packed.players, plain.players, "both know the third player")
+	_check_same(packed.players[2], {"id": "p3", "connected": true}, "the third player is last, and connected")
+	third.close()
+	await _until(func() -> bool: return plain.players.size() == 3 and plain.players[2]["connected"] == false and packed.players[2]["connected"] == false, "the third to be seen dropping")
+	var again := _join("%s/shapes/%s?player=p3" % [server, room_name])
+	await _until(func() -> bool: return again.status == "open" and plain.players[2]["connected"] == true and packed.players[2]["connected"] == true, "the third to be seen coming back")
+	_check_same(again.players, plain.players, "the one who came back knows everyone")
+	var gone: Dictionary = await again.leave()
+	_check(gone["ok"], "the third player may leave")
+	await _until(func() -> bool: return plain.players.size() == 2 and packed.players.size() == 2, "the third to be seen leaving")
+	_check_same(packed.players, [{"id": "p1", "connected": true}, {"id": "p2", "connected": true}], "the two who stayed, in the order they came")
+	third.queue_free()
+	again.queue_free()
+
 	plain.close()
 	packed.close()
 	_check(plain.status == "closed", "close() closes")

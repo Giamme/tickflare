@@ -47,7 +47,7 @@ const CLOSE_REMOVED := 4003
 const CLOSE_MOVED := 4004
 const MAX_BACKOFF_MSEC := 5000
 ## The version of the protocol this client speaks.
-const PROTOCOL_VERSION := 2
+const PROTOCOL_VERSION := 3
 
 ## Ask the room for its patches in binary. On by default: Godot's WebSocket is
 ## not compressed, and binary patches are a little over a third of the size.
@@ -280,7 +280,11 @@ func _received(packet: PackedByteArray, is_text: bool) -> void:
 			state_changed.emit(state)
 			_resolve_up_to(frame.get("c"))
 		"presence":
-			players = frame["players"]
+			# The whole list, or who is new or different and who is gone.
+			if frame.has("players"):
+				players = frame["players"]
+			else:
+				players = _with_presence(players, frame.get("set", []), frame.get("gone", []))
 			players_changed.emit(players)
 		"ack":
 			var id := int(frame["id"])
@@ -379,6 +383,29 @@ func _set_status(next: String, code: int, reason: String) -> void:
 		return
 	status = next
 	status_changed.emit(next, code, reason)
+
+
+## The players after a presence frame that says what changed: a new array, in
+## join order. A player the list has already is replaced where they are, a
+## new one goes to the end.
+static func _with_presence(known: Array, changed: Array, gone: Array) -> Array:
+	var by_id := {}
+	for player: Dictionary in changed:
+		by_id[player["id"]] = player
+	var out := []
+	for player: Dictionary in known:
+		var id: String = player["id"]
+		if gone.has(id):
+			continue
+		if by_id.has(id):
+			out.append(by_id[id])
+			by_id.erase(id)
+		else:
+			out.append(player)
+	for player: Dictionary in changed:
+		if by_id.has(player["id"]):
+			out.append(player)
+	return out
 
 
 ## [param url] with [param key] set to [param value] in its query.

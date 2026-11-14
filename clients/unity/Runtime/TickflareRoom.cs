@@ -70,7 +70,7 @@ namespace Tickflare
     public sealed class TickflareRoom : IDisposable
     {
         /// <summary>The version of the protocol this client speaks.</summary>
-        public const int ProtocolVersion = 2;
+        public const int ProtocolVersion = 3;
 
         private const int CloseRemoved = 4003;
         private const int CloseMoved = 4004;
@@ -473,7 +473,7 @@ namespace Tickflare
                     Tick = Whole(frame, "tick", 0);
                     TickRate = frame.TryGetValue("tickRate", out object rate) && rate is double perSecond ? perSecond : 0;
                     Protocol = (int)Whole(frame, "v", 1);
-                    _players = ReadPlayers(frame);
+                    _players = ReadPlayers(frame, "players");
                     State = Held(frame, "state");
                     SetStatus(TickflareStatus.Open, 0, "");
                     PlayersChanged?.Invoke(_players);
@@ -509,7 +509,10 @@ namespace Tickflare
                     break;
                 }
                 case "presence":
-                    _players = ReadPlayers(frame);
+                    // The whole list, or who is new or different and who is gone.
+                    _players = frame.ContainsKey("players")
+                        ? ReadPlayers(frame, "players")
+                        : TickflarePresence.Apply(_players, ReadPlayers(frame, "set"), Held(frame, "gone") as List<object>);
                     PlayersChanged?.Invoke(_players);
                     break;
                 case "ack":
@@ -561,10 +564,10 @@ namespace Tickflare
             return frame.TryGetValue("c", out object value) && value is double number ? (long)number : (long?)null;
         }
 
-        private static List<TickflarePlayer> ReadPlayers(Dictionary<string, object> frame)
+        private static List<TickflarePlayer> ReadPlayers(Dictionary<string, object> frame, string key)
         {
             var players = new List<TickflarePlayer>();
-            if (!(Held(frame, "players") is List<object> list)) return players;
+            if (!(Held(frame, key) is List<object> list)) return players;
             foreach (object item in list)
             {
                 if (!(item is Dictionary<string, object> player)) continue;
@@ -671,6 +674,48 @@ namespace Tickflare
         private void Warn(string what)
         {
             Warning?.Invoke(what);
+        }
+    }
+
+    /// <summary>What a presence frame that says what changed does to the list of players.</summary>
+    public static class TickflarePresence
+    {
+        /// <summary>
+        /// A new list, in join order: without the players whose ids are in <paramref name="gone"/>,
+        /// with each of <paramref name="changed"/> in place of the entry the list had for them, or
+        /// at the end if it had none.
+        /// </summary>
+        public static List<TickflarePlayer> Apply(IReadOnlyList<TickflarePlayer> known, IReadOnlyList<TickflarePlayer> changed, IReadOnlyList<object> gone)
+        {
+            var byId = new Dictionary<string, TickflarePlayer>();
+            foreach (TickflarePlayer player in changed) byId[player.Id] = player;
+            var left = new HashSet<string>();
+            if (gone != null)
+            {
+                foreach (object id in gone)
+                {
+                    if (id is string text) left.Add(text);
+                }
+            }
+            var result = new List<TickflarePlayer>();
+            foreach (TickflarePlayer player in known)
+            {
+                if (left.Contains(player.Id)) continue;
+                if (byId.TryGetValue(player.Id, out TickflarePlayer now))
+                {
+                    result.Add(now);
+                    byId.Remove(player.Id);
+                }
+                else
+                {
+                    result.Add(player);
+                }
+            }
+            foreach (TickflarePlayer player in changed)
+            {
+                if (byId.ContainsKey(player.Id)) result.Add(player);
+            }
+            return result;
         }
     }
 

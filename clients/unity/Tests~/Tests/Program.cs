@@ -127,6 +127,7 @@ namespace Tickflare.Tests
             TestPatches();
             TestVectors();
             TestBadFrames();
+            TestPresence();
             TestUrls();
             string server = Environment.GetEnvironmentVariable("TICKFLARE_TEST_URL");
             if (string.IsNullOrEmpty(server))
@@ -382,6 +383,31 @@ namespace Tickflare.Tests
                 "a key that is not UTF-8 is refused");
         }
 
+        /// <summary>The players in the order the list has them, as "p1, p2 (away)".</summary>
+        private static string Names(IEnumerable<TickflarePlayer> players)
+        {
+            var names = new List<string>();
+            foreach (TickflarePlayer player in players) names.Add(player.Id + (player.Connected ? "" : " (away)"));
+            return string.Join(", ", names);
+        }
+
+        private static TickflarePlayer Seat(string id, bool connected)
+        {
+            return new TickflarePlayer { Id = id, Connected = connected };
+        }
+
+        private static void TestPresence()
+        {
+            var known = new List<TickflarePlayer> { Seat("a", true), Seat("b", true), Seat("c", false) };
+            List<TickflarePlayer> after = TickflarePresence.Apply(
+                known,
+                new List<TickflarePlayer> { Seat("d", true), Seat("b", false), Seat("e", true) },
+                new List<object> { "a", "nobody" });
+            CheckSame(Names(after), "b (away), c (away), d, e", "a list of players changed by who is new, different and gone");
+            CheckSame(Names(known), "a, b, c (away)", "the list it was made from is as it was");
+            CheckSame(Names(TickflarePresence.Apply(new List<TickflarePlayer>(), new List<TickflarePlayer>(), null)), "", "nothing changed in an empty list");
+        }
+
         private static void TestUrls()
         {
             CheckSame(TickflareUrl.WithParam("ws://h/rooms/r", "v", "2"), "ws://h/rooms/r?v=2", "a parameter added to a URL without a query");
@@ -463,7 +489,7 @@ namespace Tickflare.Tests
                 return;
             }
             Check(plain.You == "p1" && packed.You == "p2", "each client is told who it is");
-            Check(plain.Protocol == 2 && packed.Protocol == 2, "the room speaks version 2 to both");
+            Check(plain.Protocol == 3 && packed.Protocol == 3, "the room speaks version 3 to both");
             await Until(() => packed.Players.Count == 2 && plain.Players.Count == 2, "both to hear of the other");
             var ids = new List<string>();
             foreach (TickflarePlayer player in packed.Players) ids.Add(player.Id + (player.Connected ? "" : " (away)"));
@@ -494,6 +520,21 @@ namespace Tickflare.Tests
             Check(At(plain.State, "units", "a") == null && At(plain.State, "units", "c") != null, "a unit removed and one added");
             Check(seen >= 8, "StateChanged was raised for every change");
             Check(plain.Unconfirmed.Count == 0 && packed.Unconfirmed.Count == 0, "nothing is left unconfirmed");
+
+            // Who is there is told as it changes: a third player comes, drops, comes back and leaves.
+            TickflareRoom third = Join(server + "/shapes/" + name + "?player=p3");
+            await Until(() => plain.Players.Count == 3 && packed.Players.Count == 3, "a third player");
+            CheckSame(Names(packed.Players), "p1, p2, p3", "the third player is last, and connected");
+            CheckSame(Names(plain.Players), Names(packed.Players), "both know the third player");
+            Done(third);
+            await Until(() => Names(plain.Players) == "p1, p2, p3 (away)" && Names(packed.Players) == "p1, p2, p3 (away)", "the third to be seen dropping");
+            TickflareRoom again = Join(server + "/shapes/" + name + "?player=p3");
+            await Until(() => again.Status == TickflareStatus.Open && Names(plain.Players) == "p1, p2, p3" && Names(packed.Players) == "p1, p2, p3", "the third to be seen coming back");
+            CheckSame(Names(again.Players), "p1, p2, p3", "the one who came back knows everyone");
+            Check(await Answer(again.LeaveAsync()) == null, "the third player may leave");
+            await Until(() => Names(plain.Players) == "p1, p2" && Names(packed.Players) == "p1, p2", "the third to be seen leaving");
+            Done(again);
+
             Done(plain, packed);
             Check(plain.Status == TickflareStatus.Closed, "Close() closes");
         }
@@ -552,7 +593,7 @@ namespace Tickflare.Tests
             room.Open(server + "/shapes/" + FreshRoom() + "?player=p1&token=stale");
             if (!await Until(() => room.Status == TickflareStatus.Open, "a client to be welcomed")) return;
             Check(sockets.Count == 1 && sockets[0].Url.Contains("token=token-1") && !sockets[0].Url.Contains("stale"), "a fresh token is put in the URL");
-            Check(sockets[0].Url.Contains("v=2") && sockets[0].Url.Contains("patches=b1"), "the URL asks for version 2 and binary patches");
+            Check(sockets[0].Url.Contains("v=3") && sockets[0].Url.Contains("patches=b1"), "the URL asks for version 3 and binary patches");
             await Answer(room.SendAsync(Script("mark")));
 
             var statuses = new List<string>();
