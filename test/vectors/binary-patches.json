@@ -411,6 +411,128 @@
     ]
   },
   {
+    "name": "arrays",
+    "about": "An array patched by element: its new length, how many elements changed, and each by its index. An element can be patched, replaced, or be an array patched in turn.",
+    "frames": [
+      {
+        "frame": {
+          "t": "patch",
+          "seq": 1,
+          "tick": 1,
+          "p": {
+            "units": [
+              [
+                {
+                  "x": 1,
+                  "path": [
+                    1,
+                    2
+                  ]
+                },
+                {
+                  "x": 5,
+                  "path": []
+                },
+                {
+                  "x": 9,
+                  "path": [
+                    7
+                  ]
+                }
+              ]
+            ]
+          }
+        },
+        "hex": "b10401010305756e6974730178047061746801010b030c02020301030b02030103020c02020305030b000c02020309030b010307",
+        "keys": [
+          "units",
+          "x",
+          "path"
+        ]
+      },
+      {
+        "frame": {
+          "t": "patch",
+          "seq": 2,
+          "tick": 2,
+          "p": {
+            "units": [
+              {
+                "1": {
+                  "x": [
+                    6
+                  ]
+                },
+                "2": {
+                  "path": [
+                    {
+                      "1": [
+                        8
+                      ]
+                    },
+                    2
+                  ]
+                }
+              },
+              3
+            ]
+          }
+        },
+        "hex": "b10002020001010f0302010e01020306020e01030f0201010308",
+        "keys": [
+          "units",
+          "x",
+          "path"
+        ]
+      },
+      {
+        "frame": {
+          "t": "patch",
+          "seq": 3,
+          "tick": 3,
+          "p": {
+            "units": [
+              {
+                "3": [
+                  {
+                    "x": 0,
+                    "path": []
+                  }
+                ]
+              },
+              4
+            ]
+          }
+        },
+        "hex": "b10003030001010f0401030c02020300030b00",
+        "keys": [
+          "units",
+          "x",
+          "path"
+        ]
+      },
+      {
+        "frame": {
+          "t": "patch",
+          "seq": 4,
+          "tick": 4,
+          "p": {
+            "units": [
+              {},
+              1
+            ]
+          }
+        },
+        "hex": "b10004040001010f0100",
+        "keys": [
+          "units",
+          "x",
+          "path"
+        ]
+      }
+    ]
+  },
+  {
     "name": "late joiner",
     "about": "The room had already sent the keys units, u1, x and y to others. This socket's first frame defines all four, though it uses two.",
     "tableBefore": [

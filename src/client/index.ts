@@ -13,6 +13,7 @@ import {
   CloseCode,
   PING,
   PONG,
+  PROTOCOL_VERSION,
   isFatalCloseCode,
   type ClientMessage,
   type Player,
@@ -340,11 +341,11 @@ export class RoomClient<View = unknown, Command = unknown> {
 
   #connect(url: string): void {
     const { binary } = this.#options;
-    if (binary) {
-      const asked = new URL(url);
-      asked.searchParams.set("patches", BINARY_PATCHES);
-      url = asked.toString();
-    }
+    const asked = new URL(url);
+    // The version of the protocol this client speaks: the room answers with the one it will use.
+    asked.searchParams.set("v", String(PROTOCOL_VERSION));
+    if (binary) asked.searchParams.set("patches", BINARY_PATCHES);
+    url = asked.toString();
     const socket = new WebSocket(url);
     if (binary) socket.binaryType = "arraybuffer";
     this.#socket = socket;

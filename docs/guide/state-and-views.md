@@ -8,7 +8,7 @@ The state is stored and sent as JSON, so it can hold objects, arrays, strings, n
 
 Two habits pay off, especially in [state sync](./state-sync), where only differences are sent:
 
-- **Key collections by id.** Objects are compared key by key, while an array is sent whole when anything in it changes. Keep units, players and projectiles in objects keyed by id, not in arrays.
+- **Key collections that come and go by id.** Objects are compared key by key. An array is compared element by element, so a unit that moves costs its new position there too, as long as the elements keep their places. Take one out before the end and every element after it is in a new place: the array is sent whole. Keep units, players and projectiles in objects keyed by id; use arrays for what is a list, such as a path, a hand of cards or the cells of a board.
 - **Round what you can.** A position with one decimal is shorter on the wire than a 17-digit float.
 
 ```ts

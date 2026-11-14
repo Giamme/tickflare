@@ -203,7 +203,7 @@ describe("RoomClient", () => {
     FakeSocket.all[0]!.drop(4004, "new");
 
     expect(moved).toEqual(["new"]);
-    expect(FakeSocket.all[1]!.url).toBe("wss://tickflare.test/rooms/new?token=t");
+    expect(FakeSocket.all[1]!.url).toBe("wss://tickflare.test/rooms/new?token=t&v=2");
     client.close();
   });
 
@@ -230,9 +230,9 @@ describe("RoomClient", () => {
       await vi.advanceTimersByTimeAsync(500);
 
       expect(urls()).toEqual([
-        "wss://tickflare.test/rooms/r?token=t1",
-        "wss://tickflare.test/rooms/r?token=t2",
-        "wss://tickflare.test/rooms/r?token=t3",
+        "wss://tickflare.test/rooms/r?token=t1&v=2",
+        "wss://tickflare.test/rooms/r?token=t2&v=2",
+        "wss://tickflare.test/rooms/r?token=t3&v=2",
       ]);
       expect(askedFor).toEqual(["r", "r", "r"]);
       client.close();
@@ -247,8 +247,8 @@ describe("RoomClient", () => {
       await vi.advanceTimersByTimeAsync(0);
 
       expect(urls()).toEqual([
-        "wss://tickflare.test/rooms/old?token=t1&lang=it",
-        "wss://tickflare.test/rooms/new?token=t2&lang=it",
+        "wss://tickflare.test/rooms/old?token=t1&lang=it&v=2",
+        "wss://tickflare.test/rooms/new?token=t2&lang=it&v=2",
       ]);
       expect(askedFor).toEqual(["old", "new"]);
       client.close();
@@ -265,7 +265,7 @@ describe("RoomClient", () => {
       expect(seen).toEqual(["connecting:1006:token_failed"]);
 
       await vi.advanceTimersByTimeAsync(250);
-      expect(urls()).toEqual(["wss://tickflare.test/rooms/r?token=t2"]);
+      expect(urls()).toEqual(["wss://tickflare.test/rooms/r?token=t2&v=2"]);
       warn.mockRestore();
       client.close();
     });

@@ -7,8 +7,16 @@
 
 import type { Patch } from "./patch.js";
 
-/** The protocol version a room announces in its `welcome` frame. */
-export const PROTOCOL_VERSION = 1;
+/**
+ * The latest version of the protocol. A client asks for a version with `v`
+ * in the query when it connects, and the room's `welcome` frame says which
+ * it will speak: the one asked for, or this one if that is later. A client
+ * that does not ask is spoken to in version 1.
+ *
+ * Version 2 adds array patches: an array that changes can be sent element
+ * by element, as `[changes, length]` in a patch.
+ */
+export const PROTOCOL_VERSION = 2;
 
 /** The keepalive a client sends, as a plain text frame. @internal */
 export const PING = "ping";
@@ -55,7 +63,7 @@ export type ClientMessage<Command = unknown> = CommandFrame<Command> | LeaveFram
 export interface WelcomeFrame<View = unknown> {
   /** Frame type. */
   t: "welcome";
-  /** `PROTOCOL_VERSION`. */
+  /** The version of the protocol the room speaks on this connection: see `PROTOCOL_VERSION`. */
   v: number;
   /** This player's id. */
   you: string;

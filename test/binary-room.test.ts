@@ -19,7 +19,7 @@ async function nextState(player: Connection): Promise<unknown> {
   for (;;) {
     const frame = await player.any();
     if (frame.t === "state") return frame.state;
-    expect(frame.t).toBe("ack");
+    expect(["ack", "presence"]).toContain(frame.t);
   }
 }
 /** Joining under this name asks for patches in binary. */
@@ -129,6 +129,34 @@ describe("a client that asked for patches in binary", () => {
   });
 });
 
+describe("a client that says it speaks version 2 of the protocol", () => {
+  it("is welcomed in it and sent arrays element by element, in JSON and in binary", async () => {
+    const room = freshRoom();
+    const first = await connect(room, "p1", {}, "/shapes");
+    const second = await connect(room, "p2&v=2", {}, "/shapes");
+    const third = await connect(room, "p3&v=2&patches=b1", {}, "/shapes");
+    // Each is answered in the version it asked for; one that did not ask, in the first.
+    expect((await first.next("welcome")).v).toBe(1);
+    expect((await second.next("welcome")).v).toBe(2);
+    expect((await third.next("welcome")).v).toBe(2);
+
+    // `spawn` adds a unit and puts its name at the end of `order`.
+    run(first, "spawn");
+    for (const player of [first, second, third]) expect(await nextState(player), "spawn").toEqual(after("spawn"));
+    expect(first.patches.at(-1)!.p.order).toEqual([["a", "b", "c"]]);
+    expect(second.patches.at(-1)!.p.order).toEqual([{ 2: ["c"] }, 3]);
+    expect(third.patches.at(-1)!.p.order).toEqual([{ 2: ["c"] }, 3]);
+    expect(third.binary).toHaveLength(1);
+
+    for (const script of ["copy", "shuffle", "replace", "remove", "mark"]) {
+      run(second, script);
+      const done = ["spawn", "copy", "shuffle", "replace", "remove", "mark"];
+      const state = after(...done.slice(0, done.indexOf(script) + 1));
+      for (const player of [first, second, third]) expect(await nextState(player), script).toEqual(state);
+    }
+  });
+});
+
 describe("RoomClient with `binary`", () => {
   const rooms: RoomClient<any, any>[] = [];
   beforeEach(() => {
@@ -166,6 +194,21 @@ describe("RoomClient with `binary`", () => {
     for (const tick of both()) expect(counts.asked.get(tick), `tick ${tick}`).toBe(counts.plain.get(tick));
     expect(WorkerSocket.all[1]!.binaryMessages).toBeGreaterThan(10);
     expect(WorkerSocket.all[0]!.binaryMessages).toBe(0);
+  });
+
+  it.each([
+    ["in JSON", {}],
+    ["in binary", { binary: true }],
+  ])("asks for version 2, and follows a state full of arrays %s", async (_how, options) => {
+    const client = play<Shapes, { script: string }>(`/shapes/${freshRoom()}?player=p1`, options);
+    await until(() => client.state !== undefined, "the welcome");
+    expect(new URL(WorkerSocket.all[0]!.url).searchParams.get("v")).toBe("2");
+    const done: string[] = [];
+    for (const script of ["spawn", "copy", "shuffle", "move", "replace", "remove", "mark"]) {
+      await client.send({ script });
+      done.push(script);
+      expect(client.state, script).toEqual(after(...done));
+    }
   });
 
   it("is out of step with the room if a binary frame cannot be read, and starts again", async () => {

@@ -12,7 +12,7 @@
  * once, and by its number after that.
  */
 import type { PatchFrame } from "./protocol.js";
-import type { Patch } from "./patch.js";
+import type { ArrayPatch, Patch } from "./patch.js";
 
 /** The value of the `patches` query parameter that asks for this format, and its first byte. */
 export const BINARY_PATCHES = "b1";
@@ -45,6 +45,8 @@ const enum Tag {
   Delete = 13,
   /** In a patch only: a patch of what the key holds follows. */
   Nested = 14,
+  /** In a patch only: the key holds an array, and what changed in it follows. */
+  Elements = 15,
 }
 
 /** Keys longer than this are sent in full every time: a name is short, and an id that long is rare. */
@@ -228,13 +230,27 @@ function writePatch(to: Writer, keys: KeyTable, patch: Patch): void {
   to.varint(names.length);
   for (const name of names) {
     keys.write(to, name);
-    const change = patch[name]!;
-    if (change === 0) to.byte(Tag.Delete);
-    else if (Array.isArray(change)) writeValue(to, keys, change[0] === undefined ? null : change[0]);
-    else {
-      to.byte(Tag.Nested);
-      writePatch(to, keys, change);
-    }
+    writeChange(to, keys, patch[name]!);
+  }
+}
+
+/** What to do with one key of an object or one element of an array. */
+function writeChange(to: Writer, keys: KeyTable, change: Patch[string]): void {
+  if (change === 0) return to.byte(Tag.Delete);
+  if (!Array.isArray(change)) {
+    to.byte(Tag.Nested);
+    return writePatch(to, keys, change);
+  }
+  if (change.length !== 2) return writeValue(to, keys, change[0] === undefined ? null : change[0]);
+  // An array's elements: its new length, how many changed, and each by its index.
+  const [changes, length] = change;
+  const indexes = Object.keys(changes);
+  to.byte(Tag.Elements);
+  to.varint(length);
+  to.varint(indexes.length);
+  for (const index of indexes) {
+    to.varint(Number(index));
+    writeChange(to, keys, changes[index]!);
   }
 }
 
@@ -378,11 +394,25 @@ function readPatch(from: Reader, keys: readonly string[]): Patch {
   const patch: Patch = {};
   for (let left = from.varint(); left > 0; left--) {
     const key = readKey(from, keys);
-    const tag = from.byte();
-    const change = tag === Tag.Delete ? 0 : tag === Tag.Nested ? readPatch(from, keys) : ([readValue(from, keys, tag)] as [unknown]);
-    define(patch as Record<string, unknown>, key, change);
+    define(patch as Record<string, unknown>, key, readChange(from, keys));
   }
   return patch;
+}
+
+function readChange(from: Reader, keys: readonly string[]): Patch[string] {
+  const tag = from.byte();
+  if (tag === Tag.Delete) return 0;
+  if (tag === Tag.Nested) return readPatch(from, keys);
+  if (tag !== Tag.Elements) return [readValue(from, keys, tag)];
+  const length = from.varint();
+  const changes: ArrayPatch[0] = {};
+  for (let left = from.varint(); left > 0; left--) {
+    const index = from.varint();
+    const change = readChange(from, keys);
+    if (change === 0) throw new RangeError("the frame deletes an element of an array, which nothing does");
+    changes[index] = change;
+  }
+  return [changes, length];
 }
 
 /**

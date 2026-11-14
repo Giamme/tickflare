@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+**Arrays are patched element by element.** An array that changed was sent whole, however little of it changed, which made `units: Unit[]` the expensive way to write a state.
+
+- A change to an array is now `[changes, length]` in a patch: the elements that changed, by index, and the array's new length. A unit that moves costs its new position, in an array as in an object. An array whose elements shifted, because one was taken out before the end, is still sent whole, so things that come and go are still better kept in an object keyed by id.
+- This is version 2 of the protocol. A client asks for it with `v=2` in the query, and the room's `welcome` says which version it will speak. `RoomClient` asks; a client that does not, such as one from an earlier Tickflare still open in a player's tab, is sent whole arrays as before. Binary patches carry array changes too, under the same rule.
+- `Patch` has a new member type, `ArrayPatch`. `applyPatch` and `diff` handle it.
+
 **Binary patches, for clients whose WebSocket is not compressed.**
 
 - A client that connects with `patches=b1` in the query is sent its `patch` frames as binary messages: every key by number after the first time, whole numbers as varints, numbers with one or two decimals as whole numbers of tenths or hundredths. Without compression they are a little over a third of the size of the JSON; with it, about 15% smaller. Everything else stays JSON, and so does a room that is not asked.

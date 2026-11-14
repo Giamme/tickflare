@@ -66,6 +66,9 @@ const SOCKET_OPEN = 1;
 
 /** Marks the socket of a client that asked for patches in binary. No player's id starts with a control character. */
 const BINARY_TAG = "\u0001patches=b1";
+/** Marks the socket of a client that speaks version 2 of the protocol: it knows array patches. */
+const V2_TAG = "\u0001v=2";
+const isMark = (tag: string) => tag.charCodeAt(0) === 1;
 /** Prefix of every timer name the kernel keeps for itself. */
 const KERNEL_TIMER = "tickflare:";
 /** Prefix of the kernel's own timers, which give up the seats of players who stay away. */
@@ -706,8 +709,11 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
         await this.#finish();
       }
     }
-    const binary = new URL(request.url).searchParams.get("patches") === BINARY_PATCHES;
-    const response = this.#connect(playerId, name, binary);
+    const asked = new URL(request.url).searchParams;
+    const marks: string[] = [];
+    if (asked.get("patches") === BINARY_PATCHES) marks.push(BINARY_TAG);
+    if (Number(asked.get("v")) >= 2) marks.push(V2_TAG);
+    const response = this.#connect(playerId, name, marks);
     await this.#finish();
     return response;
   }
@@ -807,7 +813,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     );
   }
 
-  #connect(playerId: string, name: string | undefined, binary = false): Response {
+  #connect(playerId: string, name: string | undefined, marks: string[] = []): Response {
     const pair = new WebSocketPair();
     const client = pair[0];
     const server = pair[1];
@@ -868,7 +874,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     // One connection per player: the newest wins.
     this.#replaceSockets(playerId);
     // What the client asked for is kept with the socket, where it outlasts the room's sleep.
-    this.ctx.acceptWebSocket(server, binary ? [playerId, BINARY_TAG] : [playerId]);
+    this.ctx.acceptWebSocket(server, [playerId, ...marks]);
     this.#welcome(server, player, this.#loop !== undefined);
     this.#broadcastPresence(server);
 
@@ -879,7 +885,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
   #welcome(ws: WebSocket, player: Player, ticking: boolean): void {
     const welcome = JSON.stringify({
       t: "welcome",
-      v: PROTOCOL_VERSION,
+      v: this.ctx.getTags(ws).includes(V2_TAG) ? PROTOCOL_VERSION : 1,
       you: player.id,
       seq: this.#seq,
       tick: this.#tick,
@@ -1559,16 +1565,18 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     const sockets: SeatedSocket[] = [];
     for (const ws of this.ctx.getWebSockets()) {
       const tags = this.ctx.getTags(ws);
-      const id = tags.find((tag) => tag !== BINARY_TAG);
+      const id = tags.find((tag) => !isMark(tag));
       if (id && ws.readyState === SOCKET_OPEN && this.#roster.includes(id)) {
-        sockets.push(tags.length > 1 ? { ws, id, binary: true } : { ws, id });
+        sockets.push(
+          tags.length > 1 ? { ws, id, binary: tags.includes(BINARY_TAG), arrays: tags.includes(V2_TAG) } : { ws, id },
+        );
       }
     }
     return sockets;
   }
 
   #playerOf(ws: WebSocket): string | undefined {
-    return this.ctx.getTags(ws).find((tag) => tag !== BINARY_TAG);
+    return this.ctx.getTags(ws).find((tag) => !isMark(tag));
   }
 
   #isConnected(playerId: string, except?: WebSocket): boolean {

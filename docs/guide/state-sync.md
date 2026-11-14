@@ -91,7 +91,7 @@ It is checked like `shouldTick()`, so it can depend on the state: `return this.s
 
 ## Keeping ticks cheap
 
-- **Key collections by id.** Patches go into objects key by key; an array is sent whole when anything in it changes.
+- **Key collections that come and go by id.** Patches go into objects key by key, and into arrays element by element. But an array whose elements shift, because one was taken out before the end, is sent whole.
 - **Round positions.** One decimal is usually enough, and a third of the bytes on the wire: [what a moving unit costs](./limits#bandwidth).
 - **Share the public part of views.** With many players, return the same object for the part of the view everyone sees. It is then diffed and serialised once per tick instead of once per player. See [State and views](./state-and-views#views-that-share-a-public-part).
 - **Pick the lowest rate that feels right.** 10 to 20 ticks a second with client-side interpolation looks smooth for most games. Each tick costs CPU on the server and bandwidth for everyone.

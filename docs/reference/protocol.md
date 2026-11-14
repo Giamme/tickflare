@@ -2,7 +2,7 @@
 
 Rooms and clients talk over one WebSocket per player, in JSON text frames. `tickflare/client` speaks this protocol for you; this page is for writing a client in another language, and for reading frames in your browser's developer tools.
 
-The protocol version is 1. Rooms announce it in their `welcome` frame.
+The protocol is at version 2. A client says which version it speaks with `v` in the query when it connects, `?v=2`, and the room's `welcome` frame says which one it will use on that connection: the one asked for, or its own latest if that is older. A client that does not say is spoken to in version 1, so a client written for version 1 goes on working. Version 2 added [array patches](#patches).
 
 Offer `permessage-deflate` when you connect, as browsers do. Cloudflare then compresses the frames, which makes patches of rounded numbers four to five times smaller on the wire; a client that does not offer it is sent them as they are. If your WebSocket library cannot do that, ask for [binary patches](#binary-patches) instead, which are a little over a third of the size of the JSON ones.
 
@@ -55,19 +55,18 @@ A patch mirrors the shape of the view it changes. For each key it holds one of:
 
 - a nested patch object: go into that key and apply it there;
 - `[value]`, a one-element array: set the key to `value`;
+- `[changes, length]`, a two-element array, in version 2 only: the key holds an array. `length` is how long it now is: drop what is past it. `changes` is an object that has, by index, what to do with each element that changed, in one of these same three forms. An element is never deleted from the middle: an array whose elements shifted is sent whole, as `[value]`;
 - `0`: delete the key.
 
-Only plain objects are patched key by key. Arrays and other values are replaced whole.
-
 ```json
-{ "units": { "u7": { "x": [12.5] }, "u3": 0 }, "phase": ["over"] }
+{ "units": { "u7": { "x": [12.5] }, "u3": 0 }, "phase": ["over"], "path": [{ "2": [9] }, 3] }
 ```
 
-This patch moves unit `u7`, removes unit `u3`, and sets `phase`. Apply patches in order to the last view you have. `applyPatch` and `diff` are exported from `tickflare` if you want the reference implementation.
+This patch moves unit `u7`, removes unit `u3`, sets `phase`, and makes `path` three long with 9 as its last element. A client in version 1 is sent the same change with the whole of `path` in it: `"path": [[4, 7, 9]]`. Apply patches in order to the last view you have. `applyPatch` and `diff` are exported from `tickflare` if you want the reference implementation.
 
 ## Binary patches
 
-A client can ask for its patches in binary: add `patches=b1` to the query when it connects, `wss://my-game.example/rooms/lobby?token=<token>&patches=b1`. Every `patch` frame then arrives as a binary WebSocket message in the format below. Everything else stays as it is: `welcome`, `state`, `presence`, `ack`, `reject`, `msg` and `error` are JSON text messages, and so is everything the client sends. A patch that cannot be said in binary is sent as JSON, so read whichever arrives: a text message is JSON, a binary message is a patch.
+A client can ask for its patches in binary: add `patches=b1` to the query when it connects, `wss://my-game.example/rooms/lobby?token=<token>&v=2&patches=b1`. Every `patch` frame then arrives as a binary WebSocket message in the format below. Everything else stays as it is: `welcome`, `state`, `presence`, `ack`, `reject`, `msg` and `error` are JSON text messages, and so is everything the client sends. A patch that cannot be said in binary is sent as JSON, so read whichever arrives: a text message is JSON, a binary message is a patch.
 
 It is for clients whose WebSocket is not compressed. Compressed, the JSON is already smaller than these frames are uncompressed; [the measurements](../guide/limits#bandwidth) are in the guide. `RoomClient` asks for binary with its `binary` option, and `decodePatchFrame`, exported from `tickflare` and `tickflare/client`, is the reference decoder.
 
@@ -100,6 +99,7 @@ In a patch or an object, **a key** is a varint: 0 means the name follows as a st
 | --- | --- |
 | `0d` | Delete the key |
 | `0e` | A patch follows: apply it to what the key holds |
+| `0f` | The key holds an array. A varint, its new length; a varint count; then that many pairs of a varint index and what to do with that element: `0e` and a patch, `0f` and an array's changes, or a value. Sent only to a client that asked for version 2 |
 | anything else | It is the first byte of a value: set the key to that value |
 
 **A value** is one byte that says what it is, then:

@@ -201,7 +201,6 @@ Tickflare is at 0.1. It has a test suite that runs against Cloudflare's own runt
 
 In the order we would take them, by how much each removes for the work it needs:
 
-1. **Arrays patched by element.** An array that changes is sent whole today, which is why things that change one at a time belong in objects keyed by id.
-2. **Matchmaking by skill and region; account recovery.**
+1. **Matchmaking by skill and region; account recovery.**
 
 None of these is promised. They are here so that you can see where the edges are, and which of them are meant to move.

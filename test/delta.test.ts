@@ -19,6 +19,25 @@ class Mirror {
   }
 }
 
+/** A socket whose client reads binary frames, with the keys it has been told. */
+class BinaryMirror {
+  frames: (string | Uint8Array)[] = [];
+  patches: PatchFrame[] = [];
+  state: unknown;
+  keys: string[] = [];
+  readonly ws = { send: (frame: string | Uint8Array) => this.#receive(frame) } as unknown as WebSocket;
+
+  #receive(frame: string | Uint8Array): void {
+    this.frames.push(frame);
+    const message = typeof frame === "string" ? (JSON.parse(frame) as { t: string; state?: unknown; p?: Patch }) : decodePatchFrame(frame, this.keys);
+    if (message.t === "patch") this.patches.push(message as PatchFrame);
+    this.state = message.t === "state" ? message.state : applyPatch(this.state, message.p!);
+  }
+  get binary(): Uint8Array[] {
+    return this.frames.filter((frame): frame is Uint8Array => typeof frame !== "string");
+  }
+}
+
 /** Counts how often something lists the keys of an object: a diff does so once per call. */
 function counted<T extends object>(target: T): { value: T; listed: () => number } {
   let listed = 0;
@@ -138,25 +157,6 @@ describe("DeltaSender with a custom view", () => {
 });
 
 describe("DeltaSender and sockets that asked for binary", () => {
-  /** A socket whose client reads binary frames, with the keys it has been told. */
-  class BinaryMirror {
-    frames: (string | Uint8Array)[] = [];
-    patches: PatchFrame[] = [];
-    state: unknown;
-    keys: string[] = [];
-    readonly ws = { send: (frame: string | Uint8Array) => this.#receive(frame) } as unknown as WebSocket;
-
-    #receive(frame: string | Uint8Array): void {
-      this.frames.push(frame);
-      const message = typeof frame === "string" ? (JSON.parse(frame) as { t: string; state?: unknown; p?: Patch }) : decodePatchFrame(frame, this.keys);
-      if (message.t === "patch") this.patches.push(message as PatchFrame);
-      this.state = message.t === "state" ? message.state : applyPatch(this.state, message.p!);
-    }
-    get binary(): Uint8Array[] {
-      return this.frames.filter((frame): frame is Uint8Array => typeof frame !== "string");
-    }
-  }
-
   it("encodes a patch once for all of them, and once in JSON for the rest", () => {
     const sender = new DeltaSender();
     const plain = new Mirror("plain");
@@ -230,5 +230,82 @@ describe("DeltaSender and sockets that asked for binary", () => {
     // One table: each was told the other's private key too, and holds it at the same number.
     expect(players.a.keys).toEqual(players.b.keys);
     expect(players.a.keys).toEqual(expect.arrayContaining(["a", "b", "world", "hand"]));
+  });
+});
+
+describe("DeltaSender and array patches", () => {
+  it("sends them to the sockets whose clients know them, and whole arrays to the rest", () => {
+    const sender = new DeltaSender();
+    const knows = new Mirror("knows");
+    const plain = new Mirror("plain");
+    const sockets = [{ ws: knows.ws, id: "knows", arrays: true }, { ws: plain.ws, id: "plain" }];
+    let state = { units: [{ x: 1, y: 1 }, { x: 5, y: 5 }, { x: 9, y: 9 }], round: 1 };
+    sender.send(sockets, 1, 1, state, undefined);
+    state = { units: [{ x: 1, y: 1 }, { x: 6, y: 5 }, { x: 9, y: 9 }], round: 2 };
+    sender.send(sockets, 2, 2, state, undefined);
+
+    expect(JSON.parse(knows.frames[1]!).p).toEqual({ units: [{ 1: { x: [6] } }, 3], round: [2] });
+    expect(JSON.parse(plain.frames[1]!).p).toEqual({ units: [state.units], round: [2] });
+    expect(knows.state).toEqual(state);
+    expect(plain.state).toEqual(state);
+
+    // A change with no array in it is one string for both.
+    sender.send(sockets, 3, 3, { ...state, round: 3 }, undefined);
+    expect(JSON.parse(plain.frames[2]!).p).toEqual(JSON.parse(knows.frames[2]!).p);
+  });
+
+  it("patches an array that is a field of a player's own view", () => {
+    const sender = new DeltaSender();
+    const a = new Mirror("a");
+    const b = new Mirror("b");
+    const sockets = [{ ws: a.ws, id: "a", arrays: true }, { ws: b.ws, id: "b", arrays: true }];
+    const view = (units: { x: number }[]) => (id: string) => ({ units, hand: id === "a" ? [1, 2, 3] : [4] });
+    sender.send(sockets, 1, 1, undefined, view([{ x: 1 }, { x: 2 }]));
+    // The shared list is diffed once for both; each hand is its own.
+    const shared = counted([{ x: 1 }, { x: 3 }]);
+    sender.send(sockets, 2, 2, undefined, view(shared.value));
+    expect(JSON.parse(a.frames[1]!).p).toEqual({ units: [{ 1: { x: [3] } }, 2] });
+    expect(JSON.parse(b.frames[1]!).p).toEqual({ units: [{ 1: { x: [3] } }, 2] });
+    expect(a.state).toEqual({ units: [{ x: 1 }, { x: 3 }], hand: [1, 2, 3] });
+    expect(b.state).toEqual({ units: [{ x: 1 }, { x: 3 }], hand: [4] });
+  });
+
+  it("keeps every kind of client's copy right through a long run of changes to a list", () => {
+    const sender = new DeltaSender();
+    const clients = {
+      json2: new Mirror("json2"),
+      json1: new Mirror("json1"),
+      binary2: new BinaryMirror(),
+      binary1: new BinaryMirror(),
+    };
+    const sockets = [
+      { ws: clients.json2.ws, id: "json2", arrays: true },
+      { ws: clients.json1.ws, id: "json1" },
+      { ws: clients.binary2.ws, id: "binary2", binary: true, arrays: true },
+      { ws: clients.binary1.ws, id: "binary1", binary: true },
+    ];
+    let seed = 3;
+    const random = (n: number) => Math.floor(((seed = (Math.imul(seed, 1103515245) + 12345) >>> 0) / 4294967296) * n);
+    let state = { units: Array.from({ length: 8 }, (_, id) => ({ id, x: id * 1.5, path: [id] })), tick: 0 };
+    sender.send(sockets, 0, 0, state, undefined);
+    for (let tick = 1; tick <= 200; tick++) {
+      const next = JSON.parse(JSON.stringify(state)) as typeof state;
+      next.tick = tick;
+      const target = next.units[random(next.units.length)];
+      const kind = random(8);
+      if (!target || kind === 0) next.units.push({ id: tick + 100, x: 0, path: [] });
+      else if (kind < 5) target.x = Math.round((target.x + random(30) / 10) * 10) / 10;
+      else if (kind === 5) target.path.push(random(9));
+      else if (kind === 6) next.units.pop();
+      else next.units.splice(random(next.units.length), 1);
+      state = next;
+      sender.send(sockets, tick, tick, state, undefined);
+      for (const [name, client] of Object.entries(clients)) expect(client.state, `${name} at ${tick}`).toEqual(state);
+    }
+    // The two that know array patches were sent fewer bytes than the two that do not.
+    const bytes = (frames: (string | Uint8Array)[]) => frames.reduce((sum, frame) => sum + frame.length, 0);
+    // Not by more than this, because one change in eight shifts the list, which sends it whole.
+    expect(bytes(clients.json2.frames)).toBeLessThan(bytes(clients.json1.frames) * 0.75);
+    expect(bytes(clients.binary2.frames)).toBeLessThan(bytes(clients.binary1.frames) * 0.75);
   });
 });
