@@ -76,3 +76,42 @@ jobs:
           if grep -q "SCRIPT ERROR\|Parse Error" godot.log; then exit 1; fi
       - if: failure()
         run: cat server.log
+
+  # The Unity client, compiled as Unity compiles it and run on .NET against a local Worker.
+  unity-client:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      WRANGLER_SEND_METRICS: "false"
+      DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+      DOTNET_NOLOGO: "1"
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Build the client and its tests
+        run: dotnet build clients/unity/Tests~/Tests -c Release
+      - name: Start the test server
+        run: |
+          npx wrangler dev --config clients/test-server/wrangler.jsonc --port 8787 > server.log 2>&1 &
+          for attempt in $(seq 1 60); do
+            curl -s -o /dev/null http://127.0.0.1:8787/ && exit 0
+            sleep 1
+          done
+          cat server.log
+          exit 1
+      - name: Test the client
+        env:
+          TICKFLARE_TEST_URL: ws://127.0.0.1:8787
+        run: |
+          set -o pipefail
+          timeout 300 dotnet run --project clients/unity/Tests~/Tests -c Release --no-build 2>&1 | tee unity.log
+          grep -q " checks, 0 failed" unity.log
+      - if: failure()
+        run: cat server.log

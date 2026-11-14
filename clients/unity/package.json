@@ -1,0 +1,12 @@
+{
+  "name": "dev.tickflare.client",
+  "version": "0.1.0",
+  "displayName": "Tickflare",
+  "description": "A client for Tickflare rooms: multiplayer game servers on Cloudflare Durable Objects.",
+  "unity": "2021.3",
+  "license": "MIT",
+  "keywords": ["multiplayer", "networking", "websocket", "cloudflare"],
+  "author": { "name": "Tickflare", "url": "https://github.com/Giamme/tickflare" },
+  "documentationUrl": "https://github.com/Giamme/tickflare/tree/main/clients/unity",
+  "repository": { "type": "git", "url": "https://github.com/Giamme/tickflare.git", "directory": "clients/unity" }
+}
