@@ -18,6 +18,10 @@ on:
         description: "measure: the longest to wait for Cloudflare's analytics, which lag by some minutes, in seconds."
         required: false
         default: "900"
+      table:
+        description: "rates: the rooms to measure, as JSON, in place of the usual list. [{\"units\":1000,\"sight\":100,\"players\":1000,\"rate\":10}]"
+        required: false
+        default: ""
       silent_ms:
         description: "measure: silentAfterMs for the rooms, if not Tickflare's default. 0 never closes a silent connection."
         required: false
@@ -48,7 +52,7 @@ permissions:
 
 # Each run deploys a Worker of its own, so runs with different settings can go side by side.
 concurrency:
-  group: measure-${{ inputs.mode }}-${{ inputs.scenarios }}-${{ inputs.silent_ms }}
+  group: measure-${{ inputs.mode }}-${{ inputs.scenarios }}-${{ inputs.silent_ms }}-${{ inputs.table != '' }}
   cancel-in-progress: false
 
 jobs:
@@ -118,6 +122,7 @@ jobs:
           BENCH_URL: wss://${{ env.BENCH_HOST }}
           SCENARIOS: ${{ inputs.scenarios }}
           BENCH_SOAK_MINUTES: ${{ inputs.soak_minutes }}
+          BENCH_TABLE: ${{ inputs.table }}
         run: |
           set -o pipefail
           echo "SINCE=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"

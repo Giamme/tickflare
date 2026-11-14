@@ -51,8 +51,9 @@ export class Bench extends Room<State, Command, Env> {
   /** How many times this room has been started: once, unless Cloudflare took it out of memory. */
   #starts: number;
 
-  /** When the last line about ticking went into the log. */
+  /** When the last line about ticking went into the log, and the tick it was at. */
   #loggedTickAt = 0;
+  #loggedTick = 0;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -177,8 +178,10 @@ export class Bench extends Room<State, Command, Env> {
     // Every 30 seconds, and on the first tick of an instance: who the room thinks is there.
     const now = Date.now();
     if (now - this.#loggedTickAt >= 30_000) {
+      const rate = this.#loggedTickAt === 0 ? "" : `, ${((this.tick - this.#loggedTick) / ((now - this.#loggedTickAt) / 1000)).toFixed(1)} a second`;
       this.#loggedTickAt = now;
-      this.#log(`tick ${this.tick}; ${this.#sockets()}`);
+      this.#loggedTick = this.tick;
+      this.#log(`tick ${this.tick}${rate}; ${this.#sockets()}`);
     }
     // Things walk in straight lines and turn now and then, as units in a game do.
     for (const thing of Object.values(this.state.things)) {

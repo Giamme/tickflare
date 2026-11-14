@@ -157,10 +157,16 @@ async function tickRate({ units, rate, sight, players, cps = 0 }) {
         : null;
     const seen = await watch(sockets[0], MEASURE_MS, false);
     if (timer) clearInterval(timer);
+    // The room's own log, while its players are still there: what it says of its ticks and sockets.
+    const log = await fetch(`${BASE.replace(/^ws/, "http")}/rooms/${room}/how?player=p0&log=1&key=${KEY}`)
+      .then((response) => response.json())
+      .then((body) => body.lines.slice(-6))
+      .catch(() => undefined);
     const after = await closeAndAsk(sockets, room).catch((error) => ({ asking: String(error?.message ?? error) }));
     report({
       kind: "rate",
       ...after,
+      log,
       room,
       ticks: seen.ticks,
       units,
