@@ -8,7 +8,8 @@ import {
   type Player,
   type ServerMessage,
 } from "../protocol.js";
-import { DeltaSender } from "./delta.js";
+import { BINARY_PATCHES } from "../binary.js";
+import { DeltaSender, type SeatedSocket } from "./delta.js";
 import { MAX_CLOSE_REASON, readFrame, refuse } from "./frames.js";
 import { NAME_HEADER, PLAYER_HEADER, ROOM_HEADER, type RoomNamespace } from "./gateway.js";
 import { RateLimiter } from "./limiter.js";
@@ -62,6 +63,9 @@ interface Committed {
 }
 
 const SOCKET_OPEN = 1;
+
+/** Marks the socket of a client that asked for patches in binary. No player's id starts with a control character. */
+const BINARY_TAG = "\u0001patches=b1";
 /** Prefix of every timer name the kernel keeps for itself. */
 const KERNEL_TIMER = "tickflare:";
 /** Prefix of the kernel's own timers, which give up the seats of players who stay away. */
@@ -702,7 +706,8 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
         await this.#finish();
       }
     }
-    const response = this.#connect(playerId, name);
+    const binary = new URL(request.url).searchParams.get("patches") === BINARY_PATCHES;
+    const response = this.#connect(playerId, name, binary);
     await this.#finish();
     return response;
   }
@@ -802,7 +807,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     );
   }
 
-  #connect(playerId: string, name: string | undefined): Response {
+  #connect(playerId: string, name: string | undefined, binary = false): Response {
     const pair = new WebSocketPair();
     const client = pair[0];
     const server = pair[1];
@@ -862,7 +867,8 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
 
     // One connection per player: the newest wins.
     this.#replaceSockets(playerId);
-    this.ctx.acceptWebSocket(server, [playerId]);
+    // What the client asked for is kept with the socket, where it outlasts the room's sleep.
+    this.ctx.acceptWebSocket(server, binary ? [playerId, BINARY_TAG] : [playerId]);
     this.#welcome(server, player, this.#loop !== undefined);
     this.#broadcastPresence(server);
 
@@ -1549,19 +1555,20 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
   }
 
   /** Open sockets of players who still hold a seat. */
-  #seatedSockets(): { ws: WebSocket; id: string }[] {
-    const sockets: { ws: WebSocket; id: string }[] = [];
+  #seatedSockets(): SeatedSocket[] {
+    const sockets: SeatedSocket[] = [];
     for (const ws of this.ctx.getWebSockets()) {
-      const id = this.#playerOf(ws);
+      const tags = this.ctx.getTags(ws);
+      const id = tags.find((tag) => tag !== BINARY_TAG);
       if (id && ws.readyState === SOCKET_OPEN && this.#roster.includes(id)) {
-        sockets.push({ ws, id });
+        sockets.push(tags.length > 1 ? { ws, id, binary: true } : { ws, id });
       }
     }
     return sockets;
   }
 
   #playerOf(ws: WebSocket): string | undefined {
-    return this.ctx.getTags(ws)[0];
+    return this.ctx.getTags(ws).find((tag) => tag !== BINARY_TAG);
   }
 
   #isConnected(playerId: string, except?: WebSocket): boolean {

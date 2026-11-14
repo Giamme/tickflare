@@ -72,10 +72,18 @@ Frames are JSON, and what is sent after a change is a patch: it names what chang
 So a hundred units moving ten times a second is about 6 KB a second to every player who sees them, and a thousand about 60 KB a second. Cloudflare does not charge for it, but a player on a phone pays for it and a poor connection will not carry it.
 
 - **Round what you send.** A position with all its decimals costs three times one rounded to a tenth, on the wire as in JSON. `Math.round(x * 10) / 10`, in the simulation or in `view()`.
-- **A client of your own has to offer compression** (`permessage-deflate`), or it is sent the JSON as it is. To see whether a connection has it, look for `Sec-WebSocket-Extensions` among the response headers of the WebSocket in your browser's developer tools.
+- **A client of your own has to offer compression** (`permessage-deflate`), or it is sent the JSON as it is, unless it asks for binary patches. To see whether a connection has it, look for `Sec-WebSocket-Extensions` among the response headers of the WebSocket in your browser's developer tools.
 - **Compression costs the room nothing we could measure.** Rooms ticked as fast with it as without, up to 1.2 MB of JSON a second to each of twenty players.
 
-**A binary format was measured, and left out.** We encoded the same patches in binary, with a table of keys so that no name is sent twice, and compressed both. For rounded numbers the binary frames were 3 to 9% smaller than the JSON ones; for unrounded floats about a third smaller, which rounding beats. Compression already removes what a binary format removes, the repeated names and the punctuation. A second wire format for that, unreadable in developer tools, is not worth having. These figures are from Cloudflare's runtime run locally: we have not measured on Cloudflare's network.
+**Binary patches are for clients that cannot compress.** A client can ask for its patches [in binary](../reference/protocol#binary-patches), with every name sent once and numbers packed. The same units, measured the same way, in bytes on the wire for each unit that moves:
+
+| | JSON | JSON, compressed | Binary | Binary, compressed |
+| --- | --- | --- | --- | --- |
+| Whole numbers | 27 | 6 | 11 | 5 |
+| One decimal | 31 | 7 | 11 | 6 |
+| Unrounded floats | 55 | 22 | 23 | 17 |
+
+Without compression, binary is a little over a third of the JSON. With it, binary saves another 15% or so on rounded numbers. And compressed JSON is smaller than binary that is not compressed: about half the size, for rounded numbers. So: a browser or Node client gains little and loses frames it can read in the developer tools, which is why it is off unless asked for. A client in an engine whose WebSocket does not compress should ask for it. One that can compress should do that first. Rooms ticked as fast sending binary as sending JSON. These figures are from Cloudflare's runtime run locally: we have not measured on Cloudflare's network.
 
 A player is sent their whole view when they connect. With a custom `view()`, they are also sent it whole for the first change after the room has slept, since what each player was sent is remembered only while the room is in memory. A game with hidden hands and a minute between moves therefore still sends whole views; keep such a view small.
 
@@ -183,7 +191,7 @@ Seeing across a border is a recipe built on `signal`, not something a room does 
 
 ## Clients
 
-The client is TypeScript, for browsers and Node. There is none for Unity, Godot or native code. [The protocol](../reference/protocol) is JSON over a WebSocket and is written down, so one can be written.
+The client is TypeScript, for browsers and Node. There is none for Unity, Godot or native code. [The protocol](../reference/protocol) is JSON over a WebSocket and is written down, so one can be written. For an engine whose WebSocket is not compressed there are [binary patches](../reference/protocol#binary-patches), with test vectors to check a decoder against. What `Predictor`, `Interpolator` and `LockstepClient` do, such a client has to do for itself.
 
 ## How far it has been tested
 

@@ -18,4 +18,4 @@ The server side, for your Worker.
 
 The client side, for browsers and Node.
 
-- [`RoomClient`](./tickflare/client/classes/RoomClient), [`LockstepClient`](./tickflare/client/classes/LockstepClient), [`findMatch`](./tickflare/client/functions/findMatch), [`AccountClient`](./tickflare/client/classes/AccountClient), [`Interpolator`](./tickflare/client/classes/Interpolator), [`Predictor`](./tickflare/client/classes/Predictor), [`produce`](./tickflare/client/functions/produce)
+- [`RoomClient`](./tickflare/client/classes/RoomClient), [`LockstepClient`](./tickflare/client/classes/LockstepClient), [`findMatch`](./tickflare/client/functions/findMatch), [`AccountClient`](./tickflare/client/classes/AccountClient), [`Interpolator`](./tickflare/client/classes/Interpolator), [`Predictor`](./tickflare/client/classes/Predictor), [`produce`](./tickflare/client/functions/produce), [`decodePatchFrame`](./tickflare/functions/decodePatchFrame)

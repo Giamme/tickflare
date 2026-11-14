@@ -1,0 +1,495 @@
+[
+  {
+    "name": "smallest",
+    "about": "An empty patch: the first frame on a connection always says to forget the keys.",
+    "frames": [
+      {
+        "frame": {
+          "t": "patch",
+          "seq": 0,
+          "tick": 0,
+          "p": {}
+        },
+        "hex": "b10400000000",
+        "keys": []
+      }
+    ]
+  },
+  {
+    "name": "one field",
+    "about": "A key is defined in the frame that first uses it, and used by number.",
+    "frames": [
+      {
+        "frame": {
+          "t": "patch",
+          "seq": 1,
+          "tick": 1,
+          "p": {
+            "score": [
+              7
+            ]
+          }
+        },
+        "hex": "b1040101010573636f726501010307",
+        "keys": [
+          "score"
+        ]
+      },
+      {
+        "frame": {
+          "t": "patch",
+          "seq": 2,
+          "tick": 2,
+          "p": {
+            "score": [
+              8
+            ]
+          }
+        },
+        "hex": "b10002020001010308",
+        "keys": [
+          "score"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "numbers",
+    "about": "Every way a number is written.",
+    "frames": [
+      {
+        "frame": {
+          "t": "patch",
+          "seq": 1,
+          "tick": 0,
+          "p": {
+            "a": [
+              0
+            ],
+            "b": [
+              127
+            ],
+            "c": [
+              128
+            ],
+            "d": [
+              -1
+            ],
+            "e": [
+              -300
+            ],
+            "f": [
+              9007199254740991
+            ]
+          }
+        },
+        "hex": "b1040100060161016201630164016501660601030002037f030380010404010504ac020603ffffffffffffff0f",
+        "keys": [
+          "a",
+          "b",
+          "c",
+          "d",
+          "e",
+          "f"
+        ]
+      },
+      {
+        "frame": {
+          "t": "patch",
+          "seq": 2,
+          "tick": 0,
+          "p": {
+            "a": [
+              0.5
+            ],
+            "b": [
+              -12.7
+            ],
+            "c": [
+              3.25
+            ],
+            "d": [
+              -99.99
+            ],
+            "e": [
+              0.125
+            ],
+            "f": [
+              -1e+300
+            ]
+          }
+        },
+        "hex": "b1000200000601050502067f0307c50204088f4e05093fc00000000000000609fe37e43c8800759c",
+        "keys": [
+          "a",
+          "b",
+          "c",
+          "d",
+          "e",
+          "f"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "values",
+    "about": "Strings, booleans, null, arrays and objects. Keys inside a value come from the same table.",
+    "frames": [
+      {
+        "frame": {
+          "t": "patch",
+          "seq": 1,
+          "tick": 0,
+          "p": {
+            "unit": [
+              {
+                "name": "Ada — 日本",
+                "alive": true,
+                "target": null,
+                "tags": [
+                  "fast",
+                  2,
+                  [
+                    false
+                  ]
+                ],
+                "at": {
+                  "x": 1.5,
+                  "y": -2
+                }
+              }
+            ]
+          }
+        },
+        "hex": "b10401000804756e6974046e616d6505616c6976650674617267657404746167730261740178017901010c05020a0e41646120e2809420e697a5e69cac03020400050b030a046661737403020b0101060c0207050f080402",
+        "keys": [
+          "unit",
+          "name",
+          "alive",
+          "target",
+          "tags",
+          "at",
+          "x",
+          "y"
+        ]
+      },
+      {
+        "frame": {
+          "t": "patch",
+          "seq": 2,
+          "tick": 0,
+          "p": {
+            "unit": {
+              "at": {
+                "x": [
+                  2.5
+                ]
+              },
+              "tags": [
+                []
+              ],
+              "name": [
+                ""
+              ]
+            }
+          }
+        },
+        "hex": "b10002000001010e03060e01070519050b00020a00",
+        "keys": [
+          "unit",
+          "name",
+          "alive",
+          "target",
+          "tags",
+          "at",
+          "x",
+          "y"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "delete and nest",
+    "about": "A key deleted, a patch within a patch, a value set.",
+    "frames": [
+      {
+        "frame": {
+          "t": "patch",
+          "seq": 4,
+          "tick": 12,
+          "p": {
+            "units": {
+              "u1": {
+                "x": [
+                  10
+                ],
+                "y": [
+                  20
+                ]
+              },
+              "u2": {
+                "hp": [
+                  0
+                ]
+              }
+            },
+            "phase": [
+              "playing"
+            ]
+          }
+        },
+        "hex": "b104040c0705756e6974730275310178017902753202687005706861736502010e02020e0203030a040314050e01060300070a07706c6179696e67",
+        "keys": [
+          "units",
+          "u1",
+          "x",
+          "y",
+          "u2",
+          "hp",
+          "phase"
+        ]
+      },
+      {
+        "frame": {
+          "t": "patch",
+          "seq": 5,
+          "tick": 13,
+          "p": {
+            "units": {
+              "u1": {
+                "x": [
+                  11
+                ]
+              },
+              "u2": 0
+            }
+          }
+        },
+        "hex": "b100050d0001010e02020e0103030b050d",
+        "keys": [
+          "units",
+          "u1",
+          "x",
+          "y",
+          "u2",
+          "hp",
+          "phase"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "from and c",
+    "about": "Outside a simulation a patch says which seq it is a patch of; the frame that first shows a player's command says which.",
+    "frames": [
+      {
+        "frame": {
+          "t": "patch",
+          "seq": 3,
+          "tick": 0,
+          "from": 2,
+          "p": {
+            "turn": [
+              "p2"
+            ]
+          }
+        },
+        "hex": "b10503000201047475726e01010a027032",
+        "keys": [
+          "turn"
+        ]
+      },
+      {
+        "frame": {
+          "t": "patch",
+          "seq": 4,
+          "tick": 0,
+          "from": 3,
+          "c": 17,
+          "p": {
+            "turn": [
+              "p1"
+            ]
+          }
+        },
+        "hex": "b103040003110001010a027031",
+        "keys": [
+          "turn"
+        ]
+      },
+      {
+        "frame": {
+          "t": "patch",
+          "seq": 9,
+          "tick": 40,
+          "c": 300,
+          "p": {
+            "turn": [
+              "p2"
+            ]
+          }
+        },
+        "hex": "b1020928ac020001010a027032",
+        "keys": [
+          "turn"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "long key",
+    "about": "A key longer than 64 UTF-16 units is never given a number: number 0, then the name.",
+    "frames": [
+      {
+        "frame": {
+          "t": "patch",
+          "seq": 1,
+          "tick": 0,
+          "p": {
+            "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk": [
+              1
+            ],
+            "short": [
+              2
+            ]
+          }
+        },
+        "hex": "b1040100010573686f72740200416b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b0301010302",
+        "keys": [
+          "short"
+        ]
+      },
+      {
+        "frame": {
+          "t": "patch",
+          "seq": 2,
+          "tick": 0,
+          "p": {
+            "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk": [
+              3
+            ],
+            "short": [
+              4
+            ]
+          }
+        },
+        "hex": "b1000200000200416b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b0303010304",
+        "keys": [
+          "short"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "odd keys",
+    "about": "The empty key, a key that is not ASCII, and __proto__ as a key like any other.",
+    "frames": [
+      {
+        "frame": {
+          "t": "patch",
+          "seq": 1,
+          "tick": 0,
+          "p": {
+            "": [
+              1
+            ],
+            "clé": [
+              2
+            ],
+            "__proto__": [
+              3
+            ]
+          }
+        },
+        "hex": "b1040100030004636cc3a9095f5f70726f746f5f5f03010301020302030303",
+        "keys": [
+          "",
+          "clé",
+          "__proto__"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "late joiner",
+    "about": "The room had already sent the keys units, u1, x and y to others. This socket's first frame defines all four, though it uses two.",
+    "tableBefore": [
+      "units",
+      "u1",
+      "x",
+      "y"
+    ],
+    "frames": [
+      {
+        "frame": {
+          "t": "patch",
+          "seq": 8,
+          "tick": 8,
+          "p": {
+            "units": {
+              "u1": 0
+            }
+          }
+        },
+        "hex": "b10408080405756e6974730275310178017901010e01020d",
+        "keys": [
+          "units",
+          "u1",
+          "x",
+          "y"
+        ]
+      },
+      {
+        "frame": {
+          "t": "patch",
+          "seq": 9,
+          "tick": 9,
+          "p": {
+            "units": {
+              "u2": {
+                "x": [
+                  5
+                ]
+              }
+            }
+          }
+        },
+        "hex": "b10009090102753201010e01050e01030305",
+        "keys": [
+          "units",
+          "u1",
+          "x",
+          "y",
+          "u2"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "forget",
+    "about": "The room's table was started again since this socket's last frame: the forget flag is set and the keys are numbered from 0.",
+    "keysOfAnEarlierTable": 3,
+    "frames": [
+      {
+        "frame": {
+          "t": "patch",
+          "seq": 20,
+          "tick": 20,
+          "p": {
+            "a": [
+              1
+            ],
+            "b": [
+              2
+            ]
+          }
+        },
+        "hex": "b1041414020161016202010301020302",
+        "keys": [
+          "a",
+          "b"
+        ]
+      }
+    ]
+  }
+]

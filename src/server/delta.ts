@@ -1,4 +1,5 @@
-import { applyPatch, diff, isPlainObject, jsonEqual } from "../patch.js";
+import { encodePatch, encodePatchFrame, KeyTable } from "../binary.js";
+import { applyPatch, diff, isPlainObject, jsonEqual, type Patch } from "../patch.js";
 
 /**
  * How to bring a socket up to date: a patch as JSON, or its whole view as
@@ -6,6 +7,10 @@ import { applyPatch, diff, isPlainObject, jsonEqual } from "../patch.js";
  */
 interface Update {
   patch?: string;
+  /** The patch as an object, when one is at hand. */
+  parsed?: Patch;
+  /** The patch in binary, once a socket has needed it. */
+  binary?: Uint8Array;
   whole?: string;
   next: unknown;
 }
@@ -14,6 +19,8 @@ export interface SeatedSocket {
   ws: WebSocket;
   /** The player the socket belongs to. */
   id: string;
+  /** Whether its client asked for patches in binary. */
+  binary?: boolean;
 }
 
 /**
@@ -41,6 +48,10 @@ export class DeltaSender {
   #sentSeq = -1;
   /** Without a custom view: the snapshot every socket held after the last send, and the `seq` it is of. */
   #common: { seq: number; snapshot: unknown } | undefined;
+  /** The names sent as keys in binary patches, numbered. One table for the room. */
+  #keys = new KeyTable();
+  /** How much of that table each socket has been told, and of which generation of it. */
+  #told = new WeakMap<WebSocket, { generation: number; known: number }>();
 
   /** Record exactly what a socket has just been sent in full, as a copy the room cannot touch. */
   remember(ws: WebSocket, snapshot: unknown, seq: number): void {
@@ -96,13 +107,21 @@ export class DeltaSender {
     const head = `"seq":${seq},"tick":${tick}`;
     const baselines = new Map<WebSocket, unknown>();
     const seqs = new Map<WebSocket, number>();
+    this.#keys.renew();
     /** Sends a socket its update, and records what it then holds. */
-    const deliver = (ws: WebSocket, update: Update): void => {
+    const deliver = (ws: WebSocket, update: Update, binary = false): void => {
       const held = this.#seqs.get(ws);
       const shown = shows?.get(ws);
       const c = shown === undefined ? "" : `,"c":${shown}`;
       if (update.patch !== undefined) {
-        ws.send(`{"t":"patch",${head}${named && held !== undefined ? `,"from":${held}` : ""}${c},"p":${update.patch}}`);
+        const from = named && held !== undefined ? held : undefined;
+        const frame = binary ? this.#binaryFrame(ws, update, { seq, tick, from, c: shown }) : undefined;
+        if (frame) {
+          ws.send(frame);
+          this.#told.set(ws, { generation: this.#keys.generation, known: this.#keys.size });
+        } else {
+          ws.send(`{"t":"patch",${head}${from === undefined ? "" : `,"from":${from}`}${c},"p":${update.patch}}`);
+        }
       } else if (update.whole !== undefined) {
         ws.send(`{"t":"state",${head}${c},"state":${update.whole}}`);
       }
@@ -133,12 +152,35 @@ export class DeltaSender {
   /** During a send without a custom view: the snapshot everyone ends up holding. */
   #latest: unknown;
 
-  #sendState(sockets: SeatedSocket[], state: unknown, deliver: (ws: WebSocket, update: Update) => void): void {
+  /**
+   * A patch as a binary frame for one socket, or undefined if it cannot be
+   * said in binary, in which case the socket is sent the JSON: its client
+   * reads both. The patch itself is encoded once, for every socket that is
+   * sent it.
+   */
+  #binaryFrame(
+    ws: WebSocket,
+    update: Update,
+    head: { seq: number; tick: number; from: number | undefined; c: number | undefined },
+  ): Uint8Array | undefined {
+    try {
+      update.binary ??= encodePatch(update.parsed ?? (JSON.parse(update.patch!) as Patch), this.#keys);
+      const told = this.#told.get(ws);
+      // A socket this instance has not sent a frame to, or that knows a table since started again,
+      // is told to forget its keys and is given all of them.
+      const forget = told === undefined || told.generation !== this.#keys.generation;
+      return encodePatchFrame(head, this.#keys, forget ? 0 : told.known, forget, update.binary);
+    } catch {
+      return undefined;
+    }
+  }
+
+  #sendState(sockets: SeatedSocket[], state: unknown, deliver: (ws: WebSocket, update: Update, binary?: boolean) => void): void {
     // Sockets that were last sent the same snapshot share one diff, and everyone ends up
     // holding the same snapshot.
     const shared = new Map<unknown, Update>();
     let common: Update | undefined;
-    for (const { ws, id } of sockets) {
+    for (const { ws, id, binary } of sockets) {
       try {
         const base = this.#baselines.get(ws);
         let update = base === undefined ? undefined : shared.get(base);
@@ -148,7 +190,7 @@ export class DeltaSender {
           else common = update;
           if (base !== undefined) shared.set(base, update);
         }
-        deliver(ws, update);
+        deliver(ws, update, binary);
       } catch (err) {
         console.error(`[tickflare] could not send the state to ${id}:`, err);
       }
@@ -159,13 +201,13 @@ export class DeltaSender {
   #sendViews(
     sockets: SeatedSocket[],
     viewOf: (playerId: string) => unknown,
-    deliver: (ws: WebSocket, update: Update) => void,
+    deliver: (ws: WebSocket, update: Update, binary?: boolean) => void,
   ): void {
     // Every view first, then the diffs: a field shared between views is final by the time it is diffed.
-    const views: { ws: WebSocket; id: string; live: unknown }[] = [];
-    for (const { ws, id } of sockets) {
+    const views: { ws: WebSocket; id: string; binary: boolean | undefined; live: unknown }[] = [];
+    for (const { ws, id, binary } of sockets) {
       try {
-        views.push({ ws, id, live: viewOf(id) });
+        views.push({ ws, id, binary, live: viewOf(id) });
       } catch (err) {
         // A view() that threw must not starve the other players.
         console.error(`[tickflare] could not send the state to ${id}:`, err);
@@ -173,7 +215,7 @@ export class DeltaSender {
     }
 
     const fields = new FieldCache();
-    for (const { ws, id, live } of views) {
+    for (const { ws, id, binary, live } of views) {
       try {
         const base = this.#baselines.get(ws);
         deliver(
@@ -181,6 +223,7 @@ export class DeltaSender {
           isPlainObject(live) && (base === undefined || isPlainObject(base))
             ? viewUpdate(base, live, fields)
             : updateFor(base, live),
+          binary,
         );
       } catch (err) {
         console.error(`[tickflare] could not send the state to ${id}:`, err);
@@ -303,7 +346,9 @@ function updateFor(base: unknown, live: unknown): Update {
     if (patch === undefined) return { next: base };
     if (patch !== null) {
       const json = JSON.stringify(patch);
-      return { patch: json, next: applyPatch(base, JSON.parse(json)) };
+      // A copy of its own, so that what the socket holds shares nothing with the room's state.
+      const parsed = JSON.parse(json) as Patch;
+      return { patch: json, parsed, next: applyPatch(base, parsed) };
     }
   }
   const json = JSON.stringify(live) ?? "null";

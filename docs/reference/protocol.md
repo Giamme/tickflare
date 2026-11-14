@@ -4,7 +4,7 @@ Rooms and clients talk over one WebSocket per player, in JSON text frames. `tick
 
 The protocol version is 1. Rooms announce it in their `welcome` frame.
 
-Offer `permessage-deflate` when you connect, as browsers do. Cloudflare then compresses the frames, which makes patches of rounded numbers four to five times smaller on the wire; a client that does not offer it is sent them as they are.
+Offer `permessage-deflate` when you connect, as browsers do. Cloudflare then compresses the frames, which makes patches of rounded numbers four to five times smaller on the wire; a client that does not offer it is sent them as they are. If your WebSocket library cannot do that, ask for [binary patches](#binary-patches) instead, which are a little over a third of the size of the JSON ones.
 
 ## Connecting
 
@@ -64,6 +64,80 @@ Only plain objects are patched key by key. Arrays and other values are replaced 
 ```
 
 This patch moves unit `u7`, removes unit `u3`, and sets `phase`. Apply patches in order to the last view you have. `applyPatch` and `diff` are exported from `tickflare` if you want the reference implementation.
+
+## Binary patches
+
+A client can ask for its patches in binary: add `patches=b1` to the query when it connects, `wss://my-game.example/rooms/lobby?token=<token>&patches=b1`. Every `patch` frame then arrives as a binary WebSocket message in the format below. Everything else stays as it is: `welcome`, `state`, `presence`, `ack`, `reject`, `msg` and `error` are JSON text messages, and so is everything the client sends. A patch that cannot be said in binary is sent as JSON, so read whichever arrives: a text message is JSON, a binary message is a patch.
+
+It is for clients whose WebSocket is not compressed. Compressed, the JSON is already smaller than these frames are uncompressed; [the measurements](../guide/limits#bandwidth) are in the guide. `RoomClient` asks for binary with its `binary` option, and `decodePatchFrame`, exported from `tickflare` and `tickflare/client`, is the reference decoder.
+
+**Whole numbers** are written as varints: seven bits to a byte, the lowest seven first, and the top bit of every byte but the last set. 300 is `ac 02`. They go up to 2^53 - 1, in at most eight bytes.
+
+**A string** is its length in bytes as a varint, then its UTF-8.
+
+**A frame** is, in order:
+
+| Bytes | What |
+| --- | --- |
+| `b1` | Says that this is a patch in this format |
+| one byte of flags | 1: `from` follows. 2: `c` follows. 4: forget the keys you know |
+| varint | `seq` |
+| varint | `tick` |
+| varint | `from`, if its flag is set |
+| varint | `c`, if its flag is set |
+| varint, then that many strings | Key definitions |
+| a patch | As below |
+
+`seq`, `tick`, `from` and `c` mean what they mean in a JSON `patch` frame.
+
+**Keys.** A name used as a key is sent once and by its number after that. Keep a list of keys for the connection, empty when it opens. For each frame: if the forget flag is set, empty the list; then append the frame's definitions to it, in order. A key's number is its place in the list, from 0. The first frame on a connection always has the flag set, and so does the first after the room has slept or started its numbering again, which it does when it has given out 8,192 numbers. A frame may define keys it does not use: the numbers are the room's, the same for every player in it.
+
+In a patch or an object, **a key** is a varint: 0 means the name follows as a string, for this once, without a number; anything else is a key's number plus one. Names longer than 64 UTF-16 code units are always sent this way.
+
+**A patch** is a varint count, then that many entries: a key, then one byte.
+
+| Byte | The key's entry |
+| --- | --- |
+| `0d` | Delete the key |
+| `0e` | A patch follows: apply it to what the key holds |
+| anything else | It is the first byte of a value: set the key to that value |
+
+**A value** is one byte that says what it is, then:
+
+| Byte | Value |
+| --- | --- |
+| `00` | `null` |
+| `01`, `02` | `false`, `true` |
+| `03` | A whole number, zero or more: a varint |
+| `04` | A whole number below zero: a varint of its size |
+| `05`, `06` | A number with one decimal place, positive or negative: a varint of ten times its size. Divide by 10 |
+| `07`, `08` | A number with two decimal places, positive or negative: a varint of a hundred times its size. Divide by 100 |
+| `09` | Any other number: eight bytes, an IEEE 754 double, big-endian |
+| `0a` | A string |
+| `0b` | An array: a varint count, then that many values |
+| `0c` | An object: a varint count, then that many pairs of a key and a value |
+
+The room uses `05` to `08` only when dividing gives back exactly the double it had, so do the division in double precision and you hold the same number the room does.
+
+An example, two frames on a new connection. The first sets `score` to 7:
+
+```
+b1  04  01  01  01 05 73 63 6f 72 65  01  01 03 07
+│   │   │   │   │                     │   │  └ a whole number: 7
+│   │   │   │   │                     │   └ key number 0, plus one
+│   │   │   │   │                     └ a patch of one entry
+│   │   │   │   └ one definition: a string of 5 bytes, "score". It is key 0
+│   │   │   └ tick 1
+│   │   └ seq 1
+│   └ flags: forget the keys you know
+└ a patch in this format
+```
+
+The second sets it to 8, in nine bytes where the JSON is 48: `b1 00 02 02 00 01 01 03 08`. No flags, `seq` 2, `tick` 2, no definitions, one entry, key 0, the whole number 8.
+
+If a frame does not read as this format, or uses a key number you have no name for, you are out of step with the room: close the connection and connect again.
+
+[Test vectors](https://github.com/Giamme/tickflare/blob/main/test/vectors/binary-patches.json) are in the repository: connections as lists of frames, each as hex, with the frame it stands for as JSON and the list of keys the client holds after it. A decoder that agrees with all of them reads what a room sends.
 
 ## Close codes
 

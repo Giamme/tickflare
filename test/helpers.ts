@@ -1,5 +1,6 @@
 import { exports } from "cloudflare:workers";
 import { afterEach, expect } from "vitest";
+import { decodePatchFrame } from "../src/binary.js";
 import { applyPatch } from "../src/patch.js";
 import type { PatchFrame, ServerMessage } from "../src/protocol.js";
 import type { TestCommand, TestState } from "./worker.js";
@@ -29,6 +30,24 @@ export interface Connection {
   patches: PatchFrame[];
   /** The type of every frame the room sent, as it came: "patch" where `next` says "state". */
   kinds: string[];
+  /** The frames that came in binary, as bytes. Ask for them by joining as `"p1&patches=b1"`. */
+  binary: Uint8Array[];
+}
+
+/**
+ * Reads what a socket was sent: JSON as it is, a binary frame through the
+ * decoder, with the connection's key table. Binary frames are kept in `raw`.
+ */
+function reader<Frame>(ws: WebSocket, raw: Uint8Array[] = []): (data: unknown) => Frame {
+  // The runtime hands binary messages over as blobs unless told otherwise.
+  ws.binaryType = "arraybuffer";
+  const keys: string[] = [];
+  return (data) => {
+    if (typeof data === "string") return JSON.parse(data) as Frame;
+    const bytes = new Uint8Array(data as ArrayBuffer);
+    raw.push(bytes);
+    return decodePatchFrame(bytes, keys) as Frame;
+  };
 }
 
 const open: WebSocket[] = [];
@@ -73,9 +92,11 @@ export async function connect(
   const waiting: ((message: Message) => void)[] = [];
   const patches: PatchFrame[] = [];
   const kinds: string[] = [];
+  const binary: Uint8Array[] = [];
+  const read = reader<Message>(ws, binary);
   let view: TestState | undefined;
   ws.addEventListener("message", (event) => {
-    let message = JSON.parse(event.data as string) as Message;
+    let message = read(event.data);
     kinds.push(message.t);
     if (message.t === "welcome" || message.t === "state") view = message.state;
     if (message.t === "patch") {
@@ -109,6 +130,7 @@ export async function connect(
     closed,
     patches,
     kinds,
+    binary,
     any,
     async next(t) {
       const message = await any();
@@ -161,6 +183,8 @@ export async function follow<State>(prefix: string, room: string, player: string
   const seen = {
     ws,
     frames: [] as Frame[],
+    /** The frames that came in binary, as bytes. */
+    binary: [] as Uint8Array[],
     state: undefined as State | undefined,
     tick: 0,
     /** The state as this client saw it at each tick. */
@@ -172,8 +196,9 @@ export async function follow<State>(prefix: string, room: string, player: string
       return seen.frames.filter((f): f is Extract<Frame, { t: T }> => f.t === t);
     },
   };
+  const read = reader<Frame>(ws, seen.binary);
   ws.addEventListener("message", (event) => {
-    const frame = JSON.parse(event.data as string) as Frame;
+    const frame = read(event.data);
     seen.frames.push(frame);
     if (frame.t === "welcome" || frame.t === "state") seen.state = frame.state;
     if (frame.t === "patch") seen.state = applyPatch(seen.state!, frame.p);

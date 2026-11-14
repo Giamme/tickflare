@@ -50,6 +50,8 @@ export interface LockstepClientOptions<Input, Sim> extends Simulation<Input, Sim
    * `RoomClientOptions.token`. Also asked before the recording is loaded.
    */
   token?: TokenSource;
+  /** Ask the room for its patches in binary: see `RoomClientOptions.binary`. */
+  binary?: boolean;
   /**
    * How to load the recording when (re)connecting. Defaults to `fetch` on
    * the room's `/replay` URL. The URL says what the client has already, and
@@ -139,6 +141,7 @@ export class LockstepClient<Input = unknown, Sim = unknown> {
         options.onStatus?.(status, detail);
       },
       token: options.token,
+      ...(options.binary ? { binary: true } : {}),
       onState: (view) => this.#receive(view),
       onMessage: (message) => this.#turns(message),
     });

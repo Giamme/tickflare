@@ -373,6 +373,26 @@ export class Zone extends Room<State, Command, Env> {
 </div>
 </div>
 
+<div class="tf-recipe">
+<div>
+
+### Clients outside the browser
+
+The protocol is JSON over one WebSocket, and it is written down. A client in an engine whose WebSocket is not compressed can ask for its patches in binary, a little over a third of the size, and check its decoder against the test vectors. [Wire protocol](/reference/protocol#binary-patches)
+
+</div>
+<div>
+
+```txt
+wss://my-game.example/rooms/lobby?token=…&patches=b1
+
+{"t":"patch","seq":2,"tick":2,"p":{"score":[8]}}   48 bytes
+b1 00 02 02 00 01 01 03 08                          9 bytes
+```
+
+</div>
+</div>
+
 </section>
 
 <div class="tf-closing">

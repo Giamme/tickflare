@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+**Binary patches, for clients whose WebSocket is not compressed.**
+
+- A client that connects with `patches=b1` in the query is sent its `patch` frames as binary messages: every key by number after the first time, whole numbers as varints, numbers with one or two decimals as whole numbers of tenths or hundredths. Without compression they are a little over a third of the size of the JSON; with it, about 15% smaller. Everything else stays JSON, and so does a room that is not asked.
+- The format is written down byte by byte in the protocol reference, with test vectors in `test/vectors/binary-patches.json` for checking a decoder in another language.
+- `decodePatchFrame(bytes, keys)` is the reference decoder, and `RoomClient` has a `binary` option. Leave it off in a browser or in Node: the connection is compressed there, and JSON frames can be read in the developer tools.
+
 **Prediction: a player's own move shows on the click.**
 
 - **`Predictor`**, in `tickflare/client`, draws a player's unconfirmed commands over the room's state. You give it `apply`, which does to a draft of the state what the room's `onCommand` does, and it gives you `state` and `send`. When the room's state arrives the guess is made again from it; a refused command's effect is taken back. With a `tick` as well, for things a command sets in motion, it runs as many ticks ahead of the room as a command takes to come back, measured as it goes. It works in event mode too.

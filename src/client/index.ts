@@ -6,6 +6,7 @@
  * @packageDocumentation
  * @module tickflare/client
  */
+import { BINARY_PATCHES, decodePatchFrame } from "../binary.js";
 import { applyPatch } from "../patch.js";
 import { roomIn, withFreshToken, type TokenSource } from "./token.js";
 import {
@@ -35,6 +36,7 @@ export {
 export { Interpolator } from "./interpolate.js";
 export { Predictor, type PredictorOptions } from "./predict.js";
 export { produce } from "./draft.js";
+export { decodePatchFrame } from "../binary.js";
 export { LockstepClient, type LockstepClientOptions } from "./lockstep.js";
 export {
   fingerprint,
@@ -119,6 +121,16 @@ export interface RoomClientOptions<View> {
   onMoved?(roomId: string): void;
   /** Reconnect after an unexpected close. Defaults to true. */
   reconnect?: boolean;
+  /**
+   * Ask the room for its patches in binary. Off by default, and better left
+   * off in a browser or in Node: there the connection is compressed, and
+   * binary frames are a few percent smaller than JSON ones at best, and not
+   * readable in the developer tools. It is for a client whose WebSocket is
+   * not compressed, and here so that the format has a client to be tested
+   * with. A room that does not know the format sends JSON, which is read as
+   * always.
+   */
+  binary?: boolean;
   /**
    * Keepalive interval in milliseconds. Defaults to 25 seconds; 0 disables
    * it. A connection that goes a whole interval without answering is taken
@@ -327,15 +339,38 @@ export class RoomClient<View = unknown, Command = unknown> {
   }
 
   #connect(url: string): void {
+    const { binary } = this.#options;
+    if (binary) {
+      const asked = new URL(url);
+      asked.searchParams.set("patches", BINARY_PATCHES);
+      url = asked.toString();
+    }
     const socket = new WebSocket(url);
+    if (binary) socket.binaryType = "arraybuffer";
     this.#socket = socket;
+    /** The keys the room has defined on this connection, by number. */
+    const keys: string[] = [];
 
     socket.addEventListener("message", (event) => {
-      if (socket !== this.#socket || typeof event.data !== "string") return;
+      if (socket !== this.#socket) return;
+      const data: unknown = event.data;
+      if (data instanceof ArrayBuffer) {
+        this.#unanswered = false;
+        let frame: ServerMessage<View>;
+        try {
+          frame = decodePatchFrame(new Uint8Array(data), keys);
+        } catch (err) {
+          // Whatever it was, the keys can no longer be trusted. Start again from a welcome.
+          console.warn("[tickflare] could not read a binary frame:", err);
+          return this.#resync();
+        }
+        return this.#handle(frame);
+      }
+      if (typeof data !== "string") return;
       // Anything the server sends shows the connection is alive.
       this.#unanswered = false;
-      if (event.data === PONG) return;
-      this.#handle(JSON.parse(event.data) as ServerMessage<View>);
+      if (data === PONG) return;
+      this.#handle(JSON.parse(data) as ServerMessage<View>);
     });
 
     socket.addEventListener("close", (event) => {

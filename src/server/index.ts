@@ -61,6 +61,7 @@ export {
   type RouteOptions,
 } from "./gateway.js";
 export { applyPatch, diff, type Patch } from "../patch.js";
+export { decodePatchFrame } from "../binary.js";
 export {
   CloseCode,
   PROTOCOL_VERSION,

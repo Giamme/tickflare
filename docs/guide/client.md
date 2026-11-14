@@ -73,6 +73,8 @@ The client reconnects by itself when a connection drops unexpectedly: after 125 
 
 It stops, with `closed`, after the close codes that mean trying again won't help: replaced by a newer connection, room full, refused by `onJoin`, or seat removed. See [Close codes](./players#close-codes). Pass `reconnect: false` to stop after any close.
 
+`binary: true` asks the room for its patches [in binary](../reference/protocol#binary-patches). Leave it off in a browser and in Node: the connection is compressed there, so it saves little, and JSON frames can be read in the developer tools. It exists for clients in engines whose WebSocket does not compress, and this client is how the format is tested.
+
 A keepalive goes out every 25 seconds (`pingIntervalMs`). A connection that goes a whole interval without hearing anything back is taken for dead and replaced, so a phone that changed networks reconnects in seconds instead of minutes.
 
 ### Tokens

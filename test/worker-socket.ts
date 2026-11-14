@@ -4,20 +4,30 @@ import { exports } from "cloudflare:workers";
 export class WorkerSocket {
   static all: WorkerSocket[] = [];
   readyState = 0;
+  /** As a browser's: how binary messages are handed over. The client sets it to "arraybuffer". */
+  binaryType = "blob";
+  /** How many binary messages the room has sent. */
+  binaryMessages = 0;
   #ws: WebSocket | undefined;
   #listeners = new Map<string, ((event: unknown) => void)[]>();
 
-  constructor(url: string) {
+  constructor(readonly url: string) {
     WorkerSocket.all.push(this);
     void exports.default
       .fetch(url.replace(/^ws/, "http"), { headers: { Upgrade: "websocket" } })
       .then((response) => {
         const ws = response.webSocket;
         if (!ws) return this.drop();
+        ws.binaryType = "arraybuffer";
         ws.accept();
         if (this.readyState >= 2) return ws.close(1000, "gone");
         this.#ws = ws;
-        ws.addEventListener("message", (event) => this.#emit("message", { data: event.data }));
+        ws.addEventListener("message", (event) => {
+          if (typeof event.data !== "string") this.binaryMessages += 1;
+          // A client that did not ask for array buffers would be handed a blob, which it does not read.
+          const data = typeof event.data === "string" || this.binaryType === "arraybuffer" ? event.data : new Blob([event.data as ArrayBuffer]);
+          this.#emit("message", { data });
+        });
         ws.addEventListener("close", (event) => this.#ended(event.code, event.reason));
         this.readyState = 1;
       });
@@ -39,6 +49,11 @@ export class WorkerSocket {
     } catch {
       // Already closed.
     }
+  }
+
+  /** Hands the client a message, as if the room had sent it. */
+  deliver(data: string | ArrayBuffer): void {
+    this.#emit("message", { data });
   }
 
   /** The network goes away under the client. */
