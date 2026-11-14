@@ -77,7 +77,13 @@ jobs:
         if: inputs.mode == 'measure'
         run: |
           set -euo pipefail
-          npx wrangler deploy --config bench/wrangler.jsonc --name "$WORKER" --var "BENCH_KEY:$BENCH_KEY" > deploy.log 2>&1 || { sed "s/$BENCH_KEY/[key]/g" deploy.log; exit 1; }
+          # Cloudflare's API sometimes does not know a Worker yet in the moment after it was uploaded.
+          for attempt in 1 2 3; do
+            if npx wrangler deploy --config bench/wrangler.jsonc --name "$WORKER" --var "BENCH_KEY:$BENCH_KEY" > deploy.log 2>&1; then break; fi
+            sed "s/$BENCH_KEY/[key]/g" deploy.log | tail -12
+            if [ "$attempt" = 3 ]; then exit 1; fi
+            sleep 10
+          done
           grep -i "uploaded\|deployed" deploy.log | sed "s/$BENCH_KEY/[key]/g" || true
           for attempt in $(seq 1 60); do
             if [ "$(curl -s -o /dev/null -w '%{http_code}' "https://$BENCH_HOST/health?key=$BENCH_KEY")" = "200" ]; then echo "The Worker answers."; exit 0; fi
