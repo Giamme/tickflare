@@ -40,15 +40,15 @@ const modes: {
   {
     id: "event",
     name: "Event mode",
-    what: "The room wakes when something happens, runs your hook, sends everyone their new view and goes back to sleep.",
+    what: "The room wakes when something happens, runs your hook, sends everyone what changed in their view and goes back to sleep.",
     suits: "Turn-based, cards, board games, anything played over days.",
     link: "/guide/rooms",
     marks: [
-      { at: 0.18, height: 0.9, kind: "state" },
-      { at: 0.71, height: 0.9, kind: "state" },
+      { at: 0.18, height: 0.4, kind: "state" },
+      { at: 0.71, height: 0.4, kind: "state" },
     ],
     sleeps: [0.2, 0.69],
-    legend: "Two moves: two whole views, and the room asleep in between",
+    legend: "Two moves: two small patches, and the room asleep in between",
   },
   {
     id: "sync",

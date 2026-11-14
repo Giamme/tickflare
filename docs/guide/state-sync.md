@@ -60,7 +60,7 @@ export class Arena extends Room<State, Command> {
 
 ## What changes while a room ticks
 
-**Patches instead of whole views.** After each tick, every player gets a `patch` frame with only what changed in their own `view()` since the last one they received. The client applies it for you, so `room.state` and the `state` event work as before. In the arena example a tick is about 110 bytes on the wire, against 740 for the whole state.
+**A patch for each tick, not for each change.** After each tick, every player gets a `patch` frame with only what changed in their own `view()` since the last one they received. The client applies it for you, so `room.state` and the `state` event work as before. In the arena example a tick is about 110 bytes on the wire, against 740 for the whole state.
 
 **Commands take effect with the next tick.** A command is applied the moment it arrives and acknowledged at once, but its effect reaches clients with the next tick's patch. So `room.send()` resolving no longer means `room.state` already shows the result.
 

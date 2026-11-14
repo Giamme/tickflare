@@ -272,6 +272,59 @@ await recordMatches(batch, env.DB);
 <div class="tf-recipe">
 <div>
 
+### Matches that finish without their players
+
+A match that counts plays on when everyone has closed the tab, through deploys too, so it has a result whoever is still watching. [Playing on with nobody connected](/guide/state-sync#playing-on-with-nobody-connected)
+
+</div>
+<div>
+
+```ts
+export class Ranked extends Room<State, Command> {
+  protected override tickRate = 10;
+
+  protected override shouldTick(): boolean {
+    return this.state.winner === null;
+  }
+
+  protected override ticksWhileEmpty(): boolean {
+    return true;
+  }
+}
+```
+
+</div>
+</div>
+
+<div class="tf-recipe">
+<div>
+
+### Rooms that clean up after themselves
+
+Say what becomes of a room when its last player is gone. A room that deletes itself takes its storage with it, and leaves nothing in your account. [When a room is over](/guide/rooms#when-a-room-is-over)
+
+</div>
+<div>
+
+```ts
+export class Match extends Room<State, Command> {
+  protected override onEmpty(): void {
+    if (this.state.over) this.deleteRoom();
+    else this.setTimer("abandoned", 10 * 60_000); // time to come back
+  }
+
+  protected override onTimer(name: string): void {
+    if (name === "abandoned" && this.players.length === 0) this.deleteRoom();
+  }
+}
+```
+
+</div>
+</div>
+
+<div class="tf-recipe">
+<div>
+
 ### Worlds bigger than a room
 
 Cut the world into cells. Players are handed from room to room as they cross a border. [Worlds across rooms](/guide/worlds)

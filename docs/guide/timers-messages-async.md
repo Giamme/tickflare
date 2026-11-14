@@ -45,7 +45,7 @@ room.on("message", (message) => showToast(message));
 
 How messages behave:
 
-- They go out when the event that sent them is over, in the order they were sent. In event mode that is after the state frame the event caused; in a ticking room, after the tick's patch. A message sent while handling a command in a ticking room can arrive before the next tick shows the command's effect.
+- They go out when the event that sent them is over, in the order they were sent. In event mode that is after the patch the event caused; in a ticking room, after the tick's patch. A message sent while handling a command in a ticking room can arrive before the next tick shows the command's effect.
 - A message to a player who isn't connected is dropped. Nothing is sent again on reconnect, unlike the state: send what a returning player needs from `onReconnect`.
 - Everything a hook sent is dropped if that hook is refused.
 - A player the same hook removes still hears the messages before their connection closes, so a "you were kicked because..." arrives.

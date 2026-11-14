@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+**Event mode sends what changed, and a state may be longer than one row.**
+
+- **A change in event mode is sent as a patch.** Every change used to send every player their whole view. Now each player is sent what the change did to their view, as ticking rooms already did, and a player whose view it did not touch is sent nothing. The client applies patches as before, so `room.state` and the `state` event are unchanged. Without a custom `view()` this holds after the room has slept as well; with one, the first change after a sleep sends whole views, since what each player was sent is remembered only in memory.
+- **A patch sent outside a simulation says which view it is a patch of**, in a new `from` field. A client that holds another view reconnects rather than apply it. If you speak the protocol yourself, handle `patch` frames in event mode and check `from`: see the wire protocol in the reference.
+- **A state longer than 1.5 MB is saved across rows**, as is a match recording on its way to R2. Cloudflare limits a row to 2 MB, and a state past that used to fail to save. A state that fits is still one row, which is what Cloudflare bills a save by.
+
+What an event-mode change costs the room is about what it was: the state is still written whole, and it is now compared with what players hold instead of being sent to them. What it costs the players' connections is the size of the change instead of the size of the state.
+
 **A hook costs what it touches.** Until now the whole state was turned into JSON after every hook, to see whether the hook changed anything and to be able to undo it. A command in a room with a large state cost as much as the state was large, however little it did.
 
 The room now follows what a hook writes. Inside a hook, `this.state` and what is reached through it are proxies that note each change; undoing a refused hook replays the notes backwards, and the state becomes JSON only when it is saved or sent whole. `onTick` still runs on the plain state and is compared whole, since a simulation reads far more than it writes.

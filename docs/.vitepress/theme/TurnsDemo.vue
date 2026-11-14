@@ -54,7 +54,7 @@ function wake(): void {
 function broadcast(): void {
   const game = copy(room);
   for (const player of who) {
-    if (joined[player]) wires.send(clock, player, false, "state", "state", () => receive(player, game), LAG_MS + 120);
+    if (joined[player]) wires.send(clock, player, false, "state", "patch", () => receive(player, game), LAG_MS + 120);
   }
 }
 
@@ -278,7 +278,7 @@ const wires = createWires(vertical, LAG_MS);
       <p class="caption">
         <button type="button" class="playpause" @click="playing ? pause(true) : play()">{{ playing ? "Pause" : "Play" }}</button>
         <span class="long">Noughts and crosses, simulated in your browser. The room runs only when a move or a timer wakes it, and
-        that is all it is billed for: </span><span class="key pill">cmd</span> <span class="more">moves </span>in, <span class="key pill state">state</span> <span class="more">the board </span>out.
+        that is all it is billed for: </span><span class="key pill">cmd</span> <span class="more">moves </span>in, <span class="key pill state">patch</span> <span class="more">what changed </span>out.
       </p>
     </figcaption>
   </figure>

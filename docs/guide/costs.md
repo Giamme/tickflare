@@ -89,6 +89,8 @@ Reading it for a game:
   - one row for an accepted move in event mode, and one more if the move sets a timer again, as a turn clock does;
   - one row for each save while ticking, every `saveIntervalMs` (five seconds by default);
   - one row for each lockstep turn that has something in it, in the recording. Empty turns write nothing.
+
+  A save is one row whatever the size of the state, up to 1.5 MB of JSON. A longer state takes a row for each 1.5 MB.
 - **A second awake costs the same as 1.6 rows.** That one comparison decides most of what follows.
 - **The free plan's daily time** is worth about 28 room-hours of real-time play a day. For games that tick, that runs out first; for event-mode games, the 100,000 rows a day do.
 - On the free plan a request gets 10 ms of CPU. Sign-up and sign-in hash a password, which can take longer, so plan on the paid plan if you use [accounts](./accounts). Rooms and guests are not affected.

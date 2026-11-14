@@ -24,7 +24,7 @@ In event mode, the default, a room has no loop. It wakes when something happens,
 2. The room calls the matching hook. The hook changes `this.state` in place.
 3. If the hook calls `reject()` or throws, everything it did is undone and the event ends there.
 4. Otherwise the room writes the new state to its storage.
-5. Then it sends every connected player their [view](./state-and-views) of the new state, and answers the player who sent the command.
+5. Then it sends every connected player what changed in their [view](./state-and-views) of the state, and answers the player who sent the command.
 
 Between events the room hibernates. The WebSockets stay open and Cloudflare stops billing for the object's time, so a game that waits a day between moves costs almost nothing while it waits.
 
@@ -118,7 +118,7 @@ If your hooks need plain objects everywhere, set `trackChanges = false`. Every h
 ## Rules for hooks
 
 - **Hooks are synchronous.** A hook that returns a promise is refused with `internal_error`, because the room can't save or roll back work that finishes later. Use [`defer`](./timers-messages-async#async-work) for anything that waits.
-- **The state must be JSON-serialisable.** It is stored and sent as JSON, in one database row, which Cloudflare limits to 2 MB.
+- **The state must be JSON-serialisable.** It is stored and sent as JSON.
 - **Change the state only inside hooks, through `this.state`.** What `onHttp` changes is discarded, and so is anything a refused hook's leftover promise changes later. See [The state inside a hook](#the-state-inside-a-hook).
 - **Identity is decided at the gateway.** Rooms trust the player id your `authenticate` function returns ([Identity and join tokens](./identity)).
 

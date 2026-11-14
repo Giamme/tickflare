@@ -20,7 +20,7 @@ interface State {
 }
 ```
 
-The whole state lives in one row of the room's database, which Cloudflare limits to 2 MB. A room that needs more is usually a sign that the world should be [split across rooms](./worlds).
+The state is saved whole, as JSON, in one row of the room's database. Cloudflare limits a row to 2 MB, so a longer state is spread over as many rows as it takes; [how large a state can get](./limits#a-room-s-state-saved-whole) is on the limits page. A room that needs megabytes is usually a sign that the world should be [split across rooms](./worlds).
 
 ## Hiding information with view()
 
@@ -76,8 +76,10 @@ Every change makes a new object, but parts that didn't change are the same objec
 
 How a change travels depends on the mode:
 
-- **Event mode** sends the player's whole view after each change.
-- **State sync** sends a patch after each tick, with only what changed in that player's view since the last one they received. The client applies it for you. See [State sync](./state-sync).
+- **Event mode** sends a patch after each change, with only what the change did to that player's view. A player whose view it did not touch is sent nothing. The client applies the patch for you.
+- **State sync** sends a patch after each tick, with only what changed in that player's view since the last one they received. See [State sync](./state-sync).
 - **Lockstep** sends the turn's inputs. Each client works out the state itself. See [Lockstep](./lockstep).
+
+A player is sent their whole view when they connect, and again whenever the room cannot tell what they hold. With a custom `view()` that is the first change after the room has slept: what a player was sent is remembered only while the room is in memory. Without one, the room knows that everyone holds the state as it was saved, and goes on sending patches.
 
 The format of `state` and `patch` frames is in the [wire protocol](../reference/protocol).

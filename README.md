@@ -54,11 +54,13 @@ room.on("state", (state) => render(state));
 await room.send({ type: "increment" }); // resolves once applied; rejects with the reason if refused
 ```
 
-The room saves every change before anyone hears about it, rolls back what `reject()` refuses, keeps seats for players who drop, and sends everyone the new state. [Getting started](docs/guide/getting-started.md) builds this into a working game in about ten minutes.
+The room saves every change before anyone hears about it, rolls back what `reject()` refuses, keeps seats for players who drop, and sends everyone what changed. [Getting started](docs/guide/getting-started.md) builds this into a working game in about ten minutes.
 
 ## What's in it
 
 - **Three sync modes** on one room kernel: [event mode](docs/guide/rooms.md) for turn-based games, [state sync](docs/guide/state-sync.md) for real-time ones, [lockstep](docs/guide/lockstep.md) for strategy games with many units.
+- **Patches, not snapshots**: a player is sent what changed in their own [view](docs/guide/state-and-views.md) of the state, after a move as after a tick.
+- **[Rooms that end](docs/guide/rooms.md#when-a-room-is-over)**: a hook for when the last player is gone, rooms that delete themselves with their storage, and matches that [play on](docs/guide/state-sync.md#playing-on-with-nobody-connected) with nobody connected.
 - **[Identity](docs/guide/identity.md)** decided once, at the gateway, with signed join tokens.
 - **[Accounts](docs/guide/accounts.md)** on D1: guests, sign-up, sessions, player data, stats and leaderboards.
 - **[Matchmaking](docs/guide/matchmaking.md)** that reserves a room near its players, and **[match results](docs/guide/match-results.md)** through a Queue into D1, with replays in R2.

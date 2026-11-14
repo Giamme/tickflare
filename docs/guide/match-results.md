@@ -94,4 +94,4 @@ Keying `awardStats` by the match id means a message delivered twice still counts
 - A hook that rejects announces nothing.
 - The announcement is saved before it is sent. If the queue or the bucket can't be reached, it is sent again on the room's next event, without holding up anything else the room has to deliver.
 - Delivery is at least once. After a crash at the wrong moment a message can arrive twice, with the same `id`: use it as a key.
-- A replay passes through a row of the room's database on its way to R2, so it is limited to 2 MB.
+- A replay passes through the room's database on its way to R2. One longer than a row may be, 2 MB, is spread over several, so its length is limited by the room's memory and not by the row.

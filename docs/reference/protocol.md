@@ -25,8 +25,8 @@ Send a `ping` every 25 seconds or so. A connection that hears nothing back for a
 | Frame | Meaning |
 | --- | --- |
 | `{ "t": "welcome", "v", "you", "seq", "tick", "tickRate", "state", "players" }` | First frame on every connection |
-| `{ "t": "state", "seq", "tick"?, "state" }` | The state changed: this player's whole view |
-| `{ "t": "patch", "seq", "tick", "p" }` | The state changed during a tick: only the difference from what this player last received |
+| `{ "t": "patch", "seq", "tick", "from"?, "p" }` | The state changed: only the difference from what this player last received |
+| `{ "t": "state", "seq", "tick", "state" }` | The state changed, and this is the player's whole view: the room does not know what they hold, or the view is not an object |
 | `{ "t": "presence", "players" }` | Someone joined, dropped or came back |
 | `{ "t": "ack", "id", "seq" }` | The command or leave with this `id` was applied |
 | `{ "t": "reject", "id", "reason" }` | The command or leave with this `id` was refused; nothing changed |
@@ -36,9 +36,10 @@ Send a `ping` every 25 seconds or so. A connection that hears nothing back for a
 Fields:
 
 - `you` is this player's id. `players` is everyone with a seat, in join order: `[{ "id": "…", "connected": true }]`.
-- `seq` counts changes to the state. Each `state` or `patch` carries the previous `seq` plus one.
+- `seq` counts changes to the state. A `state` or `patch` carries the `seq` of the change it brings the player up to. That need not be the next one: a ticking room sends one patch for all the changes since the last tick, and a change that leaves a player's view as it was is not sent to them at all.
+- `from`, on a patch sent outside a simulation, is the `seq` of the view the patch is a patch of. A client whose view is of another `seq` has missed something. It must not apply the patch; the way back is to reconnect, which begins with a `welcome` and the whole view. A ticking room leaves `from` out.
 - `tick` and `tickRate` are the ticks run so far and the ticks a second; both 0 in event mode.
-- In event mode, the `ack` for a command comes after the `state` frame it caused.
+- In event mode, the `ack` for a command comes after the `patch` or `state` frame it caused.
 - `reject` reasons are what the room passed to `reject()`, or `invalid_command`, `internal_error` or `rate_limited`.
 - `error` reasons are `invalid_json`, `invalid_message`, `message_too_large`, `binary_not_supported` or `rate_limited`.
 

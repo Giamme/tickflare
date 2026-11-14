@@ -1,6 +1,6 @@
 # Worlds across rooms
 
-One room is one thread with a limited amount of memory, and its state lives in one 2 MB row. A world bigger than that is cut into cells, with a room for each cell. A room hands a player to the next one when they cross a border, and rooms can tell each other what is near their shared edges so players see across.
+One room is one thread with a limited amount of memory, and its state is saved and loaded whole. A world bigger than that is cut into cells, with a room for each cell. A room hands a player to the next one when they cross a border, and rooms can tell each other what is near their shared edges so players see across.
 
 ## Naming cells
 

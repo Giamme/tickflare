@@ -7,7 +7,7 @@ Every limit here is one of three kinds: Cloudflare's, which nobody can lift; Tic
 | | The limit | Where it comes from |
 | --- | --- | --- |
 | Players in a room | A few hundred at 10 ticks a second, [measured](#how-much-one-room-can-do). 32,768 connections at the very most. | One thread per room |
-| A room's state | 2 MB as JSON | It is one row in the room's database |
+| A room's state | A few megabytes as JSON | It is saved, loaded and held in memory whole |
 | A message from a player | 16 KB and 30 a second by default; both are settings | Tickflare, to protect the room |
 | Transport | WebSockets: ordered and reliable, no UDP | Cloudflare |
 | What a restart loses | Up to `saveIntervalMs` of a ticking room, five seconds by default | Tickflare |
@@ -43,43 +43,45 @@ Treat these as the right order of size, not as a promise: Cloudflare's machines 
 
 Two things in Tickflare's design set these numbers:
 
-- **The whole state is turned into JSON whenever it is saved or sent whole, and once or twice a tick.** In event mode that is every command that changes something: the state is written and sent in full each time. While ticking it is the tick itself, which is compared whole so that `onTick` can run on plain objects, and the save every few seconds. What a command, a join or a timer costs in between is only what it touches: the room [follows a hook's writes](./rooms#the-state-inside-a-hook) rather than going through the state after it. A hook that changes nothing, or is refused, costs the same in a room of any size.
+- **The whole state is turned into JSON whenever it is saved or sent whole, and once or twice a tick.** In event mode that is every command that changes something: the state is written in full each time, and compared with what the players hold to send them the difference. While ticking it is the tick itself, which is compared whole so that `onTick` can run on plain objects, and the save every few seconds. What a command, a join or a timer costs in between is only what it touches: the room [follows a hook's writes](./rooms#the-state-inside-a-hook) rather than going through the state after it. A hook that changes nothing, or is refused, costs the same in a room of any size.
 - **`view()` runs for every connected player on every tick**, and each result is compared with what that player was sent last.
 
 **What you can do today**
 
 - Send each player what they can see. A `view()` that filters by sight is the single biggest saving, in time and in bandwidth.
 - Keep what never changes out of the state: a map, unit definitions. Send it once as a message, or let the page load it.
-- In event mode, keep a large state out of rooms that take many commands: each one that changes anything writes and sends all of it. Tick instead, even slowly, and changes go out as differences.
+- In event mode, keep a large state out of rooms that take many commands: each one that changes anything writes all of it. Tick instead, even slowly, and the state is written every few seconds.
 - Tick slower and let screens interpolate. Ten ticks a second is enough for most of what Tickflare aims at.
 - Past a few hundred players, split the world [across rooms](./worlds).
 - For many units and few players, use [lockstep](./lockstep): the room never touches the simulation.
 
-**What would lift it.** Working out a view once for players who share one, a team for instance, would take most of the cost of a tick away in games with sides. Sending differences in event mode, and keeping the state in more than one row, would do for a command that changes the state what following writes did for one that does not. None of these is built.
+**What would lift it.** Parts of a view that several players share are already [compared and written once](./state-and-views#views-that-share-a-public-part). Doing the same for a whole view, for a team that sees exactly the same, would save the rest of what such a player costs a tick. Not built.
 
 ## Bandwidth
 
-Frames are JSON. A patch names what changed and gives the new value, so a moving unit costs about 26 bytes each tick it moves. A hundred units moving ten times a second is 26 KB a second to every player who sees them; a thousand is a quarter of a megabyte a second.
+Frames are JSON, and what is sent after a change is a patch: it names what changed and gives the new value. In event mode a move costs the bytes of what it changed, whatever the size of the state. While ticking, a moving unit costs about 26 bytes each tick it moves: a hundred units moving ten times a second is 26 KB a second to every player who sees them; a thousand is a quarter of a megabyte a second.
 
 Cloudflare does not charge for it, but a player on a phone pays for it and a poor connection will not carry it.
+
+A player is sent their whole view when they connect. With a custom `view()`, they are also sent it whole for the first change after the room has slept, since what each player was sent is remembered only while the room is in memory. A game with hidden hands and a minute between moves therefore still sends whole views; keep such a view small.
 
 **What you can do today.** Filter with `view()`. Round positions to whole numbers. Send where a thing is going and when it gets there instead of where it is; [the costs guide](./costs#slow-games-do-not-tick) shows how. Tick slower.
 
 **What would lift it.** A binary encoding in place of JSON, and sending numbers as differences. Not built.
 
-## A room's state: one document of 2 MB
+## A room's state: saved whole
 
-The state is saved as one row in the room's SQLite database, and Cloudflare limits a row to 2 MB. A room whose state grows past that fails to save.
+The state is one JSON document. It is saved whole: a ticking room writes all of it every `saveIntervalMs`, and an event-mode room writes all of it after every move that changes it.
 
-It is also saved whole. A ticking room writes all of it every `saveIntervalMs`. An event-mode room writes all of it after every move that changes it, and sends every player their whole view, not a patch.
+That is deliberate. Cloudflare bills a room's storage by the row written, whatever the row holds, and a row written is most of what a move costs in a room that sleeps. One row for the whole state is the cheapest save there is; a state cut into parts that are saved separately would cost more, not less.
+
+**How large it can be.** Cloudflare limits a row to 2 MB, so a state longer than 1.5 MB is spread over rows, one for each 1.5 MB, and each save writes them all. There is no fixed ceiling after that, but the state is held in memory three times over while a room is busy: as objects, as the JSON that was last saved, and as the copy that players are patched against. A room has 128 MB. We have run states of 4 MB; expect trouble somewhere past ten, and long before that every save and every join is moving megabytes.
 
 **What you can do today**
 
 - Keep large and static things out of the state, as above.
-- A room has the whole of its database, 10 GB of it, through `this.ctx.storage.sql`. Tables of your own are not limited to 2 MB and are not sent to anyone.
+- A room has the whole of its database, 10 GB of it, through `this.ctx.storage.sql`. Tables of your own are read and written a row at a time, and are not sent to anyone.
 - Split what is too big for one room across several.
-
-**What would lift it.** Saving the state in parts, each written only when it changes, would remove the 2 MB ceiling and most of what an event-mode move costs. Sending patches in event mode would do the rest. Neither is built.
 
 ## WebSockets, not UDP
 
@@ -136,7 +138,7 @@ A match that has to reach a result whoever is watching, a ranked one for instanc
 
 ## Storage
 
-- **A room** has 10 GB. A lockstep recording grows by a row for each turn with an order in it; a finished match's recording belongs in R2, where [`finishMatch`](./match-results) puts it. On its way there it passes through one row, so a recording is limited to 2 MB.
+- **A room** has 10 GB. A lockstep recording grows by a row for each turn with an order in it; a finished match's recording belongs in R2, where [`finishMatch`](./match-results) puts it. On its way there it passes through the room's database, over as many rows as it needs.
 - **Accounts and match history** are in one D1 database, which holds 10 GB and takes one write at a time. That is room for millions of accounts. Match history is one table keyed by match, without an index by player.
 
 ## Lockstep
@@ -173,10 +175,9 @@ Tickflare is at 0.1. It has a test suite that runs against Cloudflare's own runt
 
 In the order we would take them, by how much each removes for the work it needs:
 
-1. **State in more than one row.** No 2 MB ceiling, cheaper saves.
-2. **Patches in event mode, and a binary encoding.** Less bandwidth.
-3. **Snapshots for lockstep.** Rejoining a long match at once.
-4. **Prediction helpers for state sync.**
-5. **Matchmaking by skill and region; account recovery.**
+1. **Snapshots for lockstep.** Rejoining a long match at once.
+2. **A binary encoding.** Less bandwidth while ticking.
+3. **Prediction helpers for state sync.**
+4. **Matchmaking by skill and region; account recovery.**
 
 None of these is promised. They are here so that you can see where the edges are, and which of them are meant to move.

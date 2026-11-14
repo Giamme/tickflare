@@ -4,7 +4,7 @@ Every Tickflare room keeps its players in sync in one of three ways. The room ke
 
 ## Event mode
 
-The default. The room has no loop: it runs a hook when something happens (a command, a join, a timer) and sleeps in between. After each change it sends every player their whole view.
+The default. The room has no loop: it runs a hook when something happens (a command, a join, a timer) and sleeps in between. After each change it sends every player what changed in their view.
 
 **Pick it for** turn-based games, card and board games, word games, lobbies, and anything asynchronous. The room costs nothing while it waits, so a game played over a week is as cheap to host as one played in ten minutes.
 
@@ -35,7 +35,7 @@ See [Lockstep](./lockstep).
 | | Event mode | State sync | Lockstep |
 | --- | --- | --- | --- |
 | Game runs on | the server, per event | the server, per tick | every client |
-| Sent to players | whole view per change | patch per tick | inputs per turn |
+| Sent to players | patch per change | patch per tick | inputs per turn |
 | Hidden information | yes, with `view()` | yes, with `view()` | no |
 | Room sleeps | between events | when the simulation stops | never while players are connected, or [between turns](./lockstep#letting-the-room-sleep-between-turns) if players keep time |
 | Scales with | how often things happen | how much changes per tick | how often players act |
