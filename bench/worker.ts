@@ -41,6 +41,31 @@ export class Bench extends Room<State, Command, Env> {
   protected override maxCommandsPerSecond = 1_000_000;
   #sight = 0;
   #round: (n: number) => number = (n) => n;
+  /** How many times this room has been started: once, unless Cloudflare took it out of memory. */
+  #starts: number;
+
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
+    ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS bench_starts (id INTEGER PRIMARY KEY, n INTEGER NOT NULL)");
+    ctx.storage.sql.exec("INSERT INTO bench_starts (id, n) VALUES (1, 1) ON CONFLICT (id) DO UPDATE SET n = n + 1");
+    this.#starts = ctx.storage.sql.exec<{ n: number }>("SELECT n FROM bench_starts WHERE id = 1").one().n;
+  }
+
+  /** How the room is, for the load script to ask once its players have gone. */
+  protected override onHttp(): Response {
+    const states = [0, 0, 0, 0];
+    for (const ws of this.ctx.getWebSockets()) states[ws.readyState] = (states[ws.readyState] ?? 0) + 1;
+    return Response.json({
+      tick: this.tick,
+      starts: this.#starts,
+      connected: this.players.filter((player) => player.connected).length,
+      seats: this.players.length,
+      // Sockets by state: connecting, open, closing, closed.
+      sockets: states,
+      rate: this.tickRate,
+      sight: this.#sight,
+    });
+  }
 
   protected initialState(): State {
     return { units: [], things: {}, moves: 0 };

@@ -54,6 +54,36 @@ const closeAll = async (sockets) => {
   await sleep(500);
 };
 
+/** Closes the sockets and asks the room, twice a second apart, how it is with everyone gone. */
+async function closeAndAsk(sockets, room) {
+  const codes = {};
+  let closed = 0;
+  for (const ws of sockets) {
+    ws.once("close", (code) => {
+      closed += 1;
+      codes[code] = (codes[code] ?? 0) + 1;
+    });
+    ws.close();
+  }
+  await sleep(2000);
+  const ask = async () => {
+    const response = await fetch(`${BASE.replace(/^ws/, "http")}/rooms/${room}/how?player=p0&key=${KEY}`);
+    return response.ok ? await response.json() : { status: response.status };
+  };
+  const first = await ask();
+  await sleep(1000);
+  const second = await ask();
+  return {
+    closedOf: `${closed}/${sockets.length}`,
+    closeCodes: codes,
+    // Ticks the room ran in a second with nobody connected: none, if it stopped as it should.
+    ticksAfter: (second.tick ?? 0) - (first.tick ?? 0),
+    starts: second.starts,
+    connectedAfter: second.connected,
+    socketsAfter: second.sockets,
+  };
+}
+
 let nextId = 1;
 const command = (ws, data) => ws.send(JSON.stringify({ t: "cmd", id: nextId++, data }));
 
@@ -127,8 +157,10 @@ async function tickRate({ units, rate, sight, players, cps = 0 }) {
         : null;
     const seen = await watch(sockets[0], MEASURE_MS, false);
     if (timer) clearInterval(timer);
+    const after = await closeAndAsk(sockets, room).catch((error) => ({ asking: String(error?.message ?? error) }));
     report({
       kind: "rate",
+      ...after,
       room,
       ticks: seen.ticks,
       units,
@@ -288,7 +320,7 @@ if (runs("wire")) {
 }
 
 if (runs("rates")) {
-  const table = [
+  const table = process.env.BENCH_TABLE ? JSON.parse(process.env.BENCH_TABLE) : [
     { units: 100, sight: 0, players: 200, rate: 10 },
     { units: 100, sight: 0, players: 1000, rate: 10 },
     { units: 1000, sight: 100, players: 200, rate: 10 },
