@@ -150,8 +150,22 @@ async function wire({ walkers, deflate, binary }) {
   }
 }
 
+/** How long the way to the Worker and back takes, with no room involved. */
+async function baseline() {
+  const url = BASE.replace(/^ws/, "http") + `/health?key=${KEY}`;
+  const times = [];
+  for (let n = 0; n < 30; n++) {
+    const sent = performance.now();
+    await (await fetch(url)).text();
+    times.push(performance.now() - sent);
+  }
+  // The first few open the connection.
+  const warm = times.slice(5).sort((a, b) => a - b);
+  report({ kind: "baseline", min: +warm[0].toFixed(1), p50: +warm[Math.floor(warm.length / 2)].toFixed(1), max: +warm.at(-1).toFixed(1) });
+}
+
 /** How long a command takes to come back answered, one at a time. */
-async function latency({ ticking }) {
+async function latency({ ticking, type = "move" }) {
   const [ws] = await openMany("/rooms", freshRoom(), 1);
   try {
     if (ticking) {
@@ -169,7 +183,7 @@ async function latency({ ticking }) {
       const id = nextId;
       const answered = new Promise((resolve) => waiting.set(id, resolve));
       const sent = performance.now();
-      command(ws, { type: "move" });
+      command(ws, { type });
       await answered;
       times.push(performance.now() - sent);
       waiting.delete(id);
@@ -179,6 +193,8 @@ async function latency({ ticking }) {
     report({
       kind: "latency",
       ticking,
+      // "noop" changes nothing, so nothing is stored before it is answered.
+      command: type,
       min: +times[0].toFixed(1),
       p50: +times[50].toFixed(1),
       p95: +times[95].toFixed(1),
@@ -226,6 +242,8 @@ try {
 if (runs("idle")) await attempt("idle", () => idle({ players: 5, seconds: Number(process.env.BENCH_IDLE_SECONDS ?? 90) }));
 
 if (runs("latency")) {
+  await attempt("baseline", baseline);
+  await attempt("latency noop", () => latency({ ticking: 0, type: "noop" }));
   await attempt("latency", () => latency({ ticking: 0 }));
   await attempt("latency ticking", () => latency({ ticking: 20 }));
 }

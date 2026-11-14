@@ -14,6 +14,18 @@ on:
         description: "Seconds to wait before asking Cloudflare's analytics, which lag by a few minutes."
         required: false
         default: "300"
+      analytics_only:
+        description: "Deploy nothing: only ask the analytics, about `namespaces` since `since`. Or `describe`, for what can be asked."
+        required: false
+        default: ""
+      namespaces:
+        description: "With analytics_only: the namespaces, as an earlier run listed them."
+        required: false
+        default: "[]"
+      since:
+        description: "With analytics_only: from when, as 2026-01-31T12:00:00Z."
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -40,6 +52,7 @@ jobs:
       - run: npm ci
 
       - name: Find the account's workers.dev address, and make a key for this run
+        if: inputs.analytics_only == ''
         run: |
           set -euo pipefail
           # Neither is to be read in the log: the address names the account, the key opens the Worker.
@@ -53,6 +66,7 @@ jobs:
           echo "BENCH_HOST=$WORKER.$SUBDOMAIN.workers.dev" >> "$GITHUB_ENV"
 
       - name: Deploy the benchmark Worker
+        if: inputs.analytics_only == ''
         run: |
           set -euo pipefail
           npx wrangler deploy --config bench/wrangler.jsonc --name "$WORKER" --var "BENCH_KEY:$BENCH_KEY" > deploy.log 2>&1 || { sed "s/$BENCH_KEY/[key]/g" deploy.log; exit 1; }
@@ -65,12 +79,14 @@ jobs:
           exit 1
 
       - name: Which Durable Object namespace is which
+        if: inputs.analytics_only == ''
         run: |
           curl -fsS -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
             "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/durable_objects/namespaces?per_page=100" \
             | jq -c --arg script "$WORKER" '[.result[] | select(.script == $script) | {id, class}]' | tee namespaces.json
 
       - name: Measure
+        if: inputs.analytics_only == ''
         env:
           BENCH_URL: wss://${{ env.BENCH_HOST }}
         run: |
@@ -80,11 +96,21 @@ jobs:
           echo "UNTIL=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
 
       - name: What Cloudflare counted
+        if: inputs.analytics_only == ''
         continue-on-error: true
         run: |
           sleep "${{ inputs.analytics_wait }}"
           node bench/analytics.mjs
 
+      - name: What Cloudflare counted, for an earlier run
+        if: inputs.analytics_only != ''
+        env:
+          NAMESPACES: ${{ inputs.namespaces }}
+          SINCE: ${{ inputs.since }}
+          MODE: ${{ inputs.analytics_only }}
+        run: |
+          if [ "$MODE" = "describe" ]; then node bench/analytics.mjs --describe; else node bench/analytics.mjs; fi
+
       - name: Delete the benchmark Worker
-        if: always()
+        if: always() && inputs.analytics_only == ''
         run: npx wrangler delete --config bench/wrangler.jsonc --name "$WORKER" --force > delete.log 2>&1 && echo "Deleted." || { cat delete.log; exit 1; }
