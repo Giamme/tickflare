@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+**`tickflare-rooms`: which rooms Cloudflare billed you for.** A script that comes with the package (`tools/rooms-report.mjs`) and reads Cloudflare's analytics for one Worker: every room with its time awake, what that cost at list price, the most connections it had, and how long it was awake with nobody connected, the most expensive first. The costs page says how to run it.
+
 **A running match cannot stop by itself any more.**
 
 - Cloudflare takes a Durable Object out of memory after 70 to 140 seconds without an incoming event, and keepalives are not events: Cloudflare answers them without waking the room. A pending `setInterval` holds it for at most 15 minutes. So a ticking room whose players sent no command for a while could be taken out of memory, simulation and all, and stand still until someone sent one. The same was true after any restart that left the connections open.

@@ -135,7 +135,7 @@ npx wrangler dev
 
 <CostEstimator />
 
-<p class="tf-more"><a href="/guide/costs">How these figures are worked out</a>, and <a href="/guide/costs#designing-a-game-that-costs-less">how to design a game that costs less</a>.</p>
+<p class="tf-more"><a href="/guide/costs">How these figures are worked out</a>, <a href="/guide/costs#designing-a-game-that-costs-less">how to design a game that costs less</a>, and <a href="/guide/costs#checking-what-you-are-billed-for">how to see what each of your rooms actually cost</a>.</p>
 
 </section>
 

@@ -75,6 +75,24 @@ What Cloudflare counted when we [measured this on its network](./limits#the-same
 
 Two things do not change the bill: the tick rate, and how much CPU your simulation uses. A room ticking 30 times a second with a heavy simulation costs the same per hour as one ticking 5 times with a light one. More players in a room cost nothing extra either, apart from their messages.
 
+## Checking what you are billed for
+
+The figures on this page are estimates. What your rooms actually cost is in Cloudflare's analytics, and `tickflare-rooms`, a script that comes with Tickflare, reads them for one Worker:
+
+```sh
+CLOUDFLARE_API_TOKEN=… CLOUDFLARE_ACCOUNT_ID=… npx tickflare-rooms --worker my-game --since 24h
+```
+
+It lists the Worker's rooms, the most expensive first: how long each was awake, what that cost at list price before what the plan includes, the most connections it had at once, and how long it was awake with nobody connected. It marks a room that was awake for ten minutes or more with nobody connected, and one awake for three hours or more.
+
+<!-- SAMPLE -->
+
+A room awake with nobody connected is either playing on by design, as a match with [`ticksWhileEmpty()`](./state-sync#playing-on-with-nobody-connected) does until it ends, or a room that should have gone to sleep: look at what it was doing.
+
+- **The token** needs to read account analytics and Workers settings: "Account Analytics: Read" and "Workers Scripts: Read". It is read from the environment only, so that it stays out of your shell's history.
+- **The analytics lag** by some minutes and are kept for about a month. Once a Worker is deleted, its rooms can no longer be looked up.
+- `--top` lists more rooms, `--json` prints JSON for a script of your own, and `--since` takes `30m`, `6h`, `7d` or a date.
+
 ## Price list
 
 | | Free plan | Paid plan includes | Then |
