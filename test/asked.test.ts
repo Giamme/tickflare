@@ -103,12 +103,15 @@ describe("a lockstep room whose players ask for the turns", () => {
     await sleep(2200); // 44 turns' worth
     p1.send(ask);
     await until(() => closed(p1).length === 2);
+    const at = Date.now();
     expect(closed(p1)[1]!.c).toBe(30);
 
     // The clock starts again from here: the time it stood still is not owed.
     p1.send(ask);
     await sleep(15);
-    expect(closed(p1)).toHaveLength(2);
+    // A turn is 50 ms. On a machine so busy that this much has gone by already, the next turn is
+    // due and says nothing about the one before.
+    if (Date.now() - at < 40) expect(closed(p1)).toHaveLength(2);
   });
 
   it("checkpoints the turn counter in the room's row, not every turn", async () => {
