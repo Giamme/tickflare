@@ -135,6 +135,11 @@ describe("arrays in a patch", () => {
     expect(diff({ list: [1, 2, 3, 4, 5, 6] }, { list: [2, 3, 4, 5, 6] })).toEqual({ list: [[2, 3, 4, 5, 6]] });
     expect(diff({ list: [] }, { list: [1, 2] })).toEqual({ list: [[1, 2]] });
     expect(diff({ list: ["a", "b"] }, { list: ["b", "a"] })).toEqual({ list: [["b", "a"]] });
+    // Elements that changed in most of what they hold are as good as replaced: a patch of them
+    // would say every index and every key again.
+    const points = [{ x: 1, y: 1 }, { x: 2, y: 2 }, { x: 3, y: 3 }];
+    const shifted = points.map(({ x, y }) => ({ x: x + 1, y: y + 1 }));
+    expect(diff({ points }, { points: shifted })).toEqual({ points: [shifted] });
     // And not when the elements are objects that only changed inside.
     const moved = units().map((unit) => ({ ...unit, x: unit.x + 1 }));
     expect(diff({ units: units() }, { units: moved })).toEqual({ units: [{ 0: { x: [2] }, 1: { x: [6] }, 2: { x: [10] } }, 3] });

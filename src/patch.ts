@@ -106,6 +106,8 @@ export function diffArrays(prev: unknown[], next: unknown[]): ArrayPatch | null 
       const inner = diffObjects(from, to);
       if (!inner) continue;
       changes[index] = inner;
+      // An element most of whose keys changed is as good as replaced.
+      if (Object.keys(inner).length * 2 > Object.keys(to).length) replaced += 1;
     } else if (Array.isArray(from) && Array.isArray(to)) {
       const inner = diffArrays(from, to);
       if (inner === undefined) continue;
@@ -118,16 +120,18 @@ export function diffArrays(prev: unknown[], next: unknown[]): ArrayPatch | null 
       replaced += 1;
     }
     changed += 1;
+    // Elements replaced cost what they cost in the whole array, plus their index. Once they are
+    // more than half of it the whole array is no longer than the patch, and there is no need to
+    // look at the rest.
+    if (replaced * 2 > next.length) return null;
   }
+  replaced += next.length - shared;
+  if (replaced * 2 > next.length) return null;
   for (let index = shared; index < next.length; index++) {
     changes[index] = [next[index] === undefined ? null : next[index]];
     changed += 1;
-    replaced += 1;
   }
   if (changed === 0 && prev.length === next.length) return undefined;
-  // Elements replaced outright cost what they cost in the whole array, plus their index. Once
-  // they are more than half of it, the whole array is no longer than the patch.
-  if (replaced * 2 > next.length) return null;
   return [changes, next.length];
 }
 
