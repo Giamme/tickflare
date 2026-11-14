@@ -1,4 +1,4 @@
-import { initialShapes, SCRIPTS, type Shapes } from "./shapes.js";
+import { BLOB, initialShapes, SCRIPTS, type Shapes } from "./shapes.js";
 import {
   Accounts,
   LockstepRoom,
@@ -218,10 +218,13 @@ export class AwayRoom extends TestRoom {
   protected override seatTimeoutMs = 150;
 }
 
-export type ShapesCommand = { script: string; then?: "reject" | "throw" };
+export type ShapesCommand = { script: string; then?: "reject" | "throw" | "finish" };
 
 /** A room whose commands run the scripts in ./shapes.ts, then stand, are refused, or fail. */
 export class ShapesRoom extends Room<Shapes, ShapesCommand> {
+  protected override matchQueue = this.env.MATCHES;
+  protected override matchBucket = this.env.REPLAYS;
+
   protected initialState(): Shapes {
     return initialShapes();
   }
@@ -245,6 +248,8 @@ export class ShapesRoom extends Room<Shapes, ShapesCommand> {
     });
     if (command.then === "reject") reject("changed_my_mind");
     if (command.then === "throw") throw new TypeError("kaboom");
+    // A match whose recording is too long for one row on its way to R2.
+    if (command.then === "finish") this.finishMatch({ script: command.script }, { recording: BLOB });
   }
 }
 

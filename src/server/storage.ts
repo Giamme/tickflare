@@ -35,12 +35,44 @@ export interface Forward {
  *
  * Tables:
  *   tickflare_room      one row: seq, state, seats, tick counter
+ *   tickflare_parts     the rest of a state or a delivery too long for one row
  *   tickflare_timers    named timers and when they fire
  *   tickflare_meta      small values by key (room id, invited players)
  *   tickflare_outbox    deliveries that are owed (finished matches, handovers)
  *   tickflare_arrivals  players another room has handed over, until they connect
  *   tickflare_forwards  players handed to another room, and where they went
  */
+/**
+ * The most a piece of text may take in one row, in bytes. Cloudflare allows a
+ * row 2 MB. This leaves room for the row's other columns and for whatever
+ * the limit turns out to count.
+ */
+export const ROW_BYTES = 1_500_000;
+
+/**
+ * Cuts `text` into pieces of at most `bytes` bytes as UTF-8, so that each
+ * fits in a row. Nearly always that is one piece, the text itself, and
+ * finding that out costs nothing: a text of n characters is at most 3n bytes.
+ * A piece never ends in the middle of a character.
+ */
+export function pieces(text: string, bytes = ROW_BYTES): string[] {
+  if (text.length * 3 <= bytes) return [text];
+  const encoder = new TextEncoder();
+  const buffer = new Uint8Array(bytes);
+  const out: string[] = [];
+  for (let at = 0; at < text.length; ) {
+    // A character is at least a byte, so no piece is longer than `bytes` characters, and that
+    // many are all that need looking at. `encodeInto` stops before a character it has no room
+    // for, a pair of surrogates included. The slice may end between the two of a pair, but then
+    // everything before it was one byte each, and the half that is left does not fit either.
+    const { read } = encoder.encodeInto(text.slice(at, at + bytes), buffer);
+    if (read === 0) throw new RangeError("A row is too small to hold a single character");
+    out.push(text.slice(at, at + read));
+    at += read;
+  }
+  return out;
+}
+
 export class RoomStorage {
   readonly #storage: DurableObjectStorage;
   readonly #sql: SqlStorage;
@@ -48,12 +80,19 @@ export class RoomStorage {
   #made: boolean;
   /** The id the room is reached under, to be written with the first thing that is. */
   #roomId: string | undefined;
+  /**
+   * What has pieces in tickflare_parts: "state", or "outbox:" and an entry's
+   * id. Empty for nearly every room, which then never looks at the table,
+   * or has one.
+   */
+  #split = new Set<string>();
 
   constructor(storage: DurableObjectStorage) {
     this.#storage = storage;
     const sql = (this.#sql = storage.sql);
     this.#made = this.#exists();
     if (!this.#made) return;
+    this.#findSplit();
     // The tick counter used to be a row of its own in tickflare_meta, which made every save of a
     // ticking room two rows. A room that was created before has no column for it yet.
     try {
@@ -121,10 +160,20 @@ export class RoomStorage {
     try {
       return this.#storage.transactionSync(work);
     } catch (error) {
-      // What was undone may include the tables themselves, if this was the first thing written.
+      // What was undone may include the tables themselves, if this was the first thing written,
+      // and pieces of a long text that `#split` already counts.
       this.#made = this.#exists();
+      this.#findSplit();
       throw error;
     }
+  }
+
+  /** Reads from storage which texts are split. */
+  #findSplit(): void {
+    this.#split.clear();
+    const sql = this.#sql;
+    if (sql.exec("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'tickflare_parts'").toArray().length === 0) return;
+    for (const { owner } of sql.exec<{ owner: string }>("SELECT DISTINCT owner FROM tickflare_parts")) this.#split.add(owner);
   }
 
   #exists(): boolean {
@@ -138,19 +187,51 @@ export class RoomStorage {
         "SELECT seq, state, players, tick FROM tickflare_room WHERE id = 1",
       )
       .toArray()[0];
-    return row && { seq: row.seq, state: row.state, roster: row.players, tick: row.tick };
+    return row && { seq: row.seq, state: row.state + this.#rest("state"), roster: row.players, tick: row.tick };
   }
 
-  /** One row, whatever changed: this is what a save costs. */
+  /**
+   * One row, whatever changed: this is what a save costs. A state too long
+   * for a row, which Cloudflare limits to 2 MB, takes a row more for each
+   * 1.5 MB.
+   */
   writeRoom(room: StoredRoom): void {
     this.#make();
+    const [first, ...rest] = pieces(room.state);
     this.#sql.exec(
       "INSERT OR REPLACE INTO tickflare_room (id, seq, state, players, tick) VALUES (1, ?, ?, ?, ?)",
       room.seq,
-      room.state,
+      first,
       room.roster,
       room.tick,
     );
+    this.#putRest("state", rest);
+  }
+
+  /** What follows the first piece of a text that was split, or "" for one that was not. */
+  #rest(owner: string): string {
+    if (!this.#split.has(owner)) return "";
+    return this.#sql
+      .exec<{ part: string }>("SELECT part FROM tickflare_parts WHERE owner = ? ORDER BY n", owner)
+      .toArray()
+      .map((row) => row.part)
+      .join("");
+  }
+
+  /** Stores the pieces that follow the first, in place of any that were there. */
+  #putRest(owner: string, rest: string[]): void {
+    if (rest.length === 0 && !this.#split.has(owner)) return;
+    this.#sql.exec(
+      `CREATE TABLE IF NOT EXISTS tickflare_parts (
+        owner TEXT NOT NULL, n INTEGER NOT NULL, part TEXT NOT NULL, PRIMARY KEY (owner, n)
+      ) WITHOUT ROWID`,
+    );
+    for (const [n, part] of rest.entries()) {
+      this.#sql.exec("INSERT OR REPLACE INTO tickflare_parts (owner, n, part) VALUES (?, ?, ?)", owner, n, part);
+    }
+    this.#sql.exec("DELETE FROM tickflare_parts WHERE owner = ? AND n >= ?", owner, rest.length);
+    if (rest.length > 0) this.#split.add(owner);
+    else this.#split.delete(owner);
   }
 
   /** Timer names and when they fire, ordered by name. */
@@ -209,18 +290,21 @@ export class RoomStorage {
         after,
       )
       .toArray()[0];
-    return row && { id: row.id, entry: JSON.parse(row.body) as OutboxEntry };
+    return row && { id: row.id, entry: JSON.parse(row.body + this.#rest(`outbox:${row.id}`)) as OutboxEntry };
   }
 
-  /** `body` is an `OutboxEntry` as JSON. */
+  /** `body` is an `OutboxEntry` as JSON. A long one, a match with a long recording, is split like the state. */
   addToOutbox(body: string): void {
     this.#make();
-    this.#sql.exec("INSERT INTO tickflare_outbox (body) VALUES (?)", body);
+    const [first, ...rest] = pieces(body);
+    const { id } = this.#sql.exec<{ id: number }>("INSERT INTO tickflare_outbox (body) VALUES (?) RETURNING id", first).one();
+    this.#putRest(`outbox:${id}`, rest);
   }
 
   removeFromOutbox(id: number): void {
     if (!this.#made) return;
     this.#sql.exec("DELETE FROM tickflare_outbox WHERE id = ?", id);
+    this.#putRest(`outbox:${id}`, []);
   }
 
   /** What a player handed over by another room carries, as JSON, or undefined if they were not handed over. */

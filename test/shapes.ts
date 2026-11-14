@@ -20,6 +20,9 @@ export interface Holder {
   state: Shapes;
 }
 
+/** About 4 MB as UTF-8, of characters that take one, two, three and four bytes: more than fits in a row. */
+export const BLOB = "plain ascii, café, 日本語, 🎲🎯 | ".repeat(90_000);
+
 /** Ways of changing the state, by name. Each is run in a hook by the room, and on a plain copy by the test. */
 export const SCRIPTS: Record<string, (room: Holder) => void> = {
   mark: (room) => {
@@ -58,6 +61,14 @@ export const SCRIPTS: Record<string, (room: Holder) => void> = {
   },
   everything: (room) => {
     for (const name of ["move", "spawn", "remove", "copy", "shuffle", "replace", "mark"]) SCRIPTS[name]!(room);
+  },
+  // Makes the state several times too long for one row, and small again.
+  bloat: (room) => {
+    (room.state as unknown as { blob: string }).blob = BLOB;
+    room.state.total += 1;
+  },
+  shrink: (room) => {
+    delete (room.state as unknown as { blob?: string }).blob;
   },
   // Changes nothing, though it writes.
   same: (room) => {
