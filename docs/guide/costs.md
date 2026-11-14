@@ -41,7 +41,7 @@ All prices are published list prices in US dollars, read in {{ PRICES_AS_OF }}. 
 
 ## The short version
 
-- **A room that is running costs under a cent an hour:** about {{ dollars(tickingHour) }}, of which {{ dollars(roomHour) }} is for being awake and the rest for saving its state every five seconds. That is the same whether it holds two players or fifty, and whatever its tick rate.
+- **A room that is running costs under a cent an hour:** about {{ dollars(tickingHour) }}, of which {{ dollars(roomHour) }} is for being awake and the rest for saving its state every five seconds and for the alarm that keeps it in memory. That is the same whether it holds two players or fifty, and whatever its tick rate.
 - **A room asleep costs nothing.** In event mode a room sleeps between moves, with its players still connected.
 - **A move in a sleeping room costs about {{ dollars(millionMoves) }} per million**, nearly all of it for saving the move before anyone sees it.
 - **Messages from players cost {{ dollars(millionMessages) }} per million.** Messages to players, and bandwidth, are free.
@@ -60,7 +60,7 @@ Start from an example or type your own; an example fills in every setting. The f
 A room is a Durable Object. Cloudflare bills a Durable Object for the time it is awake, counted as 128 MB of memory for each second, whatever it actually uses.
 
 - **Event mode.** The room is awake only while a hook runs: a few hundredths of a second for a move. Between moves it sleeps, and Cloudflare keeps the WebSockets open at no charge. Keepalives are answered without waking it, and a timer does not keep it awake while it waits.
-- **State sync and lockstep.** The room is awake for as long as its simulation runs: while at least one player is connected and `shouldTick()` returns true. When the last player disconnects, or the match ends, it goes back to sleep.
+- **State sync and lockstep.** The room is awake for as long as its simulation runs: while at least one player is connected and `shouldTick()` returns true. When the last player disconnects, or the match ends, it goes back to sleep. While it runs it also keeps an alarm 30 seconds ahead and sets it again each time it fires, because Cloudflare takes a room out of memory after a minute or two without an incoming event, and keepalives are not events. That is 120 rows written and 120 requests an hour, about 2% of what the hour costs.
 - **Lockstep with the players' clock.** The room is awake only to answer: a request for the turns that are due, ten times a second from one player's client, and the orders themselves. Between them it sleeps.
 - **Matchmakers** sleep while players wait in the queue.
 

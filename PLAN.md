@@ -4,16 +4,14 @@ Written on 2026-11-14 for whoever implements it. It assumes no memory of the con
 
 Delete each section when it is done, and delete the file when all are.
 
-## Decisions the owner has to make first
+## Decisions the owner made (2026-11-15)
 
-These change what gets built. Ask before starting the item they belong to.
-
-| # | Question | Needed for | Suggested answer |
-| --- | --- | --- | --- |
-| A | Is the Cloudflare account on the free or the paid Workers plan? | Item 1 | Free allows about 28 room-hours of ticking a day in total; the soak below is sized for 10. |
-| B | A wake alarm for ticking rooms costs about 2% more per room-hour. Acceptable as a default? | Item 2 | Yes. |
-| C | Can a Unity licence be put in the repository's secrets, or will the owner test in the editor by hand? | Item 4 | By hand, once, is enough to start. |
-| D | When does the repository go public, and under which npm name? | Item 7 | Nothing in item 7 is done before the owner says so. |
+| # | Question | Answer |
+| --- | --- | --- |
+| A | Free or paid Workers plan? | Paid. The full soak in item 1 is fine. |
+| B | A wake alarm for ticking rooms, about 2% more per room-hour, on by default? | Yes, on by default. Done. |
+| C | Unity licence in the secrets, or testing in the editor by hand? | Neither for now: skip editor testing; the docs keep saying it is untested in the editor. |
+| D | Start item 7, going public? | Not yet. Leave item 7 untouched. |
 
 ## Rules that hold for all of it
 
@@ -61,9 +59,7 @@ Neither engine runs in the development workspace: Godot may not be executed ther
 
 ## Order
 
-2, then 1, then 6, 3, 5, 4, 7.
-
-Item 2 comes first because item 1's soak test needs its fix and its diagnostics. Item 6 is small and reuses what item 1 teaches about the analytics. Item 7 waits for the owner. Tell the owner what was found after each item; do not batch the news.
+1, then 6, 3, 5, 4, 7. Item 2 is done: a running simulation keeps an alarm 30 seconds ahead (`AWAKE_MS` in `src/server/room.ts`), which also keeps Cloudflare from evicting a room whose players send nothing but keepalives. Item 6 is small and reuses what item 1 teaches about the analytics. Item 7 waits for the owner. Tell the owner what was found after each item; do not batch the news.
 
 ---
 
@@ -92,28 +88,6 @@ Item 2 comes first because item 1's soak test needs its fix and its diagnostics.
 **Done when** either the cause is found, fixed, and covered by a test in `test/`, or the limits page says how many room-hours were run without it happening and that the cause is still unknown. Replace the paragraph "One thing from those runs is not explained" in `docs/guide/limits.md` either way.
 
 **Cost.** Ten rooms for 45 minutes is 7.5 room-hours, under five cents on a paid plan. See question A.
-
----
-
-## 2. A match resumes after Cloudflare restarts its room
-
-**The suspected gap.** A room's simulation is a `setInterval` in memory. If Cloudflare restarts the room and the players' connections survive, nothing calls the new instance until a player sends a command: keepalives are answered by the runtime without waking the room. The players would look at a frozen game. `#load()` in `src/server/room.ts` already welcomes everyone again and resumes when it is called; the question is what calls it.
-
-A room that ticks with nobody connected already has an answer: it keeps an alarm 20 seconds ahead of itself (`AWAKE_TIMER`, `#stayAwake()`). A room with players connected does not.
-
-**This is unverified.** On a deploy Cloudflare closes the connections, the clients reconnect, and that wakes the room. Whether connections survive other restarts is not known; in the measurements, memory restarts dropped most of them.
-
-**Steps.**
-
-1. Write the failing test first, in `test/restarts.test.ts`: a ticking room, one client that only sends keepalives, restart the room (`abortAllDurableObjects`, or `ctx.abort()` through `runInDurableObject`), wait, and expect ticks to arrive again. If the local runtime closes the connection on abort, the test cannot show the gap: then test the mechanism instead (the alarm is set while ticking, and firing it on a fresh instance resumes the simulation).
-2. Fix on the server, not in the clients: keep the awake alarm whenever the simulation should be running, not only when the room is alone. To limit the cost, arm it further ahead (60 seconds) and re-arm it when it is half used, at the moment the room saves anyway. That is about 120 alarm writes an hour next to the 720 state saves a ticking room already makes.
-3. In the alarm handler nothing new is needed: `alarm()` calls `#load()`, which resumes.
-4. Put the extra writes in the costs page's arithmetic (`docs/guide/costs.md` and its estimator in `docs/.vitepress/theme`), and in "Restarts and deploys" on the limits page say how long a match can stand still after a restart: up to the alarm's lead.
-5. Confirm on Cloudflare during item 1's soak, with the restart command and players who stay.
-
-**Considered and set aside.** A watchdog in the clients, which sends a frame when ticks stop arriving. It costs nothing while things work, but it needs a protocol change in three clients and does nothing for clients people write themselves.
-
-**Done when** the test passes, the cost is on the costs page, and the soak shows a restarted room ticking again with its players.
 
 ---
 

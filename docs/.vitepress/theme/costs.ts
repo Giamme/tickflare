@@ -47,6 +47,12 @@ export const room = {
   /** A ticking room saves every `saveIntervalMs`, five seconds unless you change it, and a save is one row. */
   saveEverySeconds: 5,
   rowsPerSave: 1,
+  /**
+   * A ticking room also keeps an alarm this many seconds ahead and sets it again when it fires,
+   * so that Cloudflare does not take it out of memory mid-match. Each firing is a request, and
+   * setting the alarm is billed as a row written.
+   */
+  wakeEverySeconds: 30,
   /** Lockstep turns a second, and the row a turn with something in it adds to the recording. */
   turnsPerSecond: 10,
   rowsPerTurn: 1,
@@ -74,8 +80,9 @@ const perRow = cloudflare.perMillionRowsWritten / 1e6;
 
 /** One hour awake, before anything included. */
 export const roomHour = 3600 * cloudflare.gb * perGbSecond;
-/** One hour of a ticking room: the hour awake, and its saves. */
-export const tickingHour = roomHour + (3600 / room.saveEverySeconds) * room.rowsPerSave * perRow;
+/** One hour of a ticking room: the hour awake, its saves, and the alarm that keeps it in memory. */
+export const tickingHour =
+  roomHour + (3600 / room.saveEverySeconds) * room.rowsPerSave * perRow + (3600 / room.wakeEverySeconds) * (perRow + perRequest);
 /** A million messages from players, as requests alone. */
 export const millionMessages = (1e6 / cloudflare.messagesPerRequest) * perRequest;
 /** One move in a sleeping room: the request, the time awake to handle it, and the rows it writes. */
@@ -85,7 +92,11 @@ const perMove = (timer: boolean) =>
 export const millionMoves = 1e6 * perMove(false);
 /** Moves a minute in one room above which a ticking room is the cheaper way to run it. */
 export const breakEven = (game: Pick<Game, "timerPerMove" | "saveEverySeconds">): number =>
-  Math.round(((cloudflare.gb * perGbSecond + (room.rowsPerSave * perRow) / game.saveEverySeconds) / perMove(game.timerPerMove)) * 60);
+  Math.round(
+    ((cloudflare.gb * perGbSecond + (room.rowsPerSave * perRow) / game.saveEverySeconds + (perRow + perRequest) / room.wakeEverySeconds) /
+      perMove(game.timerPerMove)) *
+      60,
+  );
 export const breakEvenMovesAMinute = breakEven({ timerPerMove: false, saveEverySeconds: room.saveEverySeconds });
 
 /** How a room runs: asleep between moves, or ticking for the whole match. */
@@ -180,6 +191,9 @@ export function estimate(game: Game, askSeconds = room.askSeconds): Estimate {
     // A save on a schedule; with players asking for the turns it is the turn counter's checkpoint.
     rowsPerMatch += (matchSeconds / Math.max(1, game.saveEverySeconds)) * room.rowsPerSave;
   }
+  // The alarm a running simulation keeps: a row to set it, a request when it fires.
+  const wakes = ticking ? matchSeconds / room.wakeEverySeconds : 0;
+  rowsPerMatch += wakes;
   if (lockstep) {
     // A turn is recorded only if something arrived in it. Orders arrive when they like, so
     // the share of turns with one in them follows from how many arrive in a turn on average.
@@ -193,7 +207,7 @@ export function estimate(game: Game, askSeconds = room.askSeconds): Estimate {
       secondsAwake = Math.min(matchSeconds, (asks + hashes) * askSeconds + moves * room.wakeSeconds);
     }
   }
-  const requestsPerMatch = messagesPerMatch / cloudflare.messagesPerRequest + game.playersPerMatch;
+  const requestsPerMatch = messagesPerMatch / cloudflare.messagesPerRequest + game.playersPerMatch + wakes;
 
   const gbSeconds = matches * secondsAwake * cloudflare.gb;
   const requests = matches * requestsPerMatch;

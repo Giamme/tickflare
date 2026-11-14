@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+**A running match cannot stop by itself any more.**
+
+- Cloudflare takes a Durable Object out of memory after 70 to 140 seconds without an incoming event, and keepalives are not events: Cloudflare answers them without waking the room. A pending `setInterval` holds it for at most 15 minutes. So a ticking room whose players sent no command for a while could be taken out of memory, simulation and all, and stand still until someone sent one. The same was true after any restart that left the connections open.
+- A room now keeps an alarm 30 seconds ahead whenever its simulation should be running, with players connected or not, and sets it again each time it fires. Each firing is an event, which keeps the room in memory, and after a restart it starts the simulation again, from the last save, sending every player the whole view. It costs 120 rows written and 120 requests an hour of ticking, about 2%; the costs page and its estimator include it. Rooms that do not tick are not affected.
+- The deadline is kept in memory rather than with the timers, so setting it again writes only the alarm. Rooms that ticked with nobody connected kept it with the timers before; a room saved that way drops it when it loads.
+
 **A join is told as a join, not as the whole list of players.**
 
 - Every join, drop and leave used to send every player the whole list of players. In a full room that is what a join cost: for a thousand players, a thousand frames of a thousand players each, and it is what broke rooms of that size when we measured on Cloudflare.

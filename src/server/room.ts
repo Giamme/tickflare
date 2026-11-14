@@ -89,13 +89,23 @@ const DELETE_TIMER = "tickflare:delete";
 /** A room that still owes a delivery puts its deletion off by this much, and tries the delivery again. */
 const DELETE_RETRY_MS = 30_000;
 /**
- * Set while a room ticks with nobody connected. Cloudflare takes an object
- * with no connections out of memory after about a minute without an event,
- * timers and all; an alarm is an event, and it is also what starts the
- * simulation again after a deploy or a crash.
+ * While the simulation runs, the room keeps an alarm this far ahead of
+ * itself, and sets it again each time it fires.
+ *
+ * Cloudflare takes an object that has had no incoming event for 70 to 140
+ * seconds out of memory, simulation and all. A keepalive does not count:
+ * Cloudflare answers it without waking the room. A pending `setInterval`
+ * holds the object for at most 15 minutes. So without this, a match in which
+ * nobody sends a command would stop, and stay stopped until someone did. An
+ * alarm is an event, and when Cloudflare restarts the room for any other
+ * reason, it is also what brings the simulation back.
+ *
+ * Each firing costs a row written and a request. The deadline is kept in
+ * memory, not with the timers, so setting it again writes nothing else.
  */
+const AWAKE_MS = 30_000;
+/** Where earlier versions kept the deadline, with the timers. A room saved by one may still have it. */
 const AWAKE_TIMER = "tickflare:awake";
-const AWAKE_MS = 20_000;
 /** How long a room that is being deleted waits for deferred work that is still running. */
 const DELETE_PATIENCE_MS = 10_000;
 /**
@@ -287,6 +297,8 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
   readonly #since = Date.now();
   /** When connections are next looked at for silence. */
   #sweepAt = 0;
+  /** While the simulation should be running: when the alarm that keeps it going next fires. See `AWAKE_MS`. */
+  #awakeAt: number | undefined;
   /**
    * The players as they were last told to everyone, by id. Clients that are
    * told changes hold this list. Unknown after a restart, until the next
@@ -814,8 +826,6 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
         doomed = true;
         continue;
       }
-      // Waking the room is all this one is for. `#finish` moves it on, or drops it.
-      if (name === AWAKE_TIMER) continue;
       // Spend the timer first, on its own, so a failing hook cannot bring it back.
       this.#apply(() => this.#timers.delete(name));
       if (name.startsWith(AWAY_TIMER)) this.#giveUpSeat(name.slice(AWAY_TIMER.length));
@@ -1196,19 +1206,22 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
   }
 
   /**
-   * A room that ticks with nobody connected keeps an alarm a few seconds
-   * ahead of itself: see `AWAKE_TIMER`. A simulation that keeps failing is
-   * woken too, since every alarm is an event and lets it try again.
+   * A room whose simulation should be running keeps an alarm `AWAKE_MS`
+   * ahead of itself, with players connected or without: see `AWAKE_MS`. A
+   * simulation that keeps failing is woken too, since every alarm is an event
+   * and lets it try again.
    */
   #stayAwake(): void {
-    const alone = this.#seatedSockets().length === 0 && this.#wantsTicks(false, true);
-    const firesAt = this.#timers.get(AWAKE_TIMER);
-    if (alone ? firesAt !== undefined && firesAt > Date.now() : firesAt === undefined) return;
-    // Saved at once: if the room is taken out of memory, this is what brings it back.
-    this.#apply(() => {
-      if (alone) this.#timers.set(AWAKE_TIMER, Date.now() + AWAKE_MS);
-      else this.#timers.delete(AWAKE_TIMER);
-    }, true);
+    const wanted = this.#wantsTicks(this.#seatedSockets().length > 0, true);
+    const now = Date.now();
+    if (wanted) {
+      // Set again once it has fired. A clock that reads a little early still counts it as fired.
+      if (this.#awakeAt !== undefined && this.#awakeAt > now + 1_000) return;
+      this.#awakeAt = now + AWAKE_MS;
+    } else {
+      if (this.#awakeAt === undefined) return;
+      this.#awakeAt = undefined;
+    }
     this.#alarmStale = true;
   }
 
@@ -1303,10 +1316,16 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     this.#invited = meta.has("invited") ? (JSON.parse(meta.get("invited")!) as string[]) : null;
     this.#outboxPending = this.#store.hasOutbox();
     this.#seq = room?.seq ?? 0;
+    let timers = this.#store.timers();
+    if (timers.some(([name]) => name === AWAKE_TIMER)) {
+      // The deadline lives in memory now. Left with the timers, it would fire for ever.
+      timers = timers.filter(([name]) => name !== AWAKE_TIMER);
+      this.#store.replaceTimers(timers);
+    }
     this.#committed = {
       state,
       roster: room?.roster ?? "[]",
-      timers: JSON.stringify(this.#store.timers()),
+      timers: JSON.stringify(timers),
     };
     // Start from the JSON round-trip, so new and resumed rooms behave the same.
     this.#restore();
@@ -1741,7 +1760,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
   }
 
   #nextTimer(): number | undefined {
-    let next: number | undefined;
+    let next = this.#awakeAt;
     for (const firesAt of this.#timers.values()) {
       if (next === undefined || firesAt < next) next = firesAt;
     }

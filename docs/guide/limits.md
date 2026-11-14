@@ -173,6 +173,7 @@ Every deploy of your Worker restarts every room. Cloudflare gives no warning of 
 
 - **Players are disconnected.** The client reconnects by itself and gets a fresh view. `onDisconnect` is not called for players dropped this way, though their seat timeout still starts.
 - **A ticking room goes back** to its last save: up to `saveIntervalMs`, five seconds by default. An event-mode room loses nothing: it saves every move before anyone sees it.
+- **A restart that keeps the connections** stops the match for up to 30 seconds. Cloudflare can take a room out of memory without closing its WebSockets, to move it or after a minute or two without an incoming event. The room then hears nothing until its alarm, which a running simulation keeps 30 seconds ahead and which also keeps such evictions from happening in the first place. When it fires, the room resumes from its last save and sends every player the whole view again.
 - **A lockstep room loses no orders.** Its turn counter goes back by up to `saveIntervalMs` of empty turns, or with the players' clock skips ahead by as much.
 - **The state is loaded as it was saved.** If a deploy changes the shape of your state, rooms already running still have the old shape. There is no migration step: read old shapes with care, or let old matches finish first.
 

@@ -167,6 +167,7 @@ describe("state sync", () => {
   describe("with ticksWhileEmpty()", () => {
     const awake = (room: string) =>
       runInDurableObject(stubFor(room), async (_instance, state) => ({
+        // The deadline is kept in memory, so that setting it again writes nothing but the alarm.
         timer: state.storage.sql.exec("SELECT name FROM tickflare_timers WHERE name = 'tickflare:awake'").toArray().length > 0,
         alarm: await state.storage.getAlarm(),
       }));
@@ -184,8 +185,9 @@ describe("state sync", () => {
       expect(later.count).toBeGreaterThan(first.count + 5);
       // An alarm a few seconds ahead keeps the object in memory, and would restart it.
       const during = await awake(room);
-      expect(during.timer).toBe(true);
+      expect(during.timer).toBe(false);
       expect(during.alarm).toBeGreaterThan(Date.now());
+      expect(during.alarm).toBeLessThanOrEqual(Date.now() + 31_000);
 
       // The fixture ends its match at 150. Then the room is asleep like any other.
       for (let waited = 0; (await saved(room)).count < 150; waited += 50) {
@@ -194,7 +196,7 @@ describe("state sync", () => {
       }
       await sleep(200);
       expect((await saved(room)).count).toBe(150);
-      expect((await awake(room)).timer).toBe(false);
+      expect((await awake(room)).alarm).toBeNull();
     });
 
     it("carries on from its last save when the room is torn down", async () => {
@@ -233,7 +235,8 @@ describe("state sync", () => {
       expect(back.of("welcome")[0]!.state.count).toBeGreaterThan(left + 3);
       await until(() => back.tick >= back.of("welcome")[0]!.tick + 3);
       expect(back.state!.count).toBe(back.tick);
-      expect((await awake(room)).timer).toBe(false);
+      // Ticking with a player connected, it keeps its alarm as well.
+      expect((await awake(room)).alarm).toBeGreaterThan(Date.now());
     });
 
     it("leaves other rooms as they were: they stop when the last player drops", async () => {
@@ -242,7 +245,7 @@ describe("state sync", () => {
       await until(() => p1.tick >= 5);
       p1.ws.close(1000, "bye");
       await sleep(150);
-      expect((await awake(room)).timer).toBe(false);
+      expect((await awake(room)).alarm).toBeNull();
     });
   });
 

@@ -1,4 +1,4 @@
-import { abortAllDurableObjects, evictDurableObject, runInDurableObject } from "cloudflare:test";
+import { abortAllDurableObjects, evictDurableObject, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { env, exports } from "cloudflare:workers";
 import { describe, expect, it, vi } from "vitest";
 import type { LockstepView, Replay } from "../src/lockstep.js";
@@ -231,5 +231,87 @@ describe("a room woken by something other than a socket", () => {
     }));
     expect(armed.timers).toEqual(["tickflare:away:p2"]);
     expect(armed.alarm, "a timer is stored but no alarm is set").not.toBeNull();
+  });
+});
+
+/**
+ * A ticking room is a `setInterval` in memory. Cloudflare can take the room
+ * out of memory with its players still connected: after 70 to 140 seconds
+ * without an event, which keepalives are not, or to move it. Nothing the
+ * players send then reaches it until one of them sends a command. These tests
+ * check what brings it back without one: the alarm it keeps while it runs.
+ */
+describe("a ticking room with players connected", () => {
+  const ticks = (room: string) => env.TICKS.get(env.TICKS.idFromName(room));
+  const alarmOf = (room: string) => runInDurableObject(ticks(room), (_instance, state) => state.storage.getAlarm());
+
+  it("keeps an alarm under thirty seconds ahead while it runs, and none when it stops", async () => {
+    const room = freshRoom();
+    const p1 = await follow<TickState>("/ticks", room, "p1");
+    await until(() => p1.tick >= 3, "a few ticks");
+    const alarm = await alarmOf(room);
+    expect(alarm).toBeGreaterThan(Date.now());
+    expect(alarm).toBeLessThanOrEqual(Date.now() + 30_000);
+
+    // Firing it while the room is in memory is an event like any other: the simulation goes on, and the alarm is set again.
+    expect(await runDurableObjectAlarm(ticks(room))).toBe(true);
+    const at = p1.tick;
+    await until(() => p1.tick >= at + 3, "ticks after the alarm");
+    expect(await alarmOf(room)).toBeGreaterThan(Date.now());
+
+    p1.send({ type: "stop" });
+    await until(() => p1.state!.phase === "lobby", "the simulation to stop");
+    await sleep(50);
+    expect(await alarmOf(room)).toBeNull();
+  });
+
+  it("resumes when its alarm fires after Cloudflare took it out of memory, and sends everyone the whole view again", async () => {
+    const room = freshRoom();
+    const stub = ticks(room);
+    const p1 = await follow<TickState>("/ticks", room, "p1");
+    await until(() => p1.tick >= 5, "a few ticks");
+
+    // A room cannot be taken out of memory here while it ticks. So: stop it, take it out with the player
+    // still connected, and leave in storage what a room that was ticking leaves: its state, and its alarm.
+    p1.send({ type: "stop" });
+    await until(() => p1.state!.phase === "lobby", "the simulation to stop");
+    await quiet(p1);
+    await evictDurableObject(stub);
+    await runInDurableObject(stub, async (_instance, state) => {
+      state.storage.sql.exec("UPDATE tickflare_room SET state = json_set(state, '$.phase', 'playing')");
+      await state.storage.setAlarm(Date.now());
+    });
+    const welcomes = p1.of("welcome").length;
+    const before = p1.tick;
+
+    // Nobody sends anything. The alarm alone brings it back.
+    expect(await runDurableObjectAlarm(stub)).toBe(true);
+    await until(() => p1.of("welcome").length === welcomes + 1, "the whole view again");
+    expect(p1.state!.phase).toBe("playing");
+    await until(() => p1.tick >= before + 5, "ticks again");
+    expect(p1.state!.count).toBe(p1.tick);
+    expect(await alarmOf(room)).toBeGreaterThan(Date.now());
+  });
+
+  it("forgets the alarm earlier versions kept with the timers", async () => {
+    const room = freshRoom();
+    const stub = ticks(room);
+    const p1 = await follow<TickState>("/ticks", room, "p1");
+    p1.send({ type: "stop" });
+    await until(() => p1.state!.phase === "lobby", "the simulation to stop");
+    await quiet(p1);
+    await evictDurableObject(stub);
+    await runInDurableObject(stub, (_instance, state) => {
+      state.storage.sql.exec("INSERT INTO tickflare_timers (name, fire_at) VALUES ('tickflare:awake', ?)", Date.now() - 1000);
+    });
+
+    p1.send({ type: "noop" });
+    await until(() => p1.of("ack").length >= 1, "the answer");
+    const after = await runInDurableObject(stub, async (_instance, state) => ({
+      timers: state.storage.sql.exec("SELECT name FROM tickflare_timers").toArray().length,
+      alarm: await state.storage.getAlarm(),
+    }));
+    // Left there, it would have fired again and again: it is in the past, and nothing would clear it.
+    expect(after).toEqual({ timers: 0, alarm: null });
   });
 });
