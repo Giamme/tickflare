@@ -2,28 +2,36 @@ name: Measure on Cloudflare
 
 # Deploys the benchmark Worker in `bench/` to Cloudflare, puts load on it from this runner, asks
 # Cloudflare what it counted, and deletes the Worker again. Started by hand: it runs on the
-# account the repository's secrets belong to, for about a quarter of an hour.
+# account the repository's secrets belong to, for up to half an hour.
 on:
   workflow_dispatch:
     inputs:
+      mode:
+        description: "measure: all of it. analytics: only ask what Cloudflare counted for an earlier run. describe: what its analytics can be asked. delete: remove a Worker that was kept."
+        required: false
+        default: "measure"
       scenarios:
-        description: "Which measurements to run: any of idle, latency, wire, rates. Empty runs all."
+        description: "measure: which of idle, latency, wire, rates. Empty runs all."
         required: false
         default: ""
       analytics_wait:
-        description: "Seconds to wait before asking Cloudflare's analytics, which lag by a few minutes."
+        description: "measure: the longest to wait for Cloudflare's analytics, which lag by some minutes, in seconds."
         required: false
-        default: "300"
-      analytics_only:
-        description: "Deploy nothing: only ask the analytics, about `namespaces` since `since`. Or `describe`, for what can be asked."
+        default: "900"
+      keep:
+        description: "measure: 'yes' leaves the Worker deployed, to ask its analytics later. Delete it with mode delete."
+        required: false
+        default: ""
+      worker:
+        description: "delete: the Worker's name, as the run that kept it printed it."
         required: false
         default: ""
       namespaces:
-        description: "With analytics_only: the namespaces, as an earlier run listed them."
+        description: "analytics: the namespaces, as the run printed them."
         required: false
         default: "[]"
       since:
-        description: "With analytics_only: from when, as 2026-01-31T12:00:00Z."
+        description: "analytics: from when, as 2026-01-31T12:00:00Z."
         required: false
         default: ""
 
@@ -37,7 +45,7 @@ concurrency:
 jobs:
   measure:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 50
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -52,7 +60,7 @@ jobs:
       - run: npm ci
 
       - name: Find the account's workers.dev address, and make a key for this run
-        if: inputs.analytics_only == ''
+        if: inputs.mode == 'measure'
         run: |
           set -euo pipefail
           # Neither is to be read in the log: the address names the account, the key opens the Worker.
@@ -66,11 +74,11 @@ jobs:
           echo "BENCH_HOST=$WORKER.$SUBDOMAIN.workers.dev" >> "$GITHUB_ENV"
 
       - name: Deploy the benchmark Worker
-        if: inputs.analytics_only == ''
+        if: inputs.mode == 'measure'
         run: |
           set -euo pipefail
           npx wrangler deploy --config bench/wrangler.jsonc --name "$WORKER" --var "BENCH_KEY:$BENCH_KEY" > deploy.log 2>&1 || { sed "s/$BENCH_KEY/[key]/g" deploy.log; exit 1; }
-          grep -i "uploaded\|deployed\|version" deploy.log | sed "s/$BENCH_KEY/[key]/g" || true
+          grep -i "uploaded\|deployed" deploy.log | sed "s/$BENCH_KEY/[key]/g" || true
           for attempt in $(seq 1 60); do
             if [ "$(curl -s -o /dev/null -w '%{http_code}' "https://$BENCH_HOST/health?key=$BENCH_KEY")" = "200" ]; then echo "The Worker answers."; exit 0; fi
             sleep 2
@@ -79,38 +87,54 @@ jobs:
           exit 1
 
       - name: Which Durable Object namespace is which
-        if: inputs.analytics_only == ''
+        if: inputs.mode == 'measure'
         run: |
           curl -fsS -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
             "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/durable_objects/namespaces?per_page=100" \
             | jq -c --arg script "$WORKER" '[.result[] | select(.script == $script) | {id, class}]' | tee namespaces.json
 
       - name: Measure
-        if: inputs.analytics_only == ''
+        if: inputs.mode == 'measure'
         env:
           BENCH_URL: wss://${{ env.BENCH_HOST }}
+          SCENARIOS: ${{ inputs.scenarios }}
         run: |
           set -o pipefail
           echo "SINCE=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
-          node bench/load.mjs ${{ inputs.scenarios }} 2>&1 | tee results.log
-          echo "UNTIL=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+          node bench/load.mjs $SCENARIOS 2>&1 | tee results.log
 
       - name: What Cloudflare counted
-        if: inputs.analytics_only == ''
+        if: inputs.mode == 'measure'
         continue-on-error: true
-        run: |
-          sleep "${{ inputs.analytics_wait }}"
-          node bench/analytics.mjs
+        env:
+          WAIT_SECONDS: ${{ inputs.analytics_wait }}
+        run: node bench/analytics.mjs
 
       - name: What Cloudflare counted, for an earlier run
-        if: inputs.analytics_only != ''
+        if: inputs.mode == 'analytics'
         env:
           NAMESPACES: ${{ inputs.namespaces }}
           SINCE: ${{ inputs.since }}
-          MODE: ${{ inputs.analytics_only }}
-        run: |
-          if [ "$MODE" = "describe" ]; then node bench/analytics.mjs --describe; else node bench/analytics.mjs; fi
+        run: node bench/analytics.mjs
+
+      - name: What Cloudflare's analytics can be asked
+        if: inputs.mode == 'describe'
+        run: node bench/analytics.mjs --describe
 
       - name: Delete the benchmark Worker
-        if: always() && inputs.analytics_only == ''
-        run: npx wrangler delete --config bench/wrangler.jsonc --name "$WORKER" --force > delete.log 2>&1 && echo "Deleted." || { cat delete.log; exit 1; }
+        if: always() && inputs.mode == 'measure' && inputs.keep != 'yes'
+        run: npx wrangler delete --config bench/wrangler.jsonc --name "$WORKER" --force > delete.log 2>&1 && echo "Deleted $WORKER." || { cat delete.log; exit 1; }
+
+      - name: The benchmark Worker was kept
+        if: always() && inputs.mode == 'measure' && inputs.keep == 'yes'
+        run: echo "Kept $WORKER. Delete it with mode delete."
+
+      - name: Delete a Worker that was kept
+        if: inputs.mode == 'delete'
+        env:
+          KEPT: ${{ inputs.worker }}
+        run: |
+          case "$KEPT" in
+            tickflare-bench-*) npx wrangler delete --config bench/wrangler.jsonc --name "$KEPT" --force > delete.log 2>&1 && echo "Deleted $KEPT." || { cat delete.log; exit 1; } ;;
+            *) echo "Only a tickflare-bench Worker is deleted here."; exit 1 ;;
+          esac

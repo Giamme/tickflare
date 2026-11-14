@@ -8,8 +8,8 @@
 import { readFileSync } from "node:fs";
 
 const { CLOUDFLARE_API_TOKEN: token, CLOUDFLARE_ACCOUNT_ID: account, SINCE: since } = process.env;
-// Up to now: what is counted for an object can be dated a little after it was last used.
-const until = new Date().toISOString();
+// Far enough ahead to take in whatever is counted while this waits.
+const until = new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString();
 // The namespaces to ask about, as [{ id, class }]: from the environment, or as the workflow listed them.
 let namespaces = [];
 try {
@@ -68,6 +68,35 @@ if (process.argv.includes("--describe")) {
 const window = `datetime_geq: "${since}", datetime_leq: "${until}", namespaceId_in: ${ids}`;
 const accounts = (data) => data?.viewer?.accounts?.[0] ?? null;
 const seconds = (microseconds) => +(microseconds / 1e6).toFixed(3);
+
+// The analytics lag by some minutes. Wait until they have something, and until two looks a
+// minute apart find the same: what a room is counted for comes in over a while.
+const patience = Number(process.env.WAIT_SECONDS ?? 0);
+if (patience > 0) {
+  const count = async () => {
+    const data = accounts(
+      await ask(
+        "waiting",
+        `{ viewer { accounts(filter: { accountTag: "${account}" }) {
+          durableObjectsPeriodicGroups(limit: 1000, filter: { ${window} }) {
+            dimensions { objectId } sum { activeTime }
+          }
+        } } }`,
+      ),
+    );
+    const groups = data?.durableObjectsPeriodicGroups ?? [];
+    return `${groups.length}:${groups.reduce((total, group) => total + group.sum.activeTime, 0)}`;
+  };
+  const started = Date.now();
+  let last = "";
+  while (Date.now() - started < patience * 1000) {
+    await new Promise((resolve) => setTimeout(resolve, 60_000));
+    const now = await count();
+    console.log(`after ${Math.round((Date.now() - started) / 1000)} s: ${now.split(":")[0]} objects counted`);
+    if (!now.startsWith("0:") && now === last) break;
+    last = now;
+  }
+}
 
 // By object: `name` is the room's id, which the load script printed with what it measured there.
 const periodic = accounts(
