@@ -16,7 +16,7 @@
 **Measured on Cloudflare.**
 
 - `bench/` holds a Worker with a room in which everything moves on every tick, a script that plays in it, and one that asks Cloudflare's analytics what it counted. The workflow *Measure on Cloudflare* deploys the Worker under a key made for the run, measures, and deletes it.
-- The limits and costs pages of the guide have what came back: rooms held their tick rate on a fifth of a processor, bytes on the wire were as measured locally, an idle room with five players was billed two thirds of a second in ninety, and a thousand players joining one room at once did not work.
+- The limits and costs pages of the guide have what came back: rooms held their tick rate on a fifth of a processor, bytes on the wire were as measured locally, an idle room with five players was billed two thirds of a second in ninety, and a thousand players joining one room at once did not work, which the two changes above this one are for. Measured again with them, a thousand players join a room in sixteen seconds and it ticks at 9.5 of 10.
 
 **Matchmaking by skill and by region.**
 
