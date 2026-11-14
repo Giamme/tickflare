@@ -14,7 +14,8 @@
 //   --top <n>             how many rooms to list, the most expensive first. Default 30.
 //   --json                print JSON instead of a table
 //
-// Analytics lag by some minutes, and are kept for about a month.
+// Analytics lag by some minutes, and are kept for about a month. Once a Worker is deleted, its
+// rooms' analytics can no longer be asked for, even by namespace.
 
 const args = process.argv.slice(2);
 const option = (name) => {

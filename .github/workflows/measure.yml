@@ -159,6 +159,11 @@ jobs:
         if: inputs.mode == 'describe'
         run: node bench/analytics.mjs --describe
 
+      - name: The rooms report, on this run's Worker
+        if: inputs.mode == 'measure'
+        continue-on-error: true
+        run: node tools/rooms-report.mjs --worker "$WORKER" --since "$SINCE" --top 12
+
       - name: Delete the benchmark Worker
         if: always() && inputs.mode == 'measure' && inputs.keep != 'yes'
         run: npx wrangler delete --config bench/wrangler.jsonc --name "$WORKER" --force > delete.log 2>&1 && echo "Deleted $WORKER." || { cat delete.log; exit 1; }
