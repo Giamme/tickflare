@@ -1,0 +1,90 @@
+name: Measure on Cloudflare
+
+# Deploys the benchmark Worker in `bench/` to Cloudflare, puts load on it from this runner, asks
+# Cloudflare what it counted, and deletes the Worker again. Started by hand: it runs on the
+# account the repository's secrets belong to, for about a quarter of an hour.
+on:
+  workflow_dispatch:
+    inputs:
+      scenarios:
+        description: "Which measurements to run: any of idle, latency, wire, rates. Empty runs all."
+        required: false
+        default: ""
+      analytics_wait:
+        description: "Seconds to wait before asking Cloudflare's analytics, which lag by a few minutes."
+        required: false
+        default: "300"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: measure
+  cancel-in-progress: false
+
+jobs:
+  measure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      WRANGLER_SEND_METRICS: "false"
+      WORKER: tickflare-bench-${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+
+      - name: Find the account's workers.dev address, and make a key for this run
+        run: |
+          set -euo pipefail
+          # Neither is to be read in the log: the address names the account, the key opens the Worker.
+          SUBDOMAIN=$(curl -fsS -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/subdomain" | jq -r '.result.subdomain')
+          if [ -z "$SUBDOMAIN" ] || [ "$SUBDOMAIN" = "null" ]; then echo "This account has no workers.dev address."; exit 1; fi
+          echo "::add-mask::$SUBDOMAIN"
+          KEY=$(openssl rand -hex 24)
+          echo "::add-mask::$KEY"
+          echo "BENCH_KEY=$KEY" >> "$GITHUB_ENV"
+          echo "BENCH_HOST=$WORKER.$SUBDOMAIN.workers.dev" >> "$GITHUB_ENV"
+
+      - name: Deploy the benchmark Worker
+        run: |
+          set -euo pipefail
+          npx wrangler deploy --config bench/wrangler.jsonc --name "$WORKER" --var "BENCH_KEY:$BENCH_KEY" > deploy.log 2>&1 || { sed "s/$BENCH_KEY/[key]/g" deploy.log; exit 1; }
+          grep -i "uploaded\|deployed\|version" deploy.log | sed "s/$BENCH_KEY/[key]/g" || true
+          for attempt in $(seq 1 60); do
+            if [ "$(curl -s -o /dev/null -w '%{http_code}' "https://$BENCH_HOST/health?key=$BENCH_KEY")" = "200" ]; then echo "The Worker answers."; exit 0; fi
+            sleep 2
+          done
+          echo "The Worker did not answer within two minutes."
+          exit 1
+
+      - name: Which Durable Object namespace is which
+        run: |
+          curl -fsS -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/durable_objects/namespaces?per_page=100" \
+            | jq -c --arg script "$WORKER" '[.result[] | select(.script == $script) | {id, class}]' | tee namespaces.json
+
+      - name: Measure
+        env:
+          BENCH_URL: wss://${{ env.BENCH_HOST }}
+        run: |
+          set -o pipefail
+          echo "SINCE=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+          node bench/load.mjs ${{ inputs.scenarios }} 2>&1 | tee results.log
+          echo "UNTIL=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+
+      - name: What Cloudflare counted
+        continue-on-error: true
+        run: |
+          sleep "${{ inputs.analytics_wait }}"
+          node bench/analytics.mjs
+
+      - name: Delete the benchmark Worker
+        if: always()
+        run: npx wrangler delete --config bench/wrangler.jsonc --name "$WORKER" --force > delete.log 2>&1 && echo "Deleted." || { cat delete.log; exit 1; }

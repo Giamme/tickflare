@@ -13,5 +13,5 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["src", "test", "examples/*/src", "clients/test-server"]
+  "include": ["src", "test", "examples/*/src", "clients/test-server", "bench"]
 }
