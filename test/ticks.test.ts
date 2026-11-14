@@ -224,11 +224,13 @@ describe("state sync", () => {
       const room = `onward-${freshRoom()}`;
       const p1 = await join(room, "p1");
       await until(() => p1.tick >= 5);
+      const left = p1.tick;
       p1.ws.close(1000, "bye");
       await sleep(400);
 
+      // It went on while nobody was there: twenty ticks on a machine that keeps up, a few on any.
       const back = await join(room, "p1");
-      expect(back.of("welcome")[0]!.state.count).toBeGreaterThan(20);
+      expect(back.of("welcome")[0]!.state.count).toBeGreaterThan(left + 3);
       await until(() => back.tick >= back.of("welcome")[0]!.tick + 3);
       expect(back.state!.count).toBe(back.tick);
       expect((await awake(room)).timer).toBe(false);
@@ -264,6 +266,8 @@ describe("state sync", () => {
       const error = vi.spyOn(console, "error").mockImplementation(() => {});
       const { room, p1 } = await bumped(3);
       p1.send({ type: "break" });
+      await until(() => p1.state?.broken === true, "the break");
+      // Long enough for the ticks after it to fail.
       await sleep(300);
       error.mockRestore();
 
