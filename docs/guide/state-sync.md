@@ -60,7 +60,7 @@ export class Arena extends Room<State, Command> {
 
 ## What changes while a room ticks
 
-**A patch for each tick, not for each change.** After each tick, every player gets a `patch` frame with only what changed in their own `view()` since the last one they received. The client applies it for you, so `room.state` and the `state` event work as before. In the arena example a tick is about 110 bytes on the wire, against 740 for the whole state.
+**A patch for each tick, not for each change.** After each tick, every player gets a `patch` frame with only what changed in their own `view()` since the last one they received. The client applies it for you, so `room.state` and the `state` event work as before. In the arena example a tick is about 110 bytes of JSON, against 740 for the whole state, and the connection [compresses](./limits#bandwidth) what is sent.
 
 **Commands take effect with the next tick.** A command is applied the moment it arrives and acknowledged at once, but its effect reaches clients with the next tick's patch. So `room.send()` resolving no longer means `room.state` already shows the result.
 
@@ -92,7 +92,7 @@ It is checked like `shouldTick()`, so it can depend on the state: `return this.s
 ## Keeping ticks cheap
 
 - **Key collections by id.** Patches go into objects key by key; an array is sent whole when anything in it changes.
-- **Round positions.** One decimal is usually enough and much shorter on the wire.
+- **Round positions.** One decimal is usually enough, and a third of the bytes on the wire: [what a moving unit costs](./limits#bandwidth).
 - **Share the public part of views.** With many players, return the same object for the part of the view everyone sees. It is then diffed and serialised once per tick instead of once per player. See [State and views](./state-and-views#views-that-share-a-public-part).
 - **Pick the lowest rate that feels right.** 10 to 20 ticks a second with client-side interpolation looks smooth for most games. Each tick costs CPU on the server and bandwidth for everyone.
 

@@ -59,9 +59,23 @@ Two things in Tickflare's design set these numbers:
 
 ## Bandwidth
 
-Frames are JSON, and what is sent after a change is a patch: it names what changed and gives the new value. In event mode a move costs the bytes of what it changed, whatever the size of the state. While ticking, a moving unit costs about 26 bytes each tick it moves: a hundred units moving ten times a second is 26 KB a second to every player who sees them; a thousand is a quarter of a megabyte a second.
+Frames are JSON, and what is sent after a change is a patch: it names what changed and gives the new value. In event mode a move costs the bytes of what it changed, whatever the size of the state. While ticking, a unit that moves is about 26 bytes of JSON each tick.
 
-Cloudflare does not charge for it, but a player on a phone pays for it and a poor connection will not carry it.
+**That is not what crosses the network.** Cloudflare's runtime compresses a WebSocket for every client that offers it, and browsers and Node offer it with every connection. There is nothing to turn on; it needs a compatibility date of 2023-08-15 or later. What reached a player, measured locally with units that walk in straight lines and turn now and then:
+
+| A unit's position, each tick it moves | As JSON | On the wire |
+| --- | --- | --- |
+| Whole numbers | 26 bytes | 6 bytes |
+| One decimal | 31 bytes | 7 bytes |
+| Unrounded floats | 54 bytes | 20 bytes |
+
+So a hundred units moving ten times a second is about 6 KB a second to every player who sees them, and a thousand about 60 KB a second. Cloudflare does not charge for it, but a player on a phone pays for it and a poor connection will not carry it.
+
+- **Round what you send.** A position with all its decimals costs three times one rounded to a tenth, on the wire as in JSON. `Math.round(x * 10) / 10`, in the simulation or in `view()`.
+- **A client of your own has to offer compression** (`permessage-deflate`), or it is sent the JSON as it is. To see whether a connection has it, look for `Sec-WebSocket-Extensions` among the response headers of the WebSocket in your browser's developer tools.
+- **Compression costs the room nothing we could measure.** Rooms ticked as fast with it as without, up to 1.2 MB of JSON a second to each of twenty players.
+
+**A binary format was measured, and left out.** We encoded the same patches in binary, with a table of keys so that no name is sent twice, and compressed both. For rounded numbers the binary frames were 3 to 9% smaller than the JSON ones; for unrounded floats about a third smaller, which rounding beats. Compression already removes what a binary format removes, the repeated names and the punctuation. A second wire format for that, unreadable in developer tools, is not worth having. These figures are from Cloudflare's runtime run locally: we have not measured on Cloudflare's network.
 
 A player is sent their whole view when they connect. With a custom `view()`, they are also sent it whole for the first change after the room has slept, since what each player was sent is remembered only while the room is in memory. A game with hidden hands and a minute between moves therefore still sends whole views; keep such a view small.
 
@@ -177,8 +191,8 @@ Tickflare is at 0.1. It has a test suite that runs against Cloudflare's own runt
 
 In the order we would take them, by how much each removes for the work it needs:
 
-1. **A binary encoding.** Less bandwidth while ticking.
-2. **Prediction helpers for state sync.**
+1. **Prediction helpers for state sync.**
+2. **Arrays patched by element.** An array that changes is sent whole today, which is why things that change one at a time belong in objects keyed by id.
 3. **Matchmaking by skill and region; account recovery.**
 
 None of these is promised. They are here so that you can see where the edges are, and which of them are meant to move.

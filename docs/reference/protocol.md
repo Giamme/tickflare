@@ -4,6 +4,8 @@ Rooms and clients talk over one WebSocket per player, in JSON text frames. `tick
 
 The protocol version is 1. Rooms announce it in their `welcome` frame.
 
+Offer `permessage-deflate` when you connect, as browsers do. Cloudflare then compresses the frames, which makes patches of rounded numbers four to five times smaller on the wire; a client that does not offer it is sent them as they are.
+
 ## Connecting
 
 Open a WebSocket to `/rooms/<roomId>` on your Worker, with whatever your gateway's `authenticate` expects, usually a join token: `wss://my-game.example/rooms/lobby?token=<token>`. If the gateway turns the request away, the upgrade fails with its HTTP status (401, 400). If the room turns the player away, the socket opens and is closed at once with one of the [close codes](#close-codes).

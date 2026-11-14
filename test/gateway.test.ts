@@ -15,6 +15,21 @@ describe("routeToRoom", () => {
     expect((await upgrade(`/rooms/${"x".repeat(65)}?player=p1`)).status).toBe(400);
   });
 
+  it("has its connections compressed when the client offers it", async () => {
+    // Cloudflare's runtime does this, not Tickflare, and browsers offer it with every WebSocket.
+    // The bandwidth figures in the guide count on it: if a runtime stops, this says so.
+    const offered = await upgrade(`/rooms/${freshRoom()}?player=p1`, { "Sec-WebSocket-Extensions": "permessage-deflate; client_max_window_bits" });
+    expect(offered.status).toBe(101);
+    expect(offered.headers.get("Sec-WebSocket-Extensions")).toMatch(/^permessage-deflate/);
+    offered.webSocket!.accept();
+    offered.webSocket!.close(1000, "done");
+
+    const plain = await upgrade(`/rooms/${freshRoom()}?player=p1`);
+    expect(plain.headers.get("Sec-WebSocket-Extensions")).toBeNull();
+    plain.webSocket!.accept();
+    plain.webSocket!.close(1000, "done");
+  });
+
   it("refuses plain HTTP requests", async () => {
     const response = await exports.default.fetch("https://tickflare.test/rooms/abc?player=p1");
     expect(response.status).toBe(426);
