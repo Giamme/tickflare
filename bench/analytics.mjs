@@ -105,8 +105,11 @@ const periodic = accounts(
     `{ viewer { accounts(filter: { accountTag: "${account}" }) {
       durableObjectsPeriodicGroups(limit: 1000, filter: { ${window} }) {
         dimensions { namespaceId name objectId coloCode }
-        sum { activeTime cpuTime duration rowsWritten inboundWebsocketMsgCount outboundWebsocketMsgCount }
-        max { activeWebsocketConnections }
+        sum {
+          activeTime cpuTime duration rowsWritten inboundWebsocketMsgCount outboundWebsocketMsgCount
+          exceededCpuErrors exceededMemoryErrors fatalInternalErrors
+        }
+        max { activeWebsocketConnections memoryUsageBytes }
       }
     } } }`,
   ),
@@ -129,6 +132,8 @@ for (const group of periodic?.durableObjectsPeriodicGroups ?? []) {
         messagesIn: sum.inboundWebsocketMsgCount,
         messagesOut: sum.outboundWebsocketMsgCount,
         sockets: max.activeWebsocketConnections,
+        memoryMB: +(max.memoryUsageBytes / 1e6).toFixed(1),
+        errors: sum.exceededCpuErrors + sum.exceededMemoryErrors + sum.fatalInternalErrors || undefined,
       }),
   );
 }

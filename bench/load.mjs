@@ -21,7 +21,7 @@ const report = (result) => console.log("RESULT " + JSON.stringify(result));
 function open(prefix, room, n, { deflate = true, binary = false } = {}) {
   const url = `${BASE}${prefix}/${room}?player=p${n}&v=2${binary ? "&patches=b1" : ""}&key=${KEY}`;
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(url, { perMessageDeflate: deflate });
+    const ws = new WebSocket(url, { perMessageDeflate: deflate, handshakeTimeout: 20_000 });
     ws.once("open", () => {
       // What arrives at the WebSocket layer: frame headers and payloads as sent, compressed or not.
       ws.wire = 0;
