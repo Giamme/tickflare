@@ -56,8 +56,8 @@ async function profileRoom(kind, room, label, ms) {
   return { file, bytes: body.length };
 }
 
-function open(prefix, room, n, { deflate = true, binary = false } = {}) {
-  const url = `${BASE}${prefix}/${room}?player=p${n}&v=3${binary ? "&patches=b1" : ""}&key=${KEY}`;
+function open(prefix, room, n, { deflate = true, binary = false, hint } = {}) {
+  const url = `${BASE}${prefix}/${room}?player=p${n}&v=3${binary ? "&patches=b1" : ""}${hint ? `&hint=${hint}` : ""}&key=${KEY}`;
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(url, { perMessageDeflate: deflate, handshakeTimeout: 20_000 });
     ws.once("open", () => {
@@ -166,10 +166,10 @@ async function watch(ws, ms, binary) {
  * A room asked for `rate` ticks a second, with everything in it moving on every tick. `deflate`
  * false opens the sockets without compression, and `binary` asks for binary patches.
  */
-async function tickRate({ units, rate, sight, players, cps = 0, deflate = true, binary = false, profile: kind = PROFILE }) {
+async function tickRate({ units, rate, sight, players, cps = 0, deflate = true, binary = false, profile: kind = PROFILE, hint }) {
   const room = freshRoom();
   const opening = performance.now();
-  const sockets = await openMany("/rooms", room, players, { deflate, binary });
+  const sockets = await openMany("/rooms", room, players, { deflate, binary, hint });
   const joined = (performance.now() - opening) / 1000;
   try {
     // Every join is told to everyone. Wait for that to be over: a second with nothing said.
@@ -196,7 +196,7 @@ async function tickRate({ units, rate, sight, players, cps = 0, deflate = true, 
             for (let n = 0; n < cps / 10; n++) command(sockets[(nextId + n) % sockets.length], { type: "move" });
           }, 100)
         : null;
-    const label = `${room}-${players}p-${units}u-sight${sight}${binary ? "-binary" : deflate ? "" : "-plain"}`;
+    const label = `${room}-${players}p-${units}u-sight${sight}${binary ? "-binary" : deflate ? "" : "-plain"}${hint ? `-${hint}` : ""}`;
     const profiling = kind
       ? profileRoom(kind, room, label, Math.max(1000, MEASURE_MS - 1000)).catch((error) => ({ error: String(error?.message ?? error) }))
       : undefined;
@@ -220,6 +220,7 @@ async function tickRate({ units, rate, sight, players, cps = 0, deflate = true, 
       players,
       cps,
       binary,
+      hint,
       profile,
       asked: rate,
       managed: +(seen.ticks / seen.seconds).toFixed(1),

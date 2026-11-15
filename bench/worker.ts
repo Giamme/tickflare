@@ -233,8 +233,14 @@ export default {
     if (!env.BENCH_KEY || key !== env.BENCH_KEY) return new Response("Not found", { status: 404 });
     const authenticate = (): string | Response => url.searchParams.get("player") ?? new Response("Who?", { status: 401 });
     if (url.pathname === "/health") return new Response("ok");
+    // `hint`, e.g. enam or wnam: where a room is made, if this is its first request. Otherwise
+    // Cloudflare puts it near whoever asked first, which is the runner.
+    const hint = url.searchParams.get("hint") as DurableObjectLocationHint | null;
+    const rooms = hint
+      ? { idFromName: (name: string) => env.ROOMS.idFromName(name), get: (id: DurableObjectId) => env.ROOMS.get(id, { locationHint: hint }) }
+      : env.ROOMS;
     return (
-      (await routeToRoom(request, { rooms: env.ROOMS, authenticate })) ??
+      (await routeToRoom(request, { rooms, authenticate })) ??
       (await routeToRoom(request, { rooms: env.IDLE, prefix: "/idle", authenticate })) ??
       new Response("Not found", { status: 404 })
     );
