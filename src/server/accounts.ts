@@ -1,4 +1,4 @@
-import { createJoinToken, verifyJoinToken } from "./tokens.js";
+import { createJoinToken, verifyJoinToken, type Party } from "./tokens.js";
 
 /*
  * Player accounts and player data, in D1.
@@ -104,7 +104,7 @@ export interface Identity {
   /** True for a guest without an account. */
   guest: boolean;
   /** The party the player queues with, if their join token carried one. See `JoinTokenClaims.party`. */
-  party?: { id: string; size: number };
+  party?: Party;
 }
 
 /** What anyone may see of a player. */

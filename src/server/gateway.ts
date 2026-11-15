@@ -1,3 +1,5 @@
+import type { Party } from "./tokens.js";
+
 /** Header the gateway uses to tell a room who is connecting. Never trusted from the client. */
 export const PLAYER_HEADER = "x-tickflare-player";
 /** Header the gateway uses to tell a room the id it is known by. */
@@ -31,7 +33,7 @@ export type Authenticated =
       /** A display name, e.g. the account name. */
       name?: string;
       /** The party the player queues with, for a matchmaker. See `JoinTokenClaims.party`. */
-      party?: { id: string; size: number };
+      party?: Party;
     };
 
 /**
@@ -129,7 +131,7 @@ function checkIdentity(identity: unknown): Checked | Response {
   return checked;
 }
 
-type Checked = { id: string; name?: string; party?: { id: string; size: number } };
+type Checked = { id: string; name?: string; party?: Party };
 
 /** The request's headers with the gateway's own: anything the client sent under the same names is replaced or dropped. */
 function identityHeaders(request: Request, identity: Checked): Headers {

@@ -2,6 +2,7 @@ import { DurableObject } from "cloudflare:workers";
 import { CloseCode, PING, PONG, type MatchFound } from "../protocol.js";
 import { HINT_HEADER, PARTY_HEADER, PLAYER_HEADER, type RoomNamespace } from "./gateway.js";
 import type { RoomCall } from "./room.js";
+import type { Party } from "./tokens.js";
 
 interface Waiting {
   player: string;
@@ -190,7 +191,7 @@ export abstract class Matchmaker<Env = Cloudflare.Env> extends DurableObject<Env
    * from the request's query: a player who could name any party could join
    * a stranger's.
    */
-  protected partyOf(player: string, request: Request): { id: string; size: number } | undefined | Promise<{ id: string; size: number } | undefined> {
+  protected partyOf(player: string, request: Request): Party | undefined | Promise<Party | undefined> {
     void player;
     const header = request.headers.get(PARTY_HEADER);
     const colon = header?.indexOf(":") ?? -1;
@@ -215,7 +216,7 @@ export abstract class Matchmaker<Env = Cloudflare.Env> extends DurableObject<Env
 
     let rating: number | undefined;
     let region: string | undefined;
-    let party: { id: string; size: number } | undefined;
+    let party: Party | undefined;
     try {
       if (this.ratingGap !== Infinity) rating = await this.ratingOf(player, request);
       if (this.regionWaitMs > 0) region = await this.regionOf(player, request);
