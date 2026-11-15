@@ -29,6 +29,7 @@ export {
   tokenAuth,
   verifyJoinToken,
   type JoinTokenClaims,
+  type Party,
   type TokenAuthOptions,
   type VerifiedJoinToken,
 } from "./tokens.js";

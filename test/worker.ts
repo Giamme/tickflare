@@ -11,6 +11,7 @@ import {
   routeToRoom,
   tokenAuth,
   type AccountsOptions,
+  type Authenticated,
   type PasswordReset,
   type Player,
 } from "../src/server/index.js";
@@ -84,6 +85,7 @@ export class TestRoom extends Room<TestState, TestCommand> {
     if (player.id === "banned") reject("not_welcome");
     this.state.log.push(`join:${player.id}`);
     if (this.invited) this.state.log.push(`invited:${this.invited.join(",")}`);
+    if (this.teams) this.state.log.push(`teams:${this.teams.map((team) => team.join(",")).join("|")}`);
   }
 
   protected override onDisconnect(player: Player): void {
@@ -460,6 +462,23 @@ export class RankedTrios extends RankedMatchmaker {
   protected override matchSize = 3;
 }
 
+/** Fours, with parties: the first of a party waits 400 ms for the rest. */
+export class PartyMatchmaker extends TestMatchmaker {
+  protected override matchSize = 4;
+  protected override partyWaitMs = 400;
+}
+
+/** Fours in two teams of two, by the ratings given as `?rating=`. */
+export class TeamMatchmaker extends TestMatchmaker {
+  protected override matchSize = 4;
+  protected override teams = 2;
+
+  protected override ratingOf(_player: string, request: Request): number | undefined {
+    const rating = new URL(request.url).searchParams.get("rating");
+    return rating === null ? undefined : Number(rating);
+  }
+}
+
 /** Pairs players of one region, given as `?region=`, for their first 400 ms in the queue. */
 export class RegionalMatchmaker extends TestMatchmaker {
   protected override regionWaitMs = 400;
@@ -521,6 +540,20 @@ export function testAccounts(env: Cloudflare.Env, options: Partial<AccountsOptio
 function whoIs(request: Request): string | Response {
   const player = new URL(request.url).searchParams.get("player");
   return player ?? new Response("Who are you?", { status: 401 });
+}
+
+/**
+ * `whoIs`, and the party as `?party=<id>:<size>`. Only for tests: a real game
+ * takes the party from something the player cannot write, such as a join token.
+ */
+function whoIsInParty(request: Request): Authenticated | Response {
+  const url = new URL(request.url);
+  const player = url.searchParams.get("player");
+  if (!player) return new Response("Who are you?", { status: 401 });
+  const party = url.searchParams.get("party");
+  if (!party) return player;
+  const [id, size] = party.split(":");
+  return { id: player, party: { id: id!, size: Number(size) } };
 }
 
 // ---------------------------------------------------------------------------
@@ -701,6 +734,10 @@ export default {
       (await routeToRoom(request, { rooms: env.LAZY, prefix: "/lazy", authenticate: whoIs })) ??
       (await routeToRoom(request, { rooms: env.HALF, prefix: "/half", authenticate: whoIs })) ??
       (await routeToMatchmaker(request, { matchmakers: env.RANKED, prefix: "/ranked", authenticate: whoIs })) ??
+      (await routeToMatchmaker(request, { matchmakers: env.PARTIES, prefix: "/parties", authenticate: whoIsInParty })) ??
+      (await routeToMatchmaker(request, { matchmakers: env.PARTIES, prefix: "/forged", authenticate: whoIs })) ??
+      (await routeToMatchmaker(request, { matchmakers: env.PARTIES, prefix: "/partytokens", authenticate: tokenAuth({ secret: TEST_SECRET }) })) ??
+      (await routeToMatchmaker(request, { matchmakers: env.TEAMS, prefix: "/teams", authenticate: whoIsInParty })) ??
       (await routeToMatchmaker(request, { matchmakers: env.WIDENING, prefix: "/widening", authenticate: whoIs })) ??
       (await routeToMatchmaker(request, { matchmakers: env.TRIOS, prefix: "/trios", authenticate: whoIs })) ??
       (await routeToMatchmaker(request, { matchmakers: env.REGIONAL, prefix: "/regional", authenticate: whoIs })) ??

@@ -218,7 +218,7 @@ A match that has to reach a result whoever is watching, a ranked one for instanc
 ## Accounts, matchmaking and results
 
 - **Accounts** do not verify email addresses, and send no email themselves: a [password reset by email](./accounts#by-email) needs a mail service of yours.
-- **The matchmaker** matches by [skill](./matchmaking#matching-by-skill) and [region](./matchmaking#matching-by-region) but knows no parties and does not split players into teams. Each queue is one object, good for about a thousand requests a second. A queue that matches by skill or region looks at every pair of waiting players when one arrives, which is fine for hundreds waiting at once and slow for many thousands.
+- **The matchmaker** matches by [skill](./matchmaking#matching-by-skill) and [region](./matchmaking#matching-by-region), keeps [parties](./matchmaking#parties) together and splits matches into [teams](./matchmaking#teams), but the teams are evened out by a simple rule, not the best split there could be. Each queue is one object, good for about a thousand requests a second. A queue that matches by skill or region looks at every pair of waiting players when one arrives, which is fine for hundreds waiting at once and slow for many thousands.
 - **Delivery of match results and handovers is at least once.** After a crash at the wrong moment one can arrive twice. What a room owes and could not deliver is retried on its next event, not on a timer of its own.
 - **A join token scoped to a name** opens both the room and the matchmaking queue of that name.
 
@@ -243,7 +243,6 @@ Tickflare is at 0.1. It has a test suite that runs against Cloudflare's own runt
 In the order we would take them, by how much each removes for the work it needs:
 
 1. **Lockstep, prediction and interpolation in the Godot and Unity clients.**
-2. **Parties in matchmaking**: friends who queue together and stay together.
-3. **A view for each of very many players.** Working out a view only for the players whose part of the state changed, where today every view is made on every tick, is what a room of a thousand players with a view each would need.
+2. **A view for each of very many players.** Working out a view only for the players whose part of the state changed, where today every view is made on every tick, is what a room of a thousand players with a view each would need.
 
 None of these is promised. They are here so that you can see where the edges are, and which of them are meant to move.

@@ -234,6 +234,8 @@ export interface MatchFound {
   room: string;
   /** The players of the match, this one included. */
   players: string[];
+  /** With a matchmaker that splits matches into sides: the players of each, in order. */
+  teams?: string[][];
 }
 
 /** What a room puts on its queue when it calls `finishMatch`. */

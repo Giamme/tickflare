@@ -2,7 +2,9 @@ import { listDurableObjectIds, runInDurableObject } from "cloudflare:test";
 import { env, exports } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CloseCode, type MatchFound } from "../src/protocol.js";
+import { createJoinToken } from "../src/server/tokens.js";
 import { connect, sleep, upgrade } from "./helpers.js";
+import { TEST_SECRET } from "./worker.js";
 
 const waiting: WebSocket[] = [];
 afterEach(() => {
@@ -243,6 +245,112 @@ describe("matchmaker by region", () => {
     // Someone whose region is not known suits anyone.
     const somewhere = await enqueue(queue, "somewhere", "/regional");
     expect((await somewhere.closed).match!.players).toEqual(["america", "somewhere"]);
+  });
+});
+
+describe("matchmaker with parties", () => {
+  it("keeps a party together, and matches it only once all of it is there", async () => {
+    const queue = freshQueue();
+    const a = await enqueue(queue, "a", "/parties");
+    const p1 = await enqueue(queue, "p1&party=friends:2", "/parties");
+    const b = await enqueue(queue, "b", "/parties");
+    const c = await enqueue(queue, "c", "/parties");
+    // Four are waiting, but one of them is half of a party: no match yet.
+    await sleep(80);
+    expect(a.found()).toBeUndefined();
+
+    const p2 = await enqueue(queue, "p2&party=friends:2", "/parties");
+    const match = (await p2.closed).match!;
+    expect(match.players).toEqual(["a", "p1", "b", "p2"]);
+    expect((await p1.closed).match).toEqual(match);
+    await Promise.all([a.closed, b.closed]);
+    expect(c.found()).toBeUndefined();
+  });
+
+  it("goes without the members who did not come, once the first has waited long enough", async () => {
+    const queue = freshQueue();
+    const started = Date.now();
+    const p1 = await enqueue(queue, "p1&party=trio:3", "/parties");
+    const p2 = await enqueue(queue, "p2&party=trio:3", "/parties");
+    const x = await enqueue(queue, "x", "/parties");
+    const y = await enqueue(queue, "y", "/parties");
+    const match = (await x.closed).match!;
+    expect(Date.now() - started).toBeGreaterThanOrEqual(390);
+    expect([...match.players].sort()).toEqual(["p1", "p2", "x", "y"]);
+    await Promise.all([p1.closed, p2.closed, y.closed]);
+  });
+
+  it("never splits a party, and matches one that fills a match by itself, whoever came first", async () => {
+    const queue = freshQueue();
+    const alone = await enqueue(queue, "alone", "/parties");
+    const four = await Promise.all(["m1", "m2", "m3", "m4"].map((player) => enqueue(queue, `${player}&party=squad:4`, "/parties")));
+    const match = (await four[0]!.closed).match!;
+    expect([...match.players].sort()).toEqual(["m1", "m2", "m3", "m4"]);
+    await sleep(50);
+    expect(alone.found()).toBeUndefined();
+  });
+
+  it("takes the party from a join token, and not from a header the client sends", async () => {
+    // A token says so: two of a party of two wait for each other, and are matched with two more.
+    const queue = freshQueue();
+    const token = (player: string) => createJoinToken(TEST_SECRET, { player, scope: queue, party: { id: "duo", size: 2 } });
+    const d1 = await enqueue(queue, `d1&token=${await token("d1")}`, "/partytokens");
+    const solo = await enqueue(queue, `s1&token=${await createJoinToken(TEST_SECRET, { player: "s1", scope: queue })}`, "/partytokens");
+    const solo2 = await enqueue(queue, `s2&token=${await createJoinToken(TEST_SECRET, { player: "s2", scope: queue })}`, "/partytokens");
+    await sleep(80);
+    expect(d1.found()).toBeUndefined();
+    const d2 = await enqueue(queue, `d2&token=${await token("d2")}`, "/partytokens");
+    expect([...(await d2.closed).match!.players].sort()).toEqual(["d1", "d2", "s1", "s2"]);
+    await Promise.all([d1.closed, solo.closed, solo2.closed]);
+
+    // A header the client sent is dropped at the gateway: these four are players alone, and are matched at once.
+    const forged = freshQueue();
+    const response = await upgrade(`/forged/${forged}?player=f1`, { "x-tickflare-party": "4:mine" });
+    const f1 = response.webSocket!;
+    f1.accept();
+    waiting.push(f1);
+    const others = await Promise.all(["f2", "f3", "f4"].map((player) => enqueue(forged, player, "/forged")));
+    expect([...(await others[0]!.closed).match!.players].sort()).toEqual(["f1", "f2", "f3", "f4"]);
+  });
+});
+
+describe("matchmaker with teams", () => {
+  it("splits a match into even teams, keeps a party on one, and tells the room", async () => {
+    const queue = freshQueue();
+    const p1 = await enqueue(queue, "p1&rating=1000&party=pair:2", "/teams");
+    const p2 = await enqueue(queue, "p2&rating=1000&party=pair:2", "/teams");
+    const strong = await enqueue(queue, "strong&rating=1400", "/teams");
+    const weak = await enqueue(queue, "weak&rating=600", "/teams");
+    const match = (await weak.closed).match!;
+    expect(match.teams).toEqual([
+      ["p1", "p2"],
+      ["strong", "weak"],
+    ]);
+    for (const waiting of [p1, p2, strong]) expect((await waiting.closed).match).toEqual(match);
+
+    const seated = await connect(match.room, "p1");
+    expect((await seated.next("welcome")).state).toMatchObject({ log: ["join:p1", `invited:${match.players.join(",")}`, "teams:p1,p2|strong,weak"] });
+  });
+
+  it("evens out the ratings of players alone", async () => {
+    const queue = freshQueue();
+    const players = [
+      ["r1000", 1000],
+      ["r900", 900],
+      ["r1100", 1100],
+      ["r1200", 1200],
+    ] as const;
+    const waiting = [];
+    for (const [player, rating] of players) waiting.push(await enqueue(queue, `${player}&rating=${rating}`, "/teams"));
+    const { teams } = (await waiting[3]!.closed).match!;
+    const sums = teams!.map((team) => team.reduce((sum, player) => sum + Number(player.slice(1)), 0));
+    expect(sums).toEqual([2100, 2100]);
+  });
+
+  it("turns away a party larger than a team", async () => {
+    const queue = freshQueue();
+    const big = await enqueue(queue, "b1&party=crowd:3", "/teams");
+    expect(await big.closed).toMatchObject({ code: CloseCode.JoinRejected, reason: "party_too_large" });
   });
 });
 

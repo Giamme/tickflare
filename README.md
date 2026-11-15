@@ -64,7 +64,7 @@ The room saves every change before anyone hears about it, rolls back what `rejec
 - **[Rooms that end](docs/guide/rooms.md#when-a-room-is-over)**: a hook for when the last player is gone, rooms that delete themselves with their storage, and matches that [play on](docs/guide/state-sync.md#playing-on-with-nobody-connected) with nobody connected.
 - **[Identity](docs/guide/identity.md)** decided once, at the gateway, with signed join tokens.
 - **[Accounts](docs/guide/accounts.md)** on D1: guests, sign-up, sessions, password recovery, player data, stats and leaderboards.
-- **[Matchmaking](docs/guide/matchmaking.md)** by skill and region, which reserves a room near its players, and **[match results](docs/guide/match-results.md)** through a Queue into D1, with replays in R2.
+- **[Matchmaking](docs/guide/matchmaking.md)** by skill and region, with parties and teams, which reserves a room near its players, and **[match results](docs/guide/match-results.md)** through a Queue into D1, with replays in R2.
 - **[Worlds across rooms](docs/guide/worlds.md)**: handover between rooms and seeing across borders.
 - **[A report of what each room cost](docs/guide/costs.md#checking-what-you-are-billed-for)**, from Cloudflare's own analytics, which marks rooms that stayed awake with nobody in them.
 - **[Clients for Godot and Unity](docs/guide/engines.md)**, and **[a written-down protocol](docs/reference/protocol.md)** for other engines, with binary patches for those whose WebSocket is not compressed.

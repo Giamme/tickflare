@@ -22,8 +22,24 @@ export interface JoinTokenClaims {
   name?: string;
   /** If set, the token only opens the room or matchmaking queue with this id. */
   scope?: string;
+  /**
+   * The party the player queues with: friends who are to be matched
+   * together. Every member's token carries the same `id`, and `size` says
+   * how many they are. Only your server should make these, once it knows
+   * the player is in that party: a player who could name any party could
+   * join a stranger's.
+   */
+  party?: Party;
   /** Lifetime in seconds. Defaults to one hour. */
   expiresIn?: number;
+}
+
+/** Friends who queue together. See `JoinTokenClaims.party`. */
+export interface Party {
+  /** The same for every member: any string of up to 64 visible characters. */
+  id: string;
+  /** How many members the party has, the player included. */
+  size: number;
 }
 
 /** What a valid join token said. See `verifyJoinToken`. */
@@ -34,6 +50,8 @@ export interface VerifiedJoinToken {
   name?: string;
   /** The room or queue it is limited to, if any. */
   scope?: string;
+  /** The party the player queues with, if it carried one. */
+  party?: Party;
   /** When it stops working, in epoch seconds. */
   expiresAt: number;
 }
@@ -42,6 +60,9 @@ interface Payload {
   p: string;
   n?: string;
   s?: string;
+  /** The party's id and size. */
+  pa?: string;
+  ps?: number;
   e: number;
 }
 
@@ -59,6 +80,10 @@ export async function createJoinToken(secret: string, claims: JoinTokenClaims): 
   };
   if (claims.name !== undefined) payload.n = claims.name;
   if (claims.scope !== undefined) payload.s = claims.scope;
+  if (claims.party !== undefined) {
+    payload.pa = claims.party.id;
+    payload.ps = claims.party.size;
+  }
   const body = `${VERSION}.${toBase64Url(encoder.encode(JSON.stringify(payload)))}`;
   const signature = await crypto.subtle.sign("HMAC", await keyFor(secret), encoder.encode(body));
   return `${body}.${toBase64Url(new Uint8Array(signature))}`;
@@ -92,6 +117,7 @@ export async function verifyJoinToken(
     const verified: VerifiedJoinToken = { player: payload.p, expiresAt: payload.e };
     if (typeof payload.n === "string") verified.name = payload.n;
     if (payload.s !== undefined) verified.scope = payload.s;
+    if (typeof payload.pa === "string" && typeof payload.ps === "number") verified.party = { id: payload.pa, size: payload.ps };
     return verified;
   } catch {
     return null;
@@ -121,7 +147,12 @@ export function tokenAuth(
     if (!token) return new Response("Missing join token", { status: 401 });
     const verified = await verifyJoinToken(options.secret, token, scope);
     if (!verified) return new Response("Invalid or expired join token", { status: 401 });
-    return verified.name === undefined ? verified.player : { id: verified.player, name: verified.name };
+    if (verified.name === undefined && verified.party === undefined) return verified.player;
+    return {
+      id: verified.player,
+      ...(verified.name !== undefined ? { name: verified.name } : {}),
+      ...(verified.party !== undefined ? { party: verified.party } : {}),
+    };
   };
 }
 

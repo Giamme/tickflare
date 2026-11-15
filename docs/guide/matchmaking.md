@@ -159,8 +159,53 @@ protected override onTimer(name: string): void {
 }
 ```
 
+## Parties
+
+Friends who queue together are a party. Each of them queues as usual, with a join token that names the party and says how many it has:
+
+```ts
+// On your server, once it knows these players are a party: one token each.
+const party = { id: crypto.randomUUID(), size: members.length };
+const tokens = await Promise.all(
+  members.map((player) => createJoinToken(env.JOIN_SECRET, { player: player.id, name: player.name, scope: "ranked", party })),
+);
+```
+
+- **A party is matched as one.** The matchmaker never splits it between matches, and it takes as many places in a match as it has members. With ratings, its rating is its members' average.
+- **It waits for all of its members**, for `partyWaitMs`, a minute by default, from when the first of them arrived. Then the members who are there are matched without the others.
+- **Only your server makes these tokens**, once it has checked who is in the party: in a party lobby of your own, for instance, or from a friends list. A player who could name any party could join a stranger's. The gateway drops any party a client claims in a header of its own. To keep parties somewhere else, override `partyOf(player, request)`.
+- **A party larger than a match,** or than a team when there are teams, can never be matched. Its members are turned away, with the close code `4002` and the reason `party_too_large`.
+
+## Teams
+
+Set `teams` and the matchmaker shares each match's players out among that many sides:
+
+```ts
+export class Ranked extends Matchmaker<Env> {
+  protected override rooms = this.env.ROOMS;
+  protected override matchSize = 6;
+  protected override teams = 2;
+  protected override ratingGap = 200;
+
+  protected override ratingOf(player: string) {
+    return rating(this.env, player);
+  }
+}
+```
+
+- **Sides are as equal in size as the match allows,** three against three here. A match that [starts short](#starting-short) with five is three against two.
+- **A party stays on one side.**
+- **Ratings are evened out.** The largest parties are placed first, each on the side whose ratings add up to least, then the players alone, strongest first. It is a simple rule, not the best split there could be, and with parties of different sizes the sides can come out uneven.
+- **The match message says who is on which side,** as `teams`, a list of lists of player ids, and the room knows it as `this.teams`:
+
+```ts
+protected override onJoin(player: Player): void {
+  const side = this.teams?.findIndex((team) => team.includes(player.id)) ?? 0;
+  this.state.units[player.id] = spawnFor(side);
+}
+```
+
 ## What is not there yet
 
-- **Parties.** Players queue one by one. Friends who want to play together need a room of their own, with the room id shared between them.
-- **Teams.** The matchmaker picks who plays, not who is on which side: split the players into balanced teams in the room, from the same ratings.
 - **Queues are separate.** A player waits in one queue at a time, and a queue does not borrow players from another.
+- **A party that loses a member** while it waits goes on without them. The member who comes back later waits as a party of their own, and is matched alone once `partyWaitMs` is over.

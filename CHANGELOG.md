@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+**Parties and teams in matchmaking.**
+
+- A join token can name the party a player queues with: `createJoinToken(secret, { player, party: { id, size } })`. `tokenAuth` and `Accounts.authenticate` pass it to the matchmaker through the gateway, which drops any party header a client sends. `Matchmaker.partyOf(player, request)` reads it, and can be overridden.
+- A party is matched as one, is never split, and waits `partyWaitMs` (a minute) for all its members before going with those who came. A party larger than a match or a team is closed with `4002` and `party_too_large`.
+- `Matchmaker.teams` splits each match into that many sides of equal size, a party on one side, with ratings evened out. The `match` message carries `teams`, `reserveRoom` gets them as a fourth argument, and the reserved room has `this.teams`.
+
 **`tickflare-rooms`: which rooms Cloudflare billed you for.** A script that comes with the package (`tools/rooms-report.mjs`) and reads Cloudflare's analytics for one Worker: every room with its time awake, what that cost at list price, the most connections it had, and how long it was awake with nobody connected, the most expensive first. The costs page says how to run it.
 
 **A running match cannot stop by itself any more.**

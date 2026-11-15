@@ -251,7 +251,7 @@ const top = await me.leaderboard("wins");
 
 ### Matchmaking
 
-A queue puts waiting players together, by skill and by region if you like, and reserves a room for them near where they are. [Matchmaking](/guide/matchmaking)
+A queue puts waiting players together, by skill and by region if you like, keeps friends who queue together in one match and on one side, and reserves a room for them near where they are. [Matchmaking](/guide/matchmaking)
 
 </div>
 <div>

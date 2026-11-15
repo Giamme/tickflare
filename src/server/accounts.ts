@@ -103,6 +103,8 @@ export interface Identity {
   name?: string;
   /** True for a guest without an account. */
   guest: boolean;
+  /** The party the player queues with, if their join token carried one. See `JoinTokenClaims.party`. */
+  party?: { id: string; size: number };
 }
 
 /** What anyone may see of a player. */
@@ -353,10 +355,11 @@ export class Accounts {
     if (token && token.startsWith("v1.")) {
       const verified = await verifyJoinToken(this.#secret, token, scope);
       if (!verified) return null;
-      if (verified.name !== undefined) return { id: verified.player, name: verified.name, guest: false };
+      const party = verified.party ? { party: verified.party } : {};
+      if (verified.name !== undefined) return { id: verified.player, name: verified.name, guest: false, ...party };
       // A guest who has since registered signs in as the account: their old guest token no longer works.
       if (await this.#hasAccount(verified.player)) return null;
-      return { id: verified.player, guest: true };
+      return { id: verified.player, guest: true, ...party };
     }
     return null;
   }

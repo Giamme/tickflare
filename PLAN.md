@@ -59,7 +59,7 @@ Neither engine runs in the development workspace: Godot may not be executed ther
 
 ## Order
 
-1, then 6, 3, 5, 4, 7. Item 2 is done: a running simulation keeps an alarm 30 seconds ahead (`AWAKE_MS` in `src/server/room.ts`), which also keeps Cloudflare from evicting a room whose players send nothing but keepalives. Item 6 is small and reuses what item 1 teaches about the analytics. Item 7 waits for the owner. Tell the owner what was found after each item; do not batch the news.
+1, then 6, 3, 4, 7. Item 5 is done: parties come from join tokens (`JoinTokenClaims.party`), and `Matchmaker.teams` splits matches into sides. Item 2 is done: a running simulation keeps an alarm 30 seconds ahead (`AWAKE_MS` in `src/server/room.ts`), which also keeps Cloudflare from evicting a room whose players send nothing but keepalives. Item 6 is small and reuses what item 1 teaches about the analytics. Item 7 waits for the owner. Tell the owner what was found after each item; do not batch the news.
 
 ---
 
@@ -123,27 +123,6 @@ Neither engine runs in the development workspace: Godot may not be executed ther
 6. **Lockstep, last, and only after checking it is possible.** Lockstep needs every client to compute the same simulation and the same hash. The hash in `src/lockstep.ts` is the SHA-256 of the state as JSON, so two engines agree only if they write numbers as text identically, and floating-point results can differ between engines anyway. Before porting, decide and document: lockstep between clients of the same engine only, with a hash the game supplies. If that is not good enough, do not build it.
 
 **Done when** items 1 to 3 pass in CI for both engines and `docs/guide/engines.md` no longer lists them as missing. Items 4 to 6 are each done or listed there as still open, truthfully.
-
----
-
-## 5. Parties and teams in matchmaking
-
-**Where it is.** `src/server/matchmaker.ts` matches single players, by rating and region if asked. It does not keep friends together and does not say who is on which side.
-
-**Parties.**
-
-1. A hook like `ratingOf`: `partyOf(player, request)`, returning a party id and its size, or nothing. Who is in a party has to be something the server can trust: by default read it from the join token (see what `src/server/tokens.ts` can carry and extend it if needed), not from the query string.
-2. The matchmaker holds a party's members until all of them are waiting, or until a time limit, after which those who came are matched as a smaller party.
-3. A party is matched as one unit: it takes as many places as it has members, it is never split, and its rating is its members' average.
-4. Tests in `test/matchmaking.test.ts`, with test matchmakers in `test/worker.ts` as for rating and region.
-
-**Teams.**
-
-1. A setting, `teams = 1` by default. With more, the matchmaker splits each match into that many sides: parties stay together, and the sides' rating totals are made as equal as a simple greedy split can.
-2. The `match` message gains `teams`, a list of lists of player ids, and the reserved room can read it next to `this.invited`. That is a change to the matchmaking part of the protocol: document it.
-3. Tests, the matchmaking guide (it has a section "What is not there yet" to shrink), the `ranked` example, the home page recipe.
-
-**Done when** two friends who queue together always land in the same match on the same side, in a test, and the guide says how.
 
 ---
 

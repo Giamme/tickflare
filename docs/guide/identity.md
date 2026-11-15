@@ -113,3 +113,5 @@ Browsers send cookies with WebSocket connections from any site, and WebSockets a
 ```ts
 await routeToMatchmaker(request, { matchmakers: env.MATCHMAKERS, authenticate });
 ```
+
+A join token can also say which [party](./matchmaking#parties) the player queues with: `createJoinToken(secret, { player, scope: "ranked", party: { id, size } })`. `tokenAuth` and `Accounts.authenticate` pass it on to the matchmaker. Make these tokens only on your server, after checking who is in the party.

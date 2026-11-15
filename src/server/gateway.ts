@@ -6,12 +6,18 @@ export const ROOM_HEADER = "x-tickflare-room";
 export const NAME_HEADER = "x-tickflare-name";
 /** Header the gateway uses to tell a matchmaker roughly where a player is. */
 export const HINT_HEADER = "x-tickflare-hint";
+/** Header the gateway uses to tell a matchmaker the player's party, as `size:id`. Never trusted from the client. */
+export const PARTY_HEADER = "x-tickflare-party";
 
 const ROOM_ID = /^[A-Za-z0-9_-]{1,64}$/;
 /** Visible ASCII without spaces: safe as a header value and as a WebSocket tag. */
 const PLAYER_ID = /^[\x21-\x7E]{1,128}$/;
 /** Up to 64 characters without control characters. */
 const PLAYER_NAME = /^[^\p{Cc}]{1,64}$/u;
+/** Visible ASCII without spaces, as player ids are. */
+const PARTY_ID = /^[\x21-\x7E]{1,64}$/;
+/** The most members a party can have. */
+const MOST_IN_A_PARTY = 64;
 
 /**
  * Who `authenticate` found: a player id, or a player id with a display name.
@@ -24,6 +30,8 @@ export type Authenticated =
       id: string;
       /** A display name, e.g. the account name. */
       name?: string;
+      /** The party the player queues with, for a matchmaker. See `JoinTokenClaims.party`. */
+      party?: { id: string; size: number };
     };
 
 /**
@@ -94,10 +102,11 @@ export async function routeToRoom(
 }
 
 /** What `authenticate` returned, as an id and maybe a name, or the answer for something that cannot be a player. */
-function checkIdentity(identity: unknown): { id: string; name?: string } | Response {
+function checkIdentity(identity: unknown): Checked | Response {
   if (identity instanceof Response) return identity;
   const id = typeof identity === "object" && identity !== null ? (identity as { id?: unknown }).id : identity;
   const name = typeof identity === "object" && identity !== null ? (identity as { name?: unknown }).name : undefined;
+  const party = typeof identity === "object" && identity !== null ? (identity as { party?: unknown }).party : undefined;
   // An `authenticate` that falls off its end returns undefined. That is nobody, not a player.
   if (typeof id !== "string") {
     return new Response("Not authenticated", { status: 401 });
@@ -109,15 +118,27 @@ function checkIdentity(identity: unknown): { id: string; name?: string } | Respo
   if (name !== undefined && (typeof name !== "string" || !PLAYER_NAME.test(name))) {
     return new Response("Invalid player name", { status: 400 });
   }
-  return name === undefined ? { id } : { id, name };
+  const checked: Checked = name === undefined ? { id } : { id, name };
+  if (party !== undefined) {
+    const { id: partyId, size } = (party ?? {}) as { id?: unknown; size?: unknown };
+    if (typeof partyId !== "string" || !PARTY_ID.test(partyId) || !Number.isInteger(size) || (size as number) < 1 || (size as number) > MOST_IN_A_PARTY) {
+      return new Response("Invalid party", { status: 400 });
+    }
+    checked.party = { id: partyId, size: size as number };
+  }
+  return checked;
 }
 
+type Checked = { id: string; name?: string; party?: { id: string; size: number } };
+
 /** The request's headers with the gateway's own: anything the client sent under the same names is replaced or dropped. */
-function identityHeaders(request: Request, identity: { id: string; name?: string }): Headers {
+function identityHeaders(request: Request, identity: Checked): Headers {
   const headers = new Headers(request.headers);
   headers.set(PLAYER_HEADER, identity.id);
   if (identity.name === undefined) headers.delete(NAME_HEADER);
   else headers.set(NAME_HEADER, encodeURIComponent(identity.name));
+  if (identity.party === undefined) headers.delete(PARTY_HEADER);
+  else headers.set(PARTY_HEADER, `${identity.party.size}:${identity.party.id}`);
   return headers;
 }
 

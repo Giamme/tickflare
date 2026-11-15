@@ -46,7 +46,7 @@ export type ActOutcome =
 export type RoomCall =
   | { op: "arrive"; roomId: string; playerId: string; carry: unknown }
   | { op: "signal"; from: string | null; data: unknown }
-  | { op: "reserve"; roomId: string; players: string[] };
+  | { op: "reserve"; roomId: string; players: string[]; teams?: string[][] };
 
 /** Refuse what the current hook was asked to do. Everything the hook changed is rolled back. */
 export function reject(reason: string): never {
@@ -272,6 +272,8 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
   #roomId: string | null = null;
   /** If set, only these players may take a seat. Set by a matchmaker through `reserve`. */
   #invited: string[] | null = null;
+  /** The sides a matchmaker split the invited players into, if it did. */
+  #teams: string[][] | null = null;
   /** Players the current hook is handing to another room, not yet committed. */
   #moved: { player: string; to: string; carry: unknown }[] = [];
   /** Messages for other rooms sent by the current hook, not yet committed. */
@@ -470,6 +472,14 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
   }
 
   /**
+   * The sides the matchmaker split the invited players into, each a list of
+   * player ids, or null if it did not: see `Matchmaker.teams`.
+   */
+  protected get teams(): readonly (readonly string[])[] | null {
+    return this.#teams;
+  }
+
+  /**
    * Have what the current hook changes written to storage as soon as the hook
    * returns, instead of at the next save interval. Only matters while the
    * room is ticking; outside the simulation every change is written at once.
@@ -651,7 +661,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
       case "signal":
         return this.#hear(call.from ?? "", call.data);
       case "reserve":
-        return this.#reserve(call.roomId, call.players);
+        return this.#reserve(call.roomId, call.players, call.teams);
     }
   }
 
@@ -681,11 +691,15 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
    * A matchmaker is about to send a match's players here: the room is created
    * where the matchmaker asked for it and closed to everyone but `playerIds`.
    */
-  async #reserve(roomId: string, playerIds: string[]): Promise<void> {
+  async #reserve(roomId: string, playerIds: string[], teams?: string[][]): Promise<void> {
     this.#load();
     this.#learnRoomId(roomId);
     this.#invited = [...playerIds];
     this.#store.setMeta("invited", JSON.stringify(playerIds));
+    if (teams) {
+      this.#teams = teams.map((team) => [...team]);
+      this.#store.setMeta("teams", JSON.stringify(teams));
+    }
     await this.#finish();
   }
 
@@ -1314,6 +1328,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     this.#tick = Math.max(room?.tick ?? 0, Number(meta.get("tick") ?? 0));
     this.#roomId = meta.get("room") ?? null;
     this.#invited = meta.has("invited") ? (JSON.parse(meta.get("invited")!) as string[]) : null;
+    this.#teams = meta.has("teams") ? (JSON.parse(meta.get("teams")!) as string[][]) : null;
     this.#outboxPending = this.#store.hasOutbox();
     this.#seq = room?.seq ?? 0;
     let timers = this.#store.timers();

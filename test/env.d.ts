@@ -21,6 +21,8 @@ declare namespace Cloudflare {
     HALF: DurableObjectNamespace<import("./worker").HalfRate>;
     SLOW: DurableObjectNamespace<import("./worker").SlowLobby>;
     QUIET: DurableObjectNamespace<import("./worker").QuietRoom>;
+    PARTIES: DurableObjectNamespace<import("./worker").PartyMatchmaker>;
+    TEAMS: DurableObjectNamespace<import("./worker").TeamMatchmaker>;
     RANKED: DurableObjectNamespace<import("./worker").RankedMatchmaker>;
     WIDENING: DurableObjectNamespace<import("./worker").WideningMatchmaker>;
     TRIOS: DurableObjectNamespace<import("./worker").RankedTrios>;

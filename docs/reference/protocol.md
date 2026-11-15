@@ -178,7 +178,9 @@ A queue is a WebSocket to `/matchmaking/<queue>`, authenticated like a room. The
 { "t": "match", "room": "6f1c…", "players": ["ada", "grace"] }
 ```
 
-and closes the socket with code 1000. Connect to `/rooms/<room>` next.
+and closes the socket with code 1000. Connect to `/rooms/<room>` next. A matchmaker that splits matches into sides adds them, each a list of player ids: `"teams": [["ada", "bo"], ["cy", "grace"]]`.
+
+A member of a party too large for any match is closed straight away with code 4002 and the reason `party_too_large`.
 
 ## Lockstep
 
