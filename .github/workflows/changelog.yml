@@ -1,0 +1,22 @@
+name: Changelog
+
+# Fails a pull request in which a user-visible commit has no changelog fragment in
+# .changelog/unreleased/, or a fragment is a draft. Commits of internal types (chore:, ci:, docs:,
+# refactor:, test:…), merges, and commits marked [skip changelog] pass. CONTRIBUTING.md says how
+# to write a fragment. Every push to main with a fragment is released (release.yml), so the
+# fragments have to come with the pull requests.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  fragments:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Every user-visible change has a changelog fragment
+        run: python3 .changelog/changelogger.py check --range "origin/${{ github.base_ref }}..HEAD"

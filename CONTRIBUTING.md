@@ -27,10 +27,24 @@ The Godot and Unity clients have tests of their own in `clients/`, which CI runs
 
 - **Tests.** A fix comes with a test that fails without it. Tests run in workerd through `@cloudflare/vitest-plugin`, against real Durable Objects; `test/worker.ts` has the rooms they use.
 - **Docs, in the same pull request.** A change that a user can see changes the guide page that describes it, and, if it applies, the [limits](docs/guide/limits.md) and [costs](docs/guide/costs.md) pages, the [protocol](docs/reference/protocol.md), the README and the home page (`docs/index.md`). Every export needs a doc comment: the docs build fails without one, and on dead links.
-- **A changelog entry** under `## Unreleased` at the top of [CHANGELOG.md](CHANGELOG.md) (add the heading if it is not there). Say what changed and, if it breaks something, what to change. The changelog is also a page of the docs, so link to the site (`https://tickflare.gridpaper.dev/...`) rather than to files in the repository.
+- **A changelog fragment** for each change a user can see: a small Markdown file in [`.changelog/unreleased/`](.changelog/README.md), in the same commit as the change. Don't edit `CHANGELOG.md`; fragments are compiled into it when the version is released. Make one with `python3 .changelog/changelogger.py new --type fixed --text "Rooms saved by an older version load."`, or write the file yourself:
+
+  ```
+  ---
+  type: fixed        # added | changed | deprecated | removed | fixed | security
+  breaking: false    # true if users have to change something; then say what in the text
+  ---
+  Rooms saved by an older version load.
+  ```
+
+  Write it for someone using Tickflare: what changed for them, and what to do if it breaks something. The changelog is also a page of the docs, so link to the site (`https://tickflare.gridpaper.dev/...`) rather than to files in the repository. A commit nobody using Tickflare would notice (tests, CI, a refactor) needs no fragment if its message starts with `test:`, `ci:`, `refactor:`, `docs:` or `chore:`, or says `[skip changelog]`. CI checks every pull request for this.
 - **The protocol stays readable by old clients.** A change to what goes over the wire raises `PROTOCOL_VERSION` and keeps answering clients that ask for an older one, and comes with test vectors in `test/vectors/` if it touches binary patches or prediction.
 
 Write the docs plainly: short sentences, what a thing does and when to use it, numbers where there are numbers. Measured claims say how they were measured.
+
+## Releases
+
+Every change that lands on `main` with a fragment is released: the *Release* workflow picks the version from the fragments (before 1.0, a breaking change or a new feature makes the next 0.x, anything else a patch), updates `CHANGELOG.md`, tags the version, publishes it to npm and makes its GitHub release. Pull requests are how changes are grouped into one release.
 
 ## Measuring on Cloudflare
 

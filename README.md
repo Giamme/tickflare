@@ -100,6 +100,8 @@ npm run docs:dev    # the documentation site on http://localhost:5173
 
 [`bench/`](bench) holds a room in which everything moves on every tick and the scripts that load it; the *Measure on Cloudflare* workflow deploys it under a key made for the run, measures, can ask Cloudflare for a CPU profile of a room, and deletes it.
 
+Releases are automatic: each change that lands on `main` with a [changelog fragment](CONTRIBUTING.md#what-a-pull-request-needs) is released to npm, with its section in the changelog and a GitHub release.
+
 The documentation lives in [`docs/`](docs): guides in Markdown, and an API reference generated from the doc comments in `src/`. Every export needs a doc comment, or the docs build fails. [`docs.yml`](.github/workflows/docs.yml) builds the site on every change and deploys it to Cloudflare from `main`.
 
 ## Licence

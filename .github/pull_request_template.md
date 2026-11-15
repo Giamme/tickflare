@@ -2,4 +2,4 @@
 
 - [ ] Tests, including one that fails without a fix
 - [ ] Docs updated in the same pull request (guide pages, limits, costs, protocol, README, home page, as they apply)
-- [ ] An entry under `## Unreleased` in CHANGELOG.md
+- [ ] A changelog fragment in `.changelog/unreleased/` for each change a user can see (see CONTRIBUTING.md); merging releases it

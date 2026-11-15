@@ -1,76 +1,134 @@
 name: Release
 
-# Publishes the package to npm when a version tag is pushed:
-#   npm version 0.1.1 --no-git-tag-version, add the version's section to CHANGELOG.md, commit,
-#   then: git tag v0.1.1 && git push origin v0.1.1
-# or make the release on GitHub (Releases, Draft a new release, a new tag v0.1.1 on main), which
-# makes the tag; the run then fills in the release's notes from the changelog.
-# The tag must match the version in package.json. The package is published with provenance, so
-# npm shows which commit and which run built it.
+# Releases on every push to main that brings a user-visible change. Changelogger
+# (.changelog/changelogger.py) picks the version from the fragments in .changelog/unreleased/
+# (before 1.0: a breaking change or a new feature makes 0.x+1, anything else a patch), bumps
+# package.json and the Unity package together, and compiles CHANGELOG.md. The package is then
+# tested, the release commit "chore(release): v<version>" and its tag are pushed, the package is
+# published to npm with provenance, and the version gets a GitHub release with its notes. A push
+# with nothing user-visible releases nothing.
 #
-# npm accepts this workflow in one of two ways:
-#   - trusted publishing, set up on npmjs.com in the package's settings for this repository and
-#     this workflow file (needs the package to exist, so not for the very first version), or
-#   - the repository secret NPM_TOKEN, an npm access token that can publish the package.
-# A version that is on npm already, published by hand, is not published again: the run only makes
-# its GitHub release.
+# A tag pushed by hand (a pre-release or a hotfix made locally with changelogger) is published the
+# same way. The tags this workflow pushes do not start it again: GitHub runs no workflows for what
+# its own token pushes. For the same reason it starts the docs deploy itself.
+#
+# npm accepts the publish through trusted publishing, set up on npmjs.com for this repository and
+# this file, or the repository secret NPM_TOKEN.
 on:
   push:
+    branches: [main]
     tags: ["v*"]
 
 permissions:
-  contents: write # the GitHub release
+  contents: write # the release commit, its tag and the GitHub release
   id-token: write # provenance, and trusted publishing
+  actions: write # starting the docs deploy for the release commit
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
-  publish:
+  release:
+    # The release commit lands on main too: never release it again.
+    if: github.ref_type == 'tag' || !startsWith(github.event.head_commit.message, 'chore(release):')
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          # The branch head, not the pushed commit: a queued run starts after the last release.
+          ref: ${{ github.ref }}
       - uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: npm
           registry-url: https://registry.npmjs.org
-      - name: The tag matches package.json
+
+      - name: Cut a release if anything is unreleased
+        id: cut
+        if: github.ref_type == 'branch'
         run: |
-          version=$(node -p "require('./package.json').version")
-          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
-            echo "::error::The tag is $GITHUB_REF_NAME but package.json says $version."
-            exit 1
+          git config user.name "github-actions[bot]"
+          git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
+          before=$(node -p "require('./package.json').version")
+          # Refuses, writing nothing, while a commit lacks a fragment or a fragment is a draft.
+          python3 .changelog/changelogger.py release auto
+          after=$(node -p "require('./package.json').version")
+          if [ "$before" = "$after" ]; then
+            echo "Nothing user-visible to release."
+            exit 0
           fi
-          if ! grep -q "^## $version\$" CHANGELOG.md; then
-            echo "::error::CHANGELOG.md has no section for $version."
-            exit 1
+          npm install --package-lock-only --ignore-scripts
+          git add -A .changelog CHANGELOG.md package.json package-lock.json clients/unity/package.json
+          git commit -m "chore(release): v$after"
+          git tag -a "v$after" -m "Tickflare $after"
+          echo "version=$after" >> "$GITHUB_OUTPUT"
+
+      - name: The version to publish
+        id: version
+        env:
+          CUT: ${{ steps.cut.outputs.version }}
+        run: |
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            version=${GITHUB_REF_NAME#v}
+            if [ "$version" != "$(node -p "require('./package.json').version")" ]; then
+              echo "::error::The tag is $GITHUB_REF_NAME but package.json says otherwise."
+              exit 1
+            fi
+            if ! grep -q "^## $version\$" CHANGELOG.md; then
+              echo "::error::CHANGELOG.md has no section for $version."
+              exit 1
+            fi
+          else
+            version=$CUT
           fi
-      - run: npm ci
-      - run: npm run typecheck
-      - run: npm test
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - if: steps.version.outputs.version != ''
+        run: npm ci
+      - if: steps.version.outputs.version != ''
+        run: npm run typecheck
+      - if: steps.version.outputs.version != ''
+        run: npm test
+
+      - name: Push the release commit and its tag
+        if: steps.version.outputs.version != '' && github.ref_type == 'branch'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        # If main moved on meanwhile, this fails and publishes nothing; the next run releases it all.
+        run: git push --atomic origin HEAD:main "v$VERSION"
+
       - name: Publish to npm
+        if: steps.version.outputs.version != ''
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          version=$(node -p "require('./package.json').version")
-          # A version published by hand already (the first one has to be: trusted publishing needs
-          # the package to exist) only gets its GitHub release.
-          if npm view "tickflare@$version" version > /dev/null 2>&1; then
-            echo "tickflare@$version is on npm already."
+          if npm view "tickflare@$VERSION" version > /dev/null 2>&1; then
+            echo "tickflare@$VERSION is on npm already."
             exit 0
           fi
           # npm 11.5 and later publish through trusted publishing when it is set up.
           npm install -g npm@latest
           npm publish
+
       - name: Release on GitHub
+        if: steps.version.outputs.version != ''
         env:
           GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          version=${GITHUB_REF_NAME#v}
-          # The version's section of the changelog, up to the next version's.
-          awk -v v="## $version" '$0 == v { on = 1; next } on && /^## / { exit } on' CHANGELOG.md > notes.md
-          # A release made by hand on GitHub, which is what made the tag, gets the notes.
-          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
-            gh release edit "$GITHUB_REF_NAME" --notes-file notes.md
+          python3 .changelog/changelogger.py notes "$VERSION" > notes.md
+          if gh release view "v$VERSION" > /dev/null 2>&1; then
+            gh release edit "v$VERSION" --notes-file notes.md
           else
-            gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file notes.md
+            gh release create "v$VERSION" --title "v$VERSION" --notes-file notes.md
           fi
+
+      - name: Deploy the docs, whose changelog page has the new version
+        if: steps.version.outputs.version != '' && github.ref_type == 'branch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run docs.yml --ref main
