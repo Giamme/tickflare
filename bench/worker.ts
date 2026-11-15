@@ -123,6 +123,8 @@ export class Bench extends Room<State, Command, Env> {
       sockets: states,
       rate: this.tickRate,
       sight: this.#sight,
+      // This room's Durable Object id, which Cloudflare's profiling API asks for.
+      actor: this.ctx.id.toString(),
     });
   }
 

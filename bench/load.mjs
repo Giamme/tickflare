@@ -18,6 +18,34 @@ let rooms = 0;
 const freshRoom = () => `r${stamp}-${rooms++}`;
 const report = (result) => console.log("RESULT " + JSON.stringify(result));
 
+/**
+ * A rates row with `"profile": "cpu"` or `"heap"`, or every row with BENCH_PROFILE set to one of
+ * them, asks Cloudflare's profiling API for a profile of its room while it is measured, and writes
+ * it to profiles/. Needs CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID, WORKER (the Worker's name)
+ * and namespaces.json, as the workflow has them.
+ */
+const PROFILE = process.env.BENCH_PROFILE || "";
+async function profileRoom(kind, room, label, ms) {
+  const { CLOUDFLARE_API_TOKEN: token, CLOUDFLARE_ACCOUNT_ID: account, WORKER: worker } = process.env;
+  const { readFileSync, writeFileSync, mkdirSync } = await import("node:fs");
+  const namespace = JSON.parse(readFileSync("namespaces.json", "utf8")).find((entry) => entry.class === "Bench")?.id;
+  const how = await fetch(`${BASE.replace(/^ws/, "http")}/rooms/${room}/how?player=p0&key=${KEY}`).then((response) => response.json());
+  const response = await fetch(
+    `https://api.cloudflare.com/client/v4/accounts/${account}/workers/workers/${worker}/versions/latest-deployed/profile`,
+    {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ duration_ms: ms, profile_type: kind, namespace_id: namespace, actor_id: how.actor }),
+    },
+  );
+  const body = Buffer.from(await response.arrayBuffer());
+  if (!response.ok) return { error: `${response.status}: ${body.toString("utf8").slice(0, 300)}` };
+  mkdirSync("profiles", { recursive: true });
+  const file = `profiles/${label}-${kind}.pb.gz`;
+  writeFileSync(file, body);
+  return { file, bytes: body.length };
+}
+
 function open(prefix, room, n, { deflate = true, binary = false } = {}) {
   const url = `${BASE}${prefix}/${room}?player=p${n}&v=3${binary ? "&patches=b1" : ""}&key=${KEY}`;
   return new Promise((resolve, reject) => {
@@ -128,7 +156,7 @@ async function watch(ws, ms, binary) {
  * A room asked for `rate` ticks a second, with everything in it moving on every tick. `deflate`
  * false opens the sockets without compression, and `binary` asks for binary patches.
  */
-async function tickRate({ units, rate, sight, players, cps = 0, deflate = true, binary = false }) {
+async function tickRate({ units, rate, sight, players, cps = 0, deflate = true, binary = false, profile: kind = PROFILE }) {
   const room = freshRoom();
   const opening = performance.now();
   const sockets = await openMany("/rooms", room, players, { deflate, binary });
@@ -158,7 +186,12 @@ async function tickRate({ units, rate, sight, players, cps = 0, deflate = true, 
             for (let n = 0; n < cps / 10; n++) command(sockets[(nextId + n) % sockets.length], { type: "move" });
           }, 100)
         : null;
+    const label = `${room}-${players}p-${units}u-sight${sight}${binary ? "-binary" : deflate ? "" : "-plain"}`;
+    const profiling = kind
+      ? profileRoom(kind, room, label, Math.max(1000, MEASURE_MS - 1000)).catch((error) => ({ error: String(error?.message ?? error) }))
+      : undefined;
     const seen = await watch(sockets[0], MEASURE_MS, binary);
+    const profile = profiling ? await profiling : undefined;
     if (timer) clearInterval(timer);
     // The room's own log, while its players are still there: what it says of its ticks and sockets.
     const log = await fetch(`${BASE.replace(/^ws/, "http")}/rooms/${room}/how?player=p0&log=1&key=${KEY}`)
@@ -177,6 +210,7 @@ async function tickRate({ units, rate, sight, players, cps = 0, deflate = true, 
       players,
       cps,
       binary,
+      profile,
       asked: rate,
       managed: +(seen.ticks / seen.seconds).toFixed(1),
       wireKBps: +(seen.wire / seen.seconds / 1024).toFixed(1),

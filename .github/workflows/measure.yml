@@ -19,7 +19,7 @@ on:
         required: false
         default: "900"
       table:
-        description: "rates: the rooms to measure, as JSON, in place of the usual list. [{\"units\":1000,\"sight\":100,\"players\":1000,\"rate\":10}]"
+        description: "rates: the rooms to measure, as JSON, in place of the usual list. [{\"units\":1000,\"sight\":100,\"players\":1000,\"rate\":10}]. A row may add \"binary\":true, \"deflate\":false, or \"profile\":\"cpu\" (or \"heap\") for a profile of its room from Cloudflare."
         required: false
         default: ""
       silent_ms:
@@ -127,6 +127,18 @@ jobs:
           set -o pipefail
           echo "SINCE=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
           node bench/load.mjs $SCENARIOS 2>&1 | tee results.log
+
+      - name: Where the profiled rooms spent their time
+        if: always() && inputs.mode == 'measure' && hashFiles('profiles/*') != ''
+        run: for file in profiles/*; do node bench/pprof-top.mjs "$file" 30; echo; done
+
+      - name: Keep the profiles
+        if: always() && inputs.mode == 'measure' && hashFiles('profiles/*') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: profiles
+          path: profiles/
+          retention-days: 14
 
       - name: What Cloudflare counted
         if: inputs.mode == 'measure' && inputs.scenarios != 'soak'
