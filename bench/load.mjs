@@ -30,15 +30,25 @@ async function profileRoom(kind, room, label, ms) {
   const { readFileSync, writeFileSync, mkdirSync } = await import("node:fs");
   const namespace = JSON.parse(readFileSync("namespaces.json", "utf8")).find((entry) => entry.class === "Bench")?.id;
   const how = await fetch(`${BASE.replace(/^ws/, "http")}/rooms/${room}/how?player=p0&key=${KEY}`).then((response) => response.json());
-  const response = await fetch(
-    `https://api.cloudflare.com/client/v4/accounts/${account}/workers/workers/${worker}/versions/latest-deployed/profile`,
-    {
-      method: "POST",
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ duration_ms: ms, profile_type: kind, namespace_id: namespace, actor_id: how.actor }),
-    },
-  );
-  const body = Buffer.from(await response.arrayBuffer());
+  const started = Date.now();
+  let response;
+  let body;
+  // Cloudflare can answer that it has seen no executions yet, or could not start: try again, with
+  // what is left of the time.
+  for (let attempt = 0; ; attempt++) {
+    const left = ms - (Date.now() - started);
+    response = await fetch(
+      `https://api.cloudflare.com/client/v4/accounts/${account}/workers/workers/${worker}/versions/latest-deployed/profile`,
+      {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ duration_ms: Math.max(1000, left), profile_type: kind, namespace_id: namespace, actor_id: how.actor }),
+      },
+    );
+    body = Buffer.from(await response.arrayBuffer());
+    if (response.ok || attempt === 3 || ![404, 429, 503].includes(response.status) || left < 3000) break;
+    await sleep(1000);
+  }
   if (!response.ok) return { error: `${response.status}: ${body.toString("utf8").slice(0, 300)}` };
   mkdirSync("profiles", { recursive: true });
   const file = `profiles/${label}-${kind}.pb.gz`;

@@ -1,4 +1,4 @@
-import { encodePatch, encodePatchFrame, KeyTable } from "../binary.js";
+import { encodePatch, encodePatchFrame, KeyTable, type SharedEncodings } from "../binary.js";
 import { applyPatch, diff, diffArrays, isPlainObject, jsonEqual, withoutArrayPatches, type Patch } from "../patch.js";
 
 /**
@@ -60,11 +60,11 @@ export class DeltaSender {
   /** How much of that table each socket has been told, and of which generation of it. */
   #told = new WeakMap<WebSocket, { generation: number; known: number }>();
   /**
-   * During a send: each patch already encoded in binary, by its JSON, or null if it cannot be,
-   * and the frames made around each encoding, by what sets them apart. Players whose views
-   * change alike are sent the same bytes, made once.
+   * During a send: what has been encoded in binary already, for the patches that have it too,
+   * and the frames made around each encoded patch, by what sets them apart. Players whose views
+   * change alike are sent bytes made once.
    */
-  #encoded = new Map<string, Uint8Array | null>();
+  #shared: SharedEncodings = { values: new Map(), changes: new Map() };
   #framed = new Map<Uint8Array, Map<string, Uint8Array>>();
 
   /** Record exactly what a socket has just been sent in full, as a copy the room cannot touch. */
@@ -150,7 +150,8 @@ export class DeltaSender {
       if (viewOf) this.#sendViews(sockets, viewOf, deliver);
       else this.#sendState(sockets, state, deliver);
     } finally {
-      this.#encoded.clear();
+      this.#shared.values.clear();
+      this.#shared.changes.clear();
       this.#framed.clear();
     }
 
@@ -184,18 +185,15 @@ export class DeltaSender {
     update: { patch: string; parsed?: Patch; binary?: Uint8Array },
     head: { seq: number; tick: number; from: number | undefined; c: number | undefined },
   ): Uint8Array | undefined {
-    let patch = update.binary ?? this.#encoded.get(update.patch);
-    if (patch === null) return undefined;
+    let patch = update.binary;
     if (patch === undefined) {
       try {
-        patch = encodePatch(update.parsed ?? (JSON.parse(update.patch) as Patch), this.#keys);
+        patch = encodePatch(update.parsed ?? (JSON.parse(update.patch) as Patch), this.#keys, this.#shared);
       } catch {
-        this.#encoded.set(update.patch, null);
         return undefined;
       }
-      this.#encoded.set(update.patch, patch);
+      update.binary = patch;
     }
-    update.binary = patch;
     const told = this.#told.get(ws);
     // A socket this instance has not sent a frame to, or that knows a table since started again,
     // is told to forget its keys and is given all of them.
@@ -295,7 +293,7 @@ function plainForm(update: Update): { patch: string; parsed?: Patch; binary?: Ui
 class FieldCache {
   #byValue = new Map<
     object,
-    { json?: string; next?: unknown; patches: Map<unknown, string | null>; parsed?: Map<unknown, unknown> }
+    { json?: string; next?: unknown; patches: Map<unknown, string | null>; changes?: Map<unknown, unknown> }
   >();
 
   #entry(live: object) {
@@ -322,11 +320,8 @@ class FieldCache {
     let json: string | null = null;
     if (patch) {
       json = JSON.stringify(patch);
-      if (entry.next === undefined) {
-        const parsed = JSON.parse(json) as Patch;
-        entry.next = applyPatch(base, parsed);
-        (entry.parsed ??= new Map()).set(base, parsed);
-      }
+      entry.next ??= applyPatch(base, JSON.parse(json) as Patch);
+      (entry.changes ??= new Map()).set(base, patch);
     } else {
       entry.next ??= base;
     }
@@ -349,13 +344,11 @@ class FieldCache {
       entry.next ??= base;
     } else if (patch === null) {
       json = `[${this.json(live)}]`;
+      (entry.changes ??= new Map()).set(base, [live]);
     } else {
       json = JSON.stringify(patch);
-      if (entry.next === undefined) {
-        const parsed = JSON.parse(json) as Patch[string];
-        entry.next = applyPatch({ v: base }, { v: parsed }).v;
-        (entry.parsed ??= new Map()).set(base, parsed);
-      }
+      entry.next ??= applyPatch({ v: base }, { v: JSON.parse(json) as Patch[string] }).v;
+      (entry.changes ??= new Map()).set(base, patch);
     }
     entry.patches.set(base, json);
     return json;
@@ -363,13 +356,11 @@ class FieldCache {
 
   /**
    * The change `patch` or `arrayChange` gave for `base` and `live`, as an
-   * object read back from its JSON: parsed once, for everyone who is sent it.
+   * object: what its JSON was written from, which holds the state's own
+   * values. For encoding in this send, never to keep.
    */
-  parsed(base: unknown, live: object, json: string): unknown {
-    const entry = this.#entry(live);
-    let parsed = entry.parsed?.get(base);
-    if (parsed === undefined) (entry.parsed ??= new Map()).set(base, (parsed = JSON.parse(json)));
-    return parsed;
+  change(base: unknown, live: object): unknown {
+    return this.#entry(live).changes?.get(base);
   }
 
   /** The copy of `live` that everyone who holds it after this send shares. */
@@ -411,7 +402,8 @@ function viewUpdate(
   const parts: string[] = [];
   const next: Record<string, unknown> = { ...base };
   // For a client that needs the patch as an object, binary or without array patches: the same
-  // patch, built from what is parsed already instead of parsing it again for each player.
+  // patch, built from what its JSON was written from instead of parsed back for each player. It
+  // holds the state's own values, so that what several players are sent is the same object.
   // `__proto__` would be the object's prototype here, where it is an ordinary key in JSON.
   let parsed: Patch | undefined = parse ? {} : undefined;
   for (const key of Object.keys(live)) {
@@ -425,17 +417,17 @@ function viewUpdate(
         const patch = fields.patch(from, to);
         if (patch !== null) {
           parts.push(`${name}:${patch}`);
-          if (parsed) parsed[key] = fields.parsed(from, to, patch) as Patch;
+          if (parsed) parsed[key] = fields.change(from, to) as Patch;
         }
       } else if (Array.isArray(from) && Array.isArray(to)) {
         const change = fields.arrayChange(from, to);
         if (change !== null) {
           parts.push(`${name}:${change}`);
-          if (parsed) parsed[key] = fields.parsed(from, to, change) as Patch[string];
+          if (parsed) parsed[key] = fields.change(from, to) as Patch[string];
         }
       } else if (from === undefined || !jsonEqual(from, to)) {
         parts.push(`${name}:[${fields.json(to)}]`);
-        if (parsed) parsed[key] = [fields.next(to)];
+        if (parsed) parsed[key] = [to];
       }
       next[key] = fields.next(to);
     } else if (from === undefined || !jsonEqual(from, to)) {

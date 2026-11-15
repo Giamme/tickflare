@@ -125,7 +125,25 @@ class Writer {
   done(): Uint8Array {
     return this.#bytes.slice(0, this.length);
   }
+
+  /** A copy of what was written from `start` on. */
+  copy(start: number): Uint8Array {
+    return this.#bytes.slice(start, this.length);
+  }
 }
+
+/**
+ * What `encodePatch` can share between patches: the bytes already written for each value of the
+ * state (an object or an array), and for each change (a nested patch or an array's elements), by
+ * the object itself. Players who see the same unit, or are sent the same change to a part of the
+ * state they share, get one encoding of it. Good for one generation of one key table.
+ */
+export interface SharedEncodings {
+  values: Map<object, Uint8Array>;
+  changes: Map<object, Uint8Array>;
+}
+
+let sharing: SharedEncodings | undefined;
 
 /**
  * The names a room has sent as keys, each with a number: its place in the
@@ -192,21 +210,29 @@ function writeValue(to: Writer, keys: KeyTable, value: unknown): void {
       return writeNumber(to, value);
     case "object": {
       if (value === null) return to.byte(Tag.Null);
+      // As JSON.stringify does: a Date, say, is written as what its toJSON gives.
+      if (typeof (value as { toJSON?: unknown }).toJSON === "function") {
+        return writeValue(to, keys, (value as { toJSON(): unknown }).toJSON());
+      }
+      const known = sharing?.values.get(value);
+      if (known) return to.bytes(known);
+      const start = to.length;
       if (Array.isArray(value)) {
         to.byte(Tag.Array);
         to.varint(value.length);
         // As in JSON: what cannot be said is null in an array.
         for (const item of value) writeValue(to, keys, item === undefined ? null : item);
-        return;
+      } else {
+        const record = value as Record<string, unknown>;
+        const names = Object.keys(record).filter((name) => record[name] !== undefined);
+        to.byte(Tag.Object);
+        to.varint(names.length);
+        for (const name of names) {
+          keys.write(to, name);
+          writeValue(to, keys, record[name]);
+        }
       }
-      const record = value as Record<string, unknown>;
-      const names = Object.keys(record).filter((name) => record[name] !== undefined);
-      to.byte(Tag.Object);
-      to.varint(names.length);
-      for (const name of names) {
-        keys.write(to, name);
-        writeValue(to, keys, record[name]);
-      }
+      sharing?.values.set(value, to.copy(start));
       return;
     }
     default:
@@ -251,27 +277,42 @@ function writePatch(to: Writer, keys: KeyTable, patch: Patch): void {
 /** What to do with one key of an object or one element of an array. */
 function writeChange(to: Writer, keys: KeyTable, change: Patch[string]): void {
   if (change === 0) return to.byte(Tag.Delete);
+  if (Array.isArray(change) && change.length !== 2) return writeValue(to, keys, change[0] === undefined ? null : change[0]);
+  const known = sharing?.changes.get(change);
+  if (known) return to.bytes(known);
+  const start = to.length;
   if (!Array.isArray(change)) {
     to.byte(Tag.Nested);
-    return writePatch(to, keys, change);
+    writePatch(to, keys, change);
+  } else {
+    // An array's elements: its new length, how many changed, and each by its index.
+    const [changes, length] = change;
+    const indexes = Object.keys(changes);
+    to.byte(Tag.Elements);
+    to.varint(length);
+    to.varint(indexes.length);
+    for (const index of indexes) {
+      to.varint(Number(index));
+      writeChange(to, keys, changes[index]!);
+    }
   }
-  if (change.length !== 2) return writeValue(to, keys, change[0] === undefined ? null : change[0]);
-  // An array's elements: its new length, how many changed, and each by its index.
-  const [changes, length] = change;
-  const indexes = Object.keys(changes);
-  to.byte(Tag.Elements);
-  to.varint(length);
-  to.varint(indexes.length);
-  for (const index of indexes) {
-    to.varint(Number(index));
-    writeChange(to, keys, changes[index]!);
-  }
+  sharing?.changes.set(change, to.copy(start));
 }
 
-/** A patch as bytes, without the frame around it. Keys it has not seen go into `keys`. */
-export function encodePatch(patch: Patch, keys: KeyTable): Uint8Array {
+/**
+ * A patch as bytes, without the frame around it. Keys it has not seen go into `keys`. With
+ * `shared`, values and changes in it that were written before, for another patch with the same
+ * table, are copied from there instead of written again; it must not outlive the table's
+ * generation.
+ */
+export function encodePatch(patch: Patch, keys: KeyTable, shared?: SharedEncodings): Uint8Array {
   const to = new Writer();
-  writePatch(to, keys, patch);
+  sharing = shared;
+  try {
+    writePatch(to, keys, patch);
+  } finally {
+    sharing = undefined;
+  }
   return to.done();
 }
 

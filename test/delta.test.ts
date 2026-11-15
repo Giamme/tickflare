@@ -272,8 +272,8 @@ describe("DeltaSender and sockets that asked for binary", () => {
     };
     for (let seq = 1; seq <= 4; seq++) {
       sender.send(seated("a", "b", "c"), seq, seq, undefined, view(seq));
-      // The same patch, and the same names to tell: one frame for both.
-      if (seq > 1) expect(players.a.binary.at(-1)).toBe(players.b.binary.at(-1));
+      // The same patch, and the same names to tell: the same bytes for both.
+      if (seq > 1) expect(players.a.binary.at(-1)).toEqual(players.b.binary.at(-1));
     }
     // Now b hears of c's new name and a does not: they need different frames, then the same again.
     for (let seq = 11; seq <= 14; seq++) {
