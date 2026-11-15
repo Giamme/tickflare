@@ -59,10 +59,20 @@ const DECIMAL_LIMIT = 1e12;
 const utf8 = new TextEncoder();
 const text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
+/**
+ * The buffer every writer starts in. Writing is done one writer at a time, and `done()` copies
+ * what was written out, so they can share it: a room sending a thousand players a frame each
+ * makes a thousand small copies a tick, not a thousand buffers to grow and throw away.
+ */
+let scratch = new Uint8Array(4096);
+let scratchView = new DataView(scratch.buffer);
+/** A buffer grown past this is not kept for the next writer. */
+const LARGEST_SCRATCH = 64 * 1024;
+
 /** Bytes, written one after another into a buffer that grows. */
 class Writer {
-  #bytes = new Uint8Array(1024);
-  #view = new DataView(this.#bytes.buffer);
+  #bytes = scratch;
+  #view = scratchView;
   length = 0;
 
   #room(more: number): void {
@@ -71,6 +81,10 @@ class Writer {
     grown.set(this.#bytes.subarray(0, this.length));
     this.#bytes = grown;
     this.#view = new DataView(grown.buffer);
+    if (grown.length <= LARGEST_SCRATCH) {
+      scratch = grown;
+      scratchView = this.#view;
+    }
   }
 
   byte(value: number): void {
