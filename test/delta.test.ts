@@ -231,6 +231,34 @@ describe("DeltaSender and sockets that asked for binary", () => {
     expect(players.a.keys).toEqual(players.b.keys);
     expect(players.a.keys).toEqual(expect.arrayContaining(["a", "b", "world", "hand"]));
   });
+
+  it("sends players whose views change alike the same bytes, and each the names it lacks", () => {
+    const sender = new DeltaSender();
+    const players = { a: new BinaryMirror(), b: new BinaryMirror(), c: new BinaryMirror(), d: new BinaryMirror() };
+    const seated = (...ids: (keyof typeof players)[]) => ids.map((id) => ({ ws: players[id].ws, id, binary: true }));
+    // c's view gains a name of its own on every send, between a's and b's, which see the same.
+    const view = (seq: number) => (id: string) => {
+      const world = { units: { u1: { x: seq }, [`u${seq}`]: { x: 0 } } };
+      return id === "c" ? { world, [`private${seq}`]: seq } : { world };
+    };
+    for (let seq = 1; seq <= 4; seq++) {
+      sender.send(seated("a", "b", "c"), seq, seq, undefined, view(seq));
+      // The same patch, and the same names to tell: one frame for both.
+      if (seq > 1) expect(players.a.binary.at(-1)).toBe(players.b.binary.at(-1));
+    }
+    // Now b hears of c's new name and a does not: they need different frames, then the same again.
+    for (let seq = 11; seq <= 14; seq++) {
+      sender.send(seated("a", "c", "b"), seq, seq, undefined, view(seq));
+      expect(players.a.state).toEqual(view(seq)("a"));
+      expect(players.b.state).toEqual(view(seq)("b"));
+    }
+    // Someone new, who is told every name, and then the patches everyone else gets.
+    sender.send(seated("a", "b", "c", "d"), 30, 30, undefined, view(30));
+    sender.send(seated("d", "a", "b", "c"), 31, 31, undefined, view(31));
+    for (const id of ["a", "b", "d"] as const) expect(players[id].state).toEqual(view(31)(id));
+    expect(players.c.state).toEqual(view(31)("c"));
+    expect(players.d.binary.length).toBeGreaterThan(0);
+  });
 });
 
 describe("DeltaSender and array patches", () => {

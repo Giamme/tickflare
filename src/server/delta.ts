@@ -59,6 +59,13 @@ export class DeltaSender {
   #keys = new KeyTable();
   /** How much of that table each socket has been told, and of which generation of it. */
   #told = new WeakMap<WebSocket, { generation: number; known: number }>();
+  /**
+   * During a send: each patch already encoded in binary, by its JSON, or null if it cannot be,
+   * and the frames made around each encoding, by what sets them apart. Players whose views
+   * change alike are sent the same bytes, made once.
+   */
+  #encoded = new Map<string, Uint8Array | null>();
+  #framed = new Map<Uint8Array, Map<string, Uint8Array>>();
 
   /** Record exactly what a socket has just been sent in full, as a copy the room cannot touch. */
   remember(ws: WebSocket, snapshot: unknown, seq: number): void {
@@ -139,8 +146,13 @@ export class DeltaSender {
       seqs.set(ws, update.patch !== undefined || update.whole !== undefined || held === undefined ? seq : held);
     };
 
-    if (viewOf) this.#sendViews(sockets, viewOf, deliver);
-    else this.#sendState(sockets, state, deliver);
+    try {
+      if (viewOf) this.#sendViews(sockets, viewOf, deliver);
+      else this.#sendState(sockets, state, deliver);
+    } finally {
+      this.#encoded.clear();
+      this.#framed.clear();
+    }
 
     // A socket that could not be sent to, or whose view() threw, keeps what it had and gets the
     // difference next time.
@@ -164,24 +176,46 @@ export class DeltaSender {
   /**
    * A patch as a binary frame for one socket, or undefined if it cannot be
    * said in binary, in which case the socket is sent the JSON: its client
-   * reads both. The patch itself is encoded once, for every socket that is
-   * sent it.
+   * reads both. A patch is encoded once in a send, however many sockets are
+   * sent it, and so is a frame around it for the sockets that need the same.
    */
   #binaryFrame(
     ws: WebSocket,
     update: { patch: string; parsed?: Patch; binary?: Uint8Array },
     head: { seq: number; tick: number; from: number | undefined; c: number | undefined },
   ): Uint8Array | undefined {
-    try {
-      update.binary ??= encodePatch(update.parsed ?? (JSON.parse(update.patch) as Patch), this.#keys);
-      const told = this.#told.get(ws);
-      // A socket this instance has not sent a frame to, or that knows a table since started again,
-      // is told to forget its keys and is given all of them.
-      const forget = told === undefined || told.generation !== this.#keys.generation;
-      return encodePatchFrame(head, this.#keys, forget ? 0 : told.known, forget, update.binary);
-    } catch {
-      return undefined;
+    let patch = update.binary ?? this.#encoded.get(update.patch);
+    if (patch === null) return undefined;
+    if (patch === undefined) {
+      try {
+        patch = encodePatch(update.parsed ?? (JSON.parse(update.patch) as Patch), this.#keys);
+      } catch {
+        this.#encoded.set(update.patch, null);
+        return undefined;
+      }
+      this.#encoded.set(update.patch, patch);
     }
+    update.binary = patch;
+    const told = this.#told.get(ws);
+    // A socket this instance has not sent a frame to, or that knows a table since started again,
+    // is told to forget its keys and is given all of them.
+    const forget = told === undefined || told.generation !== this.#keys.generation;
+    const known = forget ? 0 : told.known;
+    // The frame gives the keys from `known` to the table's present size, which grows as patches
+    // with new names are encoded: that size is part of what sets a frame apart.
+    const key = `${forget ? "f" : known}/${this.#keys.size}/${head.from ?? ""}/${head.c ?? ""}`;
+    let frames = this.#framed.get(patch);
+    if (frames === undefined) this.#framed.set(patch, (frames = new Map()));
+    let frame = frames.get(key);
+    if (frame === undefined) {
+      try {
+        frame = encodePatchFrame(head, this.#keys, known, forget, patch);
+      } catch {
+        return undefined;
+      }
+      frames.set(key, frame);
+    }
+    return frame;
   }
 
   #sendState(sockets: SeatedSocket[], state: unknown, deliver: Deliver): void {
