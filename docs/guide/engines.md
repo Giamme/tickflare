@@ -95,7 +95,7 @@ A **WebGL** build has no `ClientWebSocket`, which is what the client talks throu
 
 **The state is changed in place.** `RoomClient` makes a new object for every part of the state that changed, which is what lets a web framework see what to draw again. These clients write into the dictionaries they have, which makes no garbage for the engine to collect. Keep no reference to a part of the state that you expect to stay as it was.
 
-**Patches are binary.** Neither engine's WebSocket compresses, and JSON patches that are not compressed are about three times the size of [binary ones](../reference/protocol#binary-patches). So these clients ask for binary. Turn it off, with `binary = false` or `Binary = false` before opening, to read the frames in a network capture, or for a room of many hundreds of players who each have a view of their own: there, binary patches cost the room [more than JSON](./limits#the-same-rooms-on-cloudflare).
+**Patches are binary.** Neither engine's WebSocket compresses, and JSON patches that are not compressed are about three times the size of [binary ones](../reference/protocol#binary-patches). So these clients ask for binary. Turn it off, with `binary = false` or `Binary = false` before opening, to read the frames in a network capture.
 
 ## Smoothing and prediction
 
