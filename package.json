@@ -1,9 +1,28 @@
 {
   "name": "tickflare",
   "version": "0.1.0",
-  "private": true,
   "description": "Multiplayer game framework for Cloudflare Workers and Durable Objects",
   "license": "MIT",
+  "homepage": "https://tickflare.gridpaper.dev",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Giamme/tickflare.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Giamme/tickflare/issues"
+  },
+  "keywords": [
+    "cloudflare",
+    "cloudflare-workers",
+    "durable-objects",
+    "multiplayer",
+    "game-server",
+    "netcode",
+    "websocket",
+    "state-sync",
+    "lockstep",
+    "matchmaking"
+  ],
   "type": "module",
   "exports": {
     ".": {
@@ -19,8 +38,14 @@
   },
   "files": [
     "dist",
-    "tools"
+    "src",
+    "tools",
+    "CHANGELOG.md"
   ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "engines": {
     "node": ">=22"
   },

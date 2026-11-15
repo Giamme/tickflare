@@ -8,9 +8,9 @@ Each room is one Durable Object: a single-threaded, authoritative server with it
 
 It is aimed at turn-based, card, co-op, `.io`-style and strategy games. Games that need UDP and rollback netcode (shooters, fighting games, sim racing) are out of scope.
 
-**[Read the documentation](docs/guide/introduction.md)** · [Getting started](docs/guide/getting-started.md) · [Changelog](CHANGELOG.md)
+**[Documentation](https://tickflare.gridpaper.dev)** · [Getting started](https://tickflare.gridpaper.dev/guide/getting-started) · [Examples to play](https://tickflare.gridpaper.dev/guide/examples) · [Changelog](CHANGELOG.md)
 
-The guides read fine on GitHub. The API reference is generated from the doc comments, so it is only on the built site: `npm run docs:dev` serves it locally.
+The guides are also in [`docs/guide`](docs/guide/introduction.md) and read fine on GitHub; the API reference is only on the site.
 
 ## A room
 
@@ -73,11 +73,12 @@ The room saves every change before anyone hears about it, rolls back what `rejec
 
 ## Install
 
-Tickflare is at 0.1 and not on npm yet. Install it from GitHub; it builds on install:
-
 ```sh
-npm install github:Giamme/tickflare
+npm install tickflare
+npm install --save-dev wrangler
 ```
+
+Tickflare is at 0.1: expect the API to change before 1.0. The [changelog](CHANGELOG.md) says how versions work until then, and what to change when one breaks something.
 
 ## Examples
 

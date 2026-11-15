@@ -1,6 +1,14 @@
 # Changelog
 
-## Unreleased
+How versions work before 1.0: a new minor version (0.2, 0.3) can change the API in ways that need changes in your code, and each such change is listed here with what to change. A patch version (0.1.1) fixes things and changes nothing you call. The [protocol](https://tickflare.gridpaper.dev/reference/protocol) has a version of its own: the room says which one it speaks, and keeps answering clients of older ones.
+
+## 0.1.0
+
+The first public release, on npm as `tickflare`, with its documentation at <https://tickflare.gridpaper.dev> and the four examples deployed to play from the [examples page](https://tickflare.gridpaper.dev/guide/examples).
+
+Everything below went into it while the repository was private: first the last round of work, then the round before, which cleaned up the API.
+
+### The last round before release
 
 **A thousand players with a view each.**
 
@@ -156,11 +164,11 @@ For the costs guide's RTS example, 500 half-hour lockstep matches a day, this ta
 
 **Docs:** the home page has a live demo for each sync mode with the real code behind it, and a cost estimator for your own numbers whose examples fill in every setting. The costs guide now counts what rooms write to storage, which its first version left out, says how far each kind of game can grow before a rented server costs less, and shows how the design of a game changes its bill.
 
-## 0.1.0
+### The API cleanup
 
 The first version with documentation of its own, at the docs site built from [`docs/`](https://github.com/Giamme/tickflare/tree/main/docs). The API had grown one roadmap step at a time; this release smooths the places where that showed. It breaks code written for 0.0 in the ways listed below, each a small change.
 
-### Upgrading from 0.0
+#### Upgrading from 0.0
 
 **Rooms that hand players over or signal their neighbours** no longer implement `handOver()` and `relay()`. Set `rooms` to the namespace the other rooms live in instead:
 
@@ -212,7 +220,7 @@ Recordings are now format version 2. `runReplay` still reads version 1 recording
 
 **`RoomClient`, `LockstepClient` and `AccountClient` properties are read-only.** `state`, `seq`, `tick`, `tickRate`, `you`, `players` and `status` on `RoomClient`, and `sim`, `turn` and `ready` on `LockstepClient`, are getters now, as is `account` on `AccountClient`. Code that only read them is unaffected.
 
-### New
+#### New
 
 - `RoomClient.on(event, listener)` listens for `state`, `presence`, `message`, `status` and `moved`, as well as the `on…` options do, and returns a function that stops listening.
 - `findMatch` takes a `token` source, like `RoomClient` does.

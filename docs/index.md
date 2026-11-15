@@ -78,7 +78,7 @@ To run it yourself:
 Install Tickflare and Wrangler.
 
 ```sh
-npm install github:Giamme/tickflare
+npm install tickflare
 npm install -D wrangler esbuild
 ```
 

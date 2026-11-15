@@ -1,0 +1,23 @@
+name: Something missing
+description: A feature, or a way of building a game that Tickflare makes harder than it should.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: game
+    attributes:
+      label: What you are building
+      description: The game, roughly how many players a room has, and which sync mode it uses or would use.
+    validations:
+      required: true
+  - type: textarea
+    id: missing
+    attributes:
+      label: What is missing or hard
+      description: What you need to do, what you tried, and where it gets in the way.
+    validations:
+      required: true
+  - type: textarea
+    id: shape
+    attributes:
+      label: What it could look like
+      description: Optional. An API you would like to write, or how another framework does it.

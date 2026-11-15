@@ -75,7 +75,7 @@ const reference: DefaultTheme.SidebarItem[] = [
     items: [
       { text: "Wire protocol", link: "/reference/protocol" },
       { text: "Accounts HTTP API", link: "/reference/accounts-http" },
-      { text: "Upgrading to 0.1", link: "/reference/upgrading" },
+      { text: "Changelog", link: "/reference/upgrading" },
     ],
   },
 ];
@@ -86,6 +86,7 @@ export default defineConfig({
   cleanUrls: true,
   ignoreDeadLinks: [/^https?:\/\/localhost/],
   lastUpdated: true,
+  sitemap: { hostname: "https://tickflare.gridpaper.dev" },
   head: [["link", { rel: "icon", href: "/favicon.svg", type: "image/svg+xml" }]],
   markdown: { theme: { light: "github-light", dark: "github-dark" } },
   themeConfig: {
@@ -94,7 +95,7 @@ export default defineConfig({
       { text: "Guide", link: "/guide/introduction", activeMatch: "^/guide/" },
       { text: "Reference", link: "/reference/protocol", activeMatch: "^/reference/" },
       { text: "API", link: "/api/", activeMatch: "^/api/" },
-      { text: "Changelog", link: "https://github.com/Giamme/tickflare/blob/main/CHANGELOG.md" },
+      { text: "Changelog", link: "/reference/upgrading" },
     ],
     sidebar: {
       "/guide/": guide,

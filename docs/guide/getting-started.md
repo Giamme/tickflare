@@ -6,16 +6,16 @@ You need Node 22 or later. A Cloudflare account is only needed to deploy at the 
 
 ## Install
 
-Tickflare is not on npm yet. Install it from GitHub, together with Wrangler, Cloudflare's command-line tool:
+Install Tickflare, and Wrangler, Cloudflare's command-line tool:
 
 ```sh
 mkdir counter && cd counter
 npm init -y
-npm install github:Giamme/tickflare
+npm install tickflare
 npm install --save-dev wrangler esbuild
 ```
 
-The package builds itself on install. It has two entry points:
+The package has two entry points:
 
 - `tickflare` is the server side, for your Worker.
 - `tickflare/client` is the client side, for the page.

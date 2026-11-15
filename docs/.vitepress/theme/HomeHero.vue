@@ -3,7 +3,7 @@ import { ref } from "vue";
 import { withBase } from "vitepress";
 import ModeDemos from "./ModeDemos.vue";
 
-const install = "npm install github:Giamme/tickflare";
+const install = "npm install tickflare";
 const copied = ref(false);
 
 async function copy(): Promise<void> {

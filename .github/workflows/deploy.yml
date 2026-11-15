@@ -67,7 +67,19 @@ jobs:
               failed="$failed $example"
             elif [ -n "$SITE_DOMAIN" ]; then
               bash scripts/workers-dev-off.sh "tickflare-$example"
-              echo "tickflare-$example: https://tickflare-$example.$SITE_DOMAIN" >> "$GITHUB_STEP_SUMMARY"
+              url="https://tickflare-$example.$SITE_DOMAIN"
+              # A new domain can take a few minutes to have its certificate and to answer.
+              answered=""
+              for attempt in $(seq 1 30); do
+                if curl -fsS -o /dev/null "$url/"; then answered=yes; break; fi
+                sleep 10
+              done
+              if [ -n "$answered" ]; then
+                echo "tickflare-$example: $url" >> "$GITHUB_STEP_SUMMARY"
+              else
+                echo "::error::$url does not answer."
+                failed="$failed $example"
+              fi
             fi
             echo "::endgroup::"
           done

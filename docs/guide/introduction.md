@@ -55,6 +55,6 @@ Around the room kernel there are the services a game usually needs, built on Clo
 
 ## Status
 
-Tickflare is at version 0.1. Every step of the original roadmap has a first version, and the API has had one round of cleanup ([Upgrading to 0.1](../reference/upgrading)). Expect it to change before 1.0. The package is not on npm yet; [Getting started](./getting-started) shows how to install it from GitHub.
+Tickflare is at version 0.1, its first public release, on npm as `tickflare`. Expect the API to change before 1.0: the [changelog](../reference/upgrading) says how versions work until then, and lists every change with what to do about it.
 
 [Limits and known gaps](./limits) lists what is not there yet.

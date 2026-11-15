@@ -1,0 +1,60 @@
+name: Release
+
+# Publishes the package to npm when a version tag is pushed:
+#   npm version 0.1.1 --no-git-tag-version, add the version's section to CHANGELOG.md, commit,
+#   then: git tag v0.1.1 && git push origin v0.1.1
+# The tag must match the version in package.json. The package is published with provenance, so
+# npm shows which commit and which run built it.
+#
+# npm accepts this workflow in one of two ways:
+#   - trusted publishing, set up on npmjs.com in the package's settings for this repository and
+#     this workflow file (needs the package to exist, so not for the very first version), or
+#   - the repository secret NPM_TOKEN, an npm access token that can publish the package.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write # the GitHub release
+  id-token: write # provenance, and trusted publishing
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          registry-url: https://registry.npmjs.org
+      - name: The tag matches package.json
+        run: |
+          version=$(node -p "require('./package.json').version")
+          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "::error::The tag is $GITHUB_REF_NAME but package.json says $version."
+            exit 1
+          fi
+          if ! grep -q "^## $version\$" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no section for $version."
+            exit 1
+          fi
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - name: Publish to npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          # npm 11.5 and later publish through trusted publishing when it is set up.
+          npm install -g npm@latest
+          npm publish
+      - name: Release on GitHub
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          # The version's section of the changelog, up to the next version's.
+          awk -v v="## $version" '$0 == v { on = 1; next } on && /^## / { exit } on' CHANGELOG.md > notes.md
+          gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file notes.md

@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Documentation
+    url: https://tickflare.gridpaper.dev
+    about: Guides, the protocol, and the API reference.
+  - name: Report a security problem
+    url: https://github.com/Giamme/tickflare/security/advisories/new
+    about: Privately, not in an issue.

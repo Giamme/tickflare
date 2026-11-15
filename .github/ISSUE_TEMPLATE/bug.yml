@@ -1,0 +1,49 @@
+name: Bug report
+description: Something Tickflare does that it should not, or does not do that the docs say it does.
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead. Error messages and logs as text, please.
+    validations:
+      required: true
+  - type: textarea
+    id: code
+    attributes:
+      label: The smallest room or client that shows it
+      description: A room class, a Worker, a client snippet. Leave out everything the bug does not need.
+      render: ts
+  - type: input
+    id: version
+    attributes:
+      label: Tickflare version
+      placeholder: "0.1.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where it happens
+      multiple: true
+      options:
+        - wrangler dev, on my machine
+        - Deployed on Cloudflare
+        - In the tests (vitest-pool-workers)
+  - type: dropdown
+    id: client
+    attributes:
+      label: Client
+      multiple: true
+      options:
+        - Browser (tickflare/client)
+        - Node (tickflare/client)
+        - Godot
+        - Unity
+        - My own, from the protocol
+  - type: input
+    id: compat
+    attributes:
+      label: Wrangler version and compatibility date
+      placeholder: "wrangler 4.160.0, 2026-11-01"
