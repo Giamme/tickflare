@@ -1,0 +1,40 @@
+name: Tail a Worker
+
+# Run by hand: prints a deployed Worker's logs and exceptions for a while, as `wrangler tail` does,
+# with the account's address and name kept out of the log. For finding out why a room fails.
+on:
+  workflow_dispatch:
+    inputs:
+      worker:
+        description: The Worker's name
+        required: true
+        default: tickflare-arena
+      seconds:
+        description: How long to listen
+        default: "120"
+
+permissions:
+  contents: read
+
+jobs:
+  tail:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: bash scripts/mask-cloudflare-account.sh
+      - name: Tail
+        env:
+          WORKER: ${{ inputs.worker }}
+          SECONDS_TO_LISTEN: ${{ inputs.seconds }}
+        run: |
+          echo "Listening to $WORKER for $SECONDS_TO_LISTEN seconds."
+          timeout "$SECONDS_TO_LISTEN" npx wrangler tail "$WORKER" --format pretty || true
