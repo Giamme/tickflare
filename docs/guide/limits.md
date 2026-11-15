@@ -48,10 +48,14 @@ The same rooms, deployed to Cloudflare in November 2026 and played from a machin
 | In the room | Players | Ticks asked for | Managed | Of one processor |
 | --- | --- | --- | --- | --- |
 | 100 units, everyone sees all of them | 200 | 10 | 9.9 | 8% |
-| 100 units, everyone sees all of them | 1,000 | 10 | 9.5 | not counted |
+| 100 units, everyone sees all of them | 1,000 | 10 | 9.5 to 10, and 2.9 once | 34% |
+| 100 units, everyone sees all, binary patches | 1,000 | 10 | 9.9 | 34% |
 | 1,000 units, each player sees those near them | 200 | 10 | 9.9 | 18% |
-| 1,000 units, by sight | 500 | 10 | 9.8 to 10 | 28% |
-| 1,000 units, by sight | 1,000 | 10 | 1.3 | not counted |
+| 1,000 units, by sight | 500 | 10 | 9.7 to 10 | 28% |
+| 1,000 units, by sight, binary patches | 500 | 10 | 8.4 | not counted |
+| 1,000 units, by sight | 750 | 10 | 9.4 to 9.7 | 40 to 49% |
+| 1,000 units, by sight | 1,000 | 10 | 8.6 to 9.9 in six runs, 1.6 to 5.6 in five | 45 to 52% |
+| 1,000 units, by sight, binary patches | 1,000 | 10 | 1.2 to 3.9 | not counted |
 | 5,000 units, by sight | 100 | 10 | 9.7 to 10 | 20% |
 | 20,000 units, by sight | 20 | 10 | 9.1 to 10 | not counted |
 | 1,000 units, by sight | 100 | 30 | 30.4 | not counted |
@@ -62,11 +66,15 @@ The same rooms, deployed to Cloudflare in November 2026 and played from a machin
 
 Where the local machine fell behind, Cloudflare's did not, with one exception, and no room for which we have the count used a third of a processor. A room asked for 60 ticks a second ran 62 or 63: ticks are a whole number of milliseconds apart, 16 for 60 a second.
 
-**A thousand players with a view each is too many.** A thousand who all see the same hundred units were served 9.5 ticks a second. A thousand who each see their own part of a thousand units got 1.3: `view()` runs for every player on every tick, and at that size it is what the tick is spent on. Five hundred were fine. Past that, split the world [across rooms](./worlds).
+**A thousand players with a view each is the edge.** At first a thousand players who each see their own part of a thousand units got 1.3 ticks a second. Most of that tick went on finding each player's connection, work that grew with the square of the players; with that fixed, the same room held 8.6 to 9.9 ticks a second in six runs, and 1.6 to 5.6 in five others, with the same code and the same load. When it held, the room used about half of a processor, so it has little to spare, and how much depends on the machine Cloudflare puts it on. Five hundred held 9.7 to 10 in every run, and 750 held 9.4 to 9.7. A thousand who all see the same hundred units are served about ten ticks a second: everyone gets the same patch, made once.
+
+**Binary patches cost a room more when every player has a view of their own.** Each player's patch is a different one, and is encoded for that player. At a thousand players they got 1.2 to 3.9 ticks a second, in runs where JSON got up to 9.9; at 500, 8.4. Locally the two cost about the same, and we have not found what makes the difference on Cloudflare. The [Godot and Unity clients](./engines) ask for binary patches by default: for a room of many hundreds of them, each with a view of their own, turn that off. When everyone sees the same thing, binary costs nothing extra.
+
+Past five hundred players with a view each, split the world [across rooms](./worlds), or tick slower.
 
 **Players arriving together used to break a room, and no longer do.** The first time we measured, a thousand players connecting to one room did not work at all: every join was told to every player with the whole list of players, Cloudflare restarted the room for using too much memory six times while they connected, and most connections were lost. Five hundred worked in one run and not in the next. Since then a join is told as [who came, not who is here](../reference/protocol#presence), and in a room of more than 64 connections at most ten times a second. Measured again, a thousand players connected in 16 seconds, as fast as one machine could open the connections, and the room was never restarted; five hundred connected in under five.
 
-These were four runs of a few minutes each, with every player on one machine in a data centre in the United States. They say nothing about a room that runs for hours, or about players on home connections around the world. The Worker and the scripts are in the repository's `bench` folder, and the workflow *Measure on Cloudflare* runs them on your own account.
+Each row is from runs of a few minutes, with every player on one machine in a data centre in the United States. They say nothing about a room that runs for hours, or about players on home connections around the world. The Worker and the scripts are in the repository's `bench` folder, and the workflow *Measure on Cloudflare* runs them on your own account.
 
 Two things in Tickflare's design set these numbers:
 
@@ -242,8 +250,9 @@ Tickflare is at 0.1. It has a test suite that runs against Cloudflare's own runt
 
 In the order we would take them, by how much each removes for the work it needs:
 
-1. **A view for each of very many players.** Working out a view only for the players whose part of the state changed, where today every view is made on every tick, is what a room of a thousand players with a view each would need.
-2. **The Unity client in the editor and in a WebGL build.** It is tested on .NET only, and its WebGL socket has never run.
-3. **Lockstep in the Godot and Unity clients**, for games whose simulation is in integer arithmetic, between clients of the same engine.
+1. **A thousand players with a view each, every time.** The room holds ten ticks a second in about half the runs and falls well short in the others. Finding out where a slow run's time goes needs Cloudflare's profiler on a deployed room; making a view only for the players whose part of the state changed, where today every view is made on every tick, would cut the work itself.
+2. **Binary patches as cheap as JSON with a view each**, which needs the same profiling first.
+3. **The Unity client in the editor and in a WebGL build.** It is tested on .NET only, and its WebGL socket has never run.
+4. **Lockstep in the Godot and Unity clients**, for games whose simulation is in integer arithmetic, between clients of the same engine.
 
 None of these is promised. They are here so that you can see where the edges are, and which of them are meant to move.

@@ -70,7 +70,7 @@ draw_own(predicted.state.units[room.you])  # read it when you draw
 
 ## Binary patches
 
-Godot's WebSocket does not compress, so this client asks the room for [binary patches](../../docs/reference/protocol.md#binary-patches), which are a little over a third of the size of the JSON ones. Set `room.binary = false` before `open()` to get JSON, which is easier to read in a network capture.
+Godot's WebSocket does not compress, so this client asks the room for [binary patches](../../docs/reference/protocol.md#binary-patches), which are a little over a third of the size of the JSON ones. Set `room.binary = false` before `open()` to get JSON, which is easier to read in a network capture. Do the same for a room of many hundreds of players who each have a view of their own: there, binary patches cost the room more than JSON ([measured](../../docs/guide/limits.md#the-same-rooms-on-cloudflare)).
 
 ## Tests
 

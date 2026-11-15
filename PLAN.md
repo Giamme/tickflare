@@ -2,7 +2,7 @@
 
 Written on 2026-11-14 for whoever implements it. It assumes no memory of the conversations that led here: everything needed is in this file or in the repository.
 
-Delete each section when it is done, and delete the file when all are.
+Delete each section when it is done, and delete the file when all are. Items 1 to 6 are done; their sections are gone, and what they found is under Order.
 
 ## Decisions the owner made (2026-11-15)
 
@@ -59,25 +59,7 @@ Neither engine runs in the development workspace: Godot may not be executed ther
 
 ## Order
 
-3, 7. Item 6 is done: `tools/rooms-report.mjs` (`tickflare-rooms`), a sample of its output on the costs page, and a workflow for it in Force Projection's PR #39. Item 4 is done: interpolation and prediction in both engine clients, checked against `test/vectors/prediction.json`; a WebGL socket for Unity, compiled and never run; lockstep not ported, and `docs/guide/engines.md` says why. Unity in the editor stays untested (decision C). Item 1 is done: two 40-minute soaks on Cloudflare (510 rooms, 11 room-hours, `soak` in `bench/load.mjs`) found no room awake past its last player, and the limits page says the cause of the first run's two rooms is still unknown. Item 5 is done: parties come from join tokens (`JoinTokenClaims.party`), and `Matchmaker.teams` splits matches into sides. Item 2 is done: a running simulation keeps an alarm 30 seconds ahead (`AWAKE_MS` in `src/server/room.ts`), which also keeps Cloudflare from evicting a room whose players send nothing but keepalives. Item 7 waits for the owner. Tell the owner what was found after each item; do not batch the news.
-
----
-
-## 3. Cheaper views for many players
-
-**The limit.** On Cloudflare, 1,000 players who each see their own part of 1,000 units got 1.3 ticks a second out of 10. Five hundred got 9.8. A thousand who all see the same thing got 9.5. So the cost is the per-player work: `#broadcastTick()` in `src/server/room.ts` calls `view()` for every connection on every tick, and `DeltaSender.send` in `src/server/delta.ts` compares each result with what that player was last sent.
-
-**Steps.**
-
-1. Measure before designing. Run the benchmark room locally with 1,000 players by sight (`BENCH_TABLE='[{"units":1000,"sight":100,"players":1000,"rate":10}]' ... node bench/load.mjs rates` against `wrangler dev --config bench/wrangler.jsonc`) and time the parts of a tick: the game's `view()`, the comparison, turning the patch into JSON, and `send`. Local clocks work inside a Worker under `wrangler dev`; on Cloudflare they do not advance during computation, so this can only be done locally. Write the split down in the commit message.
-2. Choose by what the measurement says. The candidates, cheapest first:
-   - **Players who share a view.** A new optional hook, `viewKey(player)`, returning a string. Players with the same key get one `view()` call, one comparison and one piece of JSON per tick. This is what teams and spectators need. Connections only share while they hold the same thing: one that has just been welcomed goes its own way for a tick, then joins its group.
-   - **Sending some players less often.** A hook that says a player's view is sent every n-th tick. Linear saving, simple, and wrong for players in the middle of the action, so it is the game's call.
-   - **The benchmark's own `view()`** filters 1,000 units for each of 1,000 players, a million checks a tick. If that is where the time goes, the fix is advice for games (keep units in a grid), not a change to Tickflare: say so in the guide and change the benchmark to do it.
-3. Tests for whatever is built: every player receives exactly their own view, through joins, leaves, reconnects and a room restart. `test/delta.test.ts` has mirrors that replay what a client holds; extend those.
-4. Measure again on Cloudflare (`scenarios=rates`) and replace the row in the limits page.
-
-**Done when** the 1,000-player row with a view each is at 8 ticks a second or better on Cloudflare, or the limits page explains from measurement why it is not and what a game can do. No other row gets worse.
+Only item 7 is left, and it waits for the owner. Item 3 is done as far as measurement allows: the per-tick work that grew with the square of the players is gone, binary patches are encoded once for players who share them, and the limits page has every Cloudflare run, including the ones that fell short (a thousand players with a view each hold ten ticks a second in about half the runs; binary patches with a view each are slower than JSON there, for reasons local profiling does not show). `viewKey` was not built: rooms where everyone sees the same are already at ten ticks a second. Item 6 is done: `tools/rooms-report.mjs` (`tickflare-rooms`), a sample of its output on the costs page, and a workflow for it in Force Projection's PR #39. Item 4 is done: interpolation and prediction in both engine clients, checked against `test/vectors/prediction.json`; a WebGL socket for Unity, compiled and never run; lockstep not ported, and `docs/guide/engines.md` says why. Unity in the editor stays untested (decision C). Item 1 is done: two 40-minute soaks on Cloudflare (510 rooms, 11 room-hours, `soak` in `bench/load.mjs`) found no room awake past its last player, and the limits page says the cause of the first run's two rooms is still unknown. Item 5 is done: parties come from join tokens (`JoinTokenClaims.party`), and `Matchmaker.teams` splits matches into sides. Item 2 is done: a running simulation keeps an alarm 30 seconds ahead (`AWAKE_MS` in `src/server/room.ts`), which also keeps Cloudflare from evicting a room whose players send nothing but keepalives.
 
 ---
 
