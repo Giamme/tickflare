@@ -4,6 +4,8 @@ name: Deploy examples
 #   CLOUDFLARE_API_TOKEN   an API token made from the "Edit Cloudflare Workers" template.
 #                          The ranked example also needs "D1: Edit" and "Queues: Edit" on it.
 #   CLOUDFLARE_ACCOUNT_ID  the account to deploy to
+# Each example is served on the account's workers.dev subdomain, or, with the repository
+# variable SITE_DOMAIN set to a domain on that account, at tickflare-<example>.<domain>.
 on:
   workflow_dispatch:
     inputs:
@@ -23,6 +25,7 @@ jobs:
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      SITE_DOMAIN: ${{ vars.SITE_DOMAIN }}
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
@@ -42,6 +45,7 @@ jobs:
           # keep their tokens), and needs no third secret to be set up.
           JOIN_SECRET=$(printf 'tickflare-join:%s' "$CLOUDFLARE_API_TOKEN" | sha256sum | cut -d' ' -f1)
           echo "::add-mask::$JOIN_SECRET"
+          bash scripts/mask-cloudflare-account.sh
           if [ "${{ inputs.example }}" = "all" ]; then
             examples="tic-tac-toe arena skirmish ranked"
           else
@@ -55,9 +59,14 @@ jobs:
               # created by the deploy itself. Fails harmlessly when the queue is already there.
               npx wrangler queues create tickflare-ranked-matches || true
             fi
+            domain=()
+            if [ -n "$SITE_DOMAIN" ]; then domain=(--domain "tickflare-$example.$SITE_DOMAIN"); fi
             # One example failing (a missing permission, say) should not hold back the others.
-            if ! npx wrangler deploy --config "examples/$example/wrangler.jsonc" --var "JOIN_SECRET:$JOIN_SECRET"; then
+            if ! npx wrangler deploy --config "examples/$example/wrangler.jsonc" --var "JOIN_SECRET:$JOIN_SECRET" "${domain[@]}"; then
               failed="$failed $example"
+            elif [ -n "$SITE_DOMAIN" ]; then
+              bash scripts/workers-dev-off.sh "tickflare-$example"
+              echo "tickflare-$example: https://tickflare-$example.$SITE_DOMAIN" >> "$GITHUB_STEP_SUMMARY"
             fi
             echo "::endgroup::"
           done

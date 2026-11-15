@@ -6,10 +6,13 @@ name: Docs
 # Deploying needs the same two repository secrets as the examples:
 #   CLOUDFLARE_API_TOKEN   made from the "Edit Cloudflare Workers" template
 #   CLOUDFLARE_ACCOUNT_ID  the account to deploy to
+# and, to serve it from a domain on that account instead of workers.dev, the
+# repository variable SITE_DOMAIN: with gridpaper.dev, the site is at
+# tickflare.gridpaper.dev.
 on:
   push:
     branches: [main]
-    paths: ["docs/**", "src/**", "CHANGELOG.md", ".github/workflows/docs.yml"]
+    paths: ["docs/**", "src/**", "CHANGELOG.md", ".github/workflows/docs.yml", "scripts/*.sh"]
   pull_request:
     paths: ["docs/**", "src/**", "CHANGELOG.md", ".github/workflows/docs.yml"]
   workflow_dispatch:
@@ -46,17 +49,26 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          SITE_DOMAIN: ${{ vars.SITE_DOMAIN }}
         run: |
+          set -o pipefail
           if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
             echo "::warning::Set CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID to deploy the docs."
             exit 0
           fi
-          npx wrangler deploy 2>&1 | tee deploy.log
-          url=$(grep -oE 'https://[a-z0-9.-]+\.workers\.dev' deploy.log | head -1)
+          bash ../scripts/mask-cloudflare-account.sh
+          if [ -n "$SITE_DOMAIN" ]; then
+            npx wrangler deploy --domain "tickflare.$SITE_DOMAIN" 2>&1 | tee deploy.log
+            bash ../scripts/workers-dev-off.sh tickflare-docs
+            url="https://tickflare.$SITE_DOMAIN"
+          else
+            npx wrangler deploy 2>&1 | tee deploy.log
+            url=$(grep -oE 'https://[a-z0-9.-]+\.workers\.dev' deploy.log | head -1)
+          fi
           if [ -n "$url" ]; then
             echo "Docs deployed to $url" >> "$GITHUB_STEP_SUMMARY"
-            # A Worker's first deploy can take a little while to answer on workers.dev.
-            for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
+            # A first deploy can take a few minutes to answer, a new domain's certificate longest.
+            for attempt in $(seq 1 30); do
               if curl -fsS -o /dev/null "$url/guide/getting-started"; then exit 0; fi
               sleep 10
             done

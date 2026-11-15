@@ -72,6 +72,9 @@ jobs:
           cache: npm
       - run: npm ci
 
+      - name: Keep the account's address and name out of the log
+        run: bash scripts/mask-cloudflare-account.sh
+
       - name: Find the account's workers.dev address, and make a key for this run
         if: inputs.mode == 'measure'
         run: |
