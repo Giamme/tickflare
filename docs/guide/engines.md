@@ -72,7 +72,7 @@ public class Game : MonoBehaviour
 
 `TickflareRunner` calls `room.Update()` every frame, which is where frames are read, the state changes and the events are raised: all on Unity's main thread. A command can be a dictionary, or JSON you have already, as from `JsonUtility.ToJson`, with `SendJsonAsync`.
 
-A **WebGL** build has no `ClientWebSocket`, which is what the client talks through. Set `room.SocketFactory` to something that makes an `ITickflareSocket` on the browser's WebSocket; the interface is four methods.
+A **WebGL** build has no `ClientWebSocket`, which is what the client talks through elsewhere. There the room uses `TickflareBrowserSocket` by itself, a socket on the browser's WebSocket that `room.Update()` reads from. It has not been run in a WebGL build yet. `room.SocketFactory` takes any other `ITickflareSocket`; the interface is four methods.
 
 ## What both have
 
@@ -97,14 +97,71 @@ A **WebGL** build has no `ClientWebSocket`, which is what the client talks throu
 
 **Patches are binary.** Neither engine's WebSocket compresses, and JSON patches that are not compressed are about three times the size of [binary ones](../reference/protocol#binary-patches). So these clients ask for binary. Turn it off, with `binary = false` or `Binary = false` before opening, to read the frames in a network capture.
 
+## Smoothing and prediction
+
+Both clients have the browser client's [`Interpolator`](./state-sync#smoothing-on-the-client) and [`Predictor`](./state-sync#showing-a-player-s-own-moves-at-once), and behave as they do: the three are checked against the same cases.
+
+`TickflareInterpolator` glides each moving thing from where it is drawn to its latest position, over one tick:
+
+```gdscript
+var glide := TickflareInterpolator.new(1000.0 / room.tick_rate, ["x", "y"])
+room.state_changed.connect(func(state): glide.update(state.units))
+
+func _process(_delta: float) -> void:
+	var shown = glide.at(id)  # {"x": …, "y": …}, or null
+```
+
+```csharp
+var glide = new TickflareInterpolator(1000 / room.TickRate, "x", "y");
+room.StateChanged += state => glide.Update((Dictionary<string, object>)((Dictionary<string, object>)state)["units"]);
+// in Update():
+if (glide.TryGet(id, out var shown)) transform.position = new Vector3((float)shown["x"], 0, (float)shown["y"]);
+```
+
+`TickflarePredictor` shows a player their own commands at once. `apply` is what the room's `onCommand` does for one player, and changes the state in place; `tick`, optional, is what its `onTick` does to what this player controls. Send through the predictor, and draw the player's own units from its `state`:
+
+```gdscript
+var predicted: TickflarePredictor
+
+func _ready() -> void:
+	predicted = TickflarePredictor.new(room, _apply, _step)
+
+func _apply(state: Dictionary, command: Dictionary, you: String) -> void:
+	if command.type == "move":
+		state.units[you].target = command.to
+
+func _step(state: Dictionary, you: String) -> void:
+	step_toward_target(state.units[you])
+
+func move_to(x: float) -> void:
+	var result := await predicted.send({"type": "move", "to": x})
+
+func _process(_delta: float) -> void:
+	draw_own(predicted.state.units[room.you])
+```
+
+```csharp
+var predicted = new TickflarePredictor(room,
+    (state, command, you) => { /* what onCommand does for this player */ },
+    (state, you) => { /* what onTick does to this player's units */ });
+await predicted.SendAsync(new Dictionary<string, object> { ["type"] = "move", ["to"] = 5.0 });
+Draw(predicted.State);
+```
+
+One difference from the browser: the browser's predictor never touches the room's state and makes new objects only for what it changes. These clients change their state in place, so the predictor works on a copy of the room's state, made again when a frame arrives or a command is sent or answered, not on every drawn frame. For a large state, predict a part of it: give the predictor something room-like whose `state` is that part (in Unity, an `ITickflareRoomView`).
+
 ## What they do not have yet
 
-[Lockstep](./lockstep), [prediction](./state-sync#showing-a-player-s-own-moves-at-once) and interpolation are in the browser client only. A game in Godot or Unity can use event mode and state sync as they are, and has to smooth movement between ticks with its own code. `unconfirmed` is there for a game that predicts its own moves: it is the list of commands to apply again on top of each state the room sends.
+**Lockstep.** A lockstep client runs the game's simulation itself, and every client has to compute exactly the same thing. Between engines that is out of reach: GDScript, C# and JavaScript write numbers as text differently, and the room compares hashes as text. Within one engine it is possible, if the simulation keeps to integer arithmetic and away from the engine's physics, which is not deterministic across machines, and if the game hashes its own state. Neither client has it yet; a game in Godot or Unity uses event mode or state sync.
 
-Matchmaking and accounts are HTTP and one short-lived WebSocket, and have no helper in these clients: the [matchmaking](./matchmaking) and [accounts](./accounts) pages say what to send.
+**Matchmaking and accounts** are HTTP and one short-lived WebSocket, and have no helper in these clients: the [matchmaking](./matchmaking) and [accounts](./accounts) pages say what to send.
+
+**Unity in the editor and on WebGL** are not tested: see below.
 
 ## How they are tested
 
 Neither engine runs where Tickflare's own tests do, so each client has a job in CI. Both start a Worker with two of Tickflare's test rooms, read every frame of the [binary test vectors](https://github.com/Giamme/tickflare/blob/main/test/vectors/binary-patches.json), and then join the same room twice, once with JSON patches and once with binary ones, checking after every change that both clients hold the same state.
 
-The Godot client runs in Godot itself. The Unity client is compiled against .NET Standard 2.1 with C# 9, as Unity compiles it, and run on .NET: the Unity editor is not part of the test, so the `TickflareRunner` component and the install from a git URL are not covered.
+Both also replay the [prediction cases](https://github.com/Giamme/tickflare/blob/main/test/vectors/prediction.json): frames, acknowledgements and commands at set times, written by the browser client's `Predictor` and `Interpolator` together with what they showed at each moment. Each engine's predictor and interpolator must show the same.
+
+The Godot client runs in Godot itself. The Unity client is compiled against .NET Standard 2.1 with C# 9, as Unity compiles it, and run on .NET: the Unity editor is not part of the test, so the `TickflareRunner` component and the install from a git URL are not covered. `TickflareBrowserSocket` is compiled as for a WebGL build, and never run.

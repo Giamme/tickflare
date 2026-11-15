@@ -2,7 +2,7 @@
 
 A client for [Tickflare](../../README.md) rooms, in C#, for Unity 2021.3 and later. It has no dependencies, and no part of it but one small component needs Unity: it also runs on plain .NET.
 
-It does what the browser client's `RoomClient` does: it connects, keeps the room's state up to date as patches arrive, sends commands and tells you how the room answered, reconnects when the connection drops, and follows the player when a room hands them to another. Lockstep, prediction and interpolation are not in it yet.
+It does what the browser client's `RoomClient` does: it connects, keeps the room's state up to date as patches arrive, sends commands and tells you how the room answered, reconnects when the connection drops, and follows the player when a room hands them to another. It also has the browser client's interpolation and prediction. Lockstep is not in it.
 
 ## Install
 
@@ -68,13 +68,31 @@ Two things differ from the browser client:
 - **Numbers are doubles**, as they are in JSON. `(int)(double)units["hp"]` where you need a whole number.
 - **The state is changed in place.** The browser client makes a new object for every part that changed; this one writes into the dictionaries it has, which makes no garbage. Keep no reference to a part of the state that you expect to stay as it was.
 
+## Smoothing and prediction
+
+`TickflareInterpolator` glides moving things between ticks, and `TickflarePredictor` shows a player their own commands at once. Both behave as the browser client's `Interpolator` and `Predictor` do, and are checked against the same cases.
+
+```csharp
+var glide = new TickflareInterpolator(1000 / room.TickRate, "x", "y");
+room.StateChanged += state => glide.Update((Dictionary<string, object>)((Dictionary<string, object>)state)["units"]);
+if (glide.TryGet(id, out var shown)) transform.position = new Vector3((float)shown["x"], 0, (float)shown["y"]);
+
+var predicted = new TickflarePredictor(room, Apply, Step); // Apply(state, command, you), Step(state, you)
+await predicted.SendAsync(new Dictionary<string, object> { ["type"] = "move", ["to"] = 5.0 });
+Draw(predicted.State); // read it when you draw
+```
+
+`Apply` does what the room's `onCommand` does for one player, and `Step`, which is optional, what its `onTick` does to what this player controls. Both change the state they are given in place. That state is a copy of the room's, made again when a frame arrives or a command is sent or answered; for a large state, give the predictor an `ITickflareRoomView` whose `State` is the part to predict. [Godot and Unity](../../docs/guide/engines.md#smoothing-and-prediction) has more.
+
 ## Binary patches
 
 .NET's WebSocket does not compress here, so this client asks the room for [binary patches](../../docs/reference/protocol.md#binary-patches), which are a little over a third of the size of the JSON ones. Set `room.Binary = false` before `Open()` to get JSON, which is easier to read in a network capture.
 
 ## WebGL
 
-The client talks through .NET's `ClientWebSocket`, which a WebGL build does not have. There, set `room.SocketFactory` to something that makes an `ITickflareSocket` on the browser's WebSocket: the interface is four methods, and a WebSocket plugin for WebGL can be wrapped in a few lines. A browser also compresses the connection, so `Binary = false` costs little there.
+The client talks through .NET's `ClientWebSocket`, which a WebGL build does not have. There it uses `TickflareBrowserSocket` instead, by itself: a socket on the browser's WebSocket, in `Runtime/Plugins/WebGL/TickflareSocket.jslib`. The browser's events wait in a queue until `room.Update()` takes them, on the main thread, so it needs no threads or timers.
+
+**It is untested.** It is compiled as for a WebGL build in CI, and has never run in one. If it fails for you, `room.SocketFactory` takes any other `ITickflareSocket`: the interface is four methods. A browser compresses the connection, so `Binary = false` costs little there.
 
 ## Tests
 
@@ -83,4 +101,4 @@ npx wrangler dev --config clients/test-server/wrangler.jsonc --port 8787
 TICKFLARE_TEST_URL=ws://127.0.0.1:8787 dotnet run --project clients/unity/Tests~/Tests
 ```
 
-The tests compile the `Runtime` folder against .NET Standard 2.1 with C# 9, as Unity does, and run it on .NET: they read every frame in Tickflare's [binary test vectors](../../test/vectors/binary-patches.json), then join rooms on the test server twice, once with JSON patches and once with binary ones, and check that both end with the same state. They do not run inside the Unity editor, so the `TickflareRunner` component and the package's install from a git URL are not covered by them.
+The tests compile the `Runtime` folder against .NET Standard 2.1 with C# 9, as Unity does, and run it on .NET: they read every frame in Tickflare's [binary test vectors](../../test/vectors/binary-patches.json) and replay its [prediction cases](../../test/vectors/prediction.json), then join rooms on the test server twice, once with JSON patches and once with binary ones, and check that both end with the same state. They do not run inside the Unity editor, so the `TickflareRunner` component, the package's install from a git URL and the WebGL socket are not covered by them.

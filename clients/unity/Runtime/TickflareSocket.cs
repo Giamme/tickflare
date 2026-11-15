@@ -26,8 +26,8 @@ namespace Tickflare
 
     /// <summary>
     /// The WebSocket a <see cref="TickflareRoom"/> talks through. The one it uses unless told otherwise
-    /// is <see cref="TickflareWebSocket"/>, which does not exist in a WebGL build: there, give the room
-    /// a <see cref="TickflareRoom.SocketFactory"/> that wraps the browser's WebSocket.
+    /// is <see cref="TickflareWebSocket"/>, and in a WebGL build, where that does not exist,
+    /// <see cref="TickflareBrowserSocket"/> (untested).
     ///
     /// A socket is used for one connection. Its methods may be called from any thread.
     /// </summary>

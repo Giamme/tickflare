@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+**Interpolation and prediction in the Godot and Unity clients.**
+
+- `TickflareInterpolator` and `TickflarePredictor` do in Godot and Unity what `Interpolator` and `Predictor` do in the browser. The predictor works on a copy of the room's state, since these clients change their state in place, and makes it again when a frame arrives or a command is sent or answered.
+- The three are kept the same by shared cases: `test/vectors/prediction.json` is written by the TypeScript client (`node scripts/write-prediction-vectors.mjs`), and the Godot and Unity tests replay it.
+- The Godot room has a `command_sent(id, command)` signal, and the Unity room a `CommandSent` event and the `ITickflareRoomView` interface, which is what the predictor needs of a room.
+- The Unity client has a socket for WebGL builds, `TickflareBrowserSocket`, on the browser's WebSocket, which it uses there by itself. It is compiled in CI and has never run in a WebGL build.
+- Lockstep stays in the TypeScript client: the guide's Godot and Unity page says why.
+
 **Parties and teams in matchmaking.**
 
 - A join token can name the party a player queues with: `createJoinToken(secret, { player, party: { id, size } })`. `tokenAuth` and `Accounts.authenticate` pass it to the matchmaker through the gateway, which drops any party header a client sends. `Matchmaker.partyOf(player, request)` reads it, and can be overridden.
@@ -47,7 +55,7 @@
 
 **Clients for Godot and Unity.**
 
-- `clients/godot` is a client in GDScript for Godot 4, and `clients/unity` one in C# for Unity 2021.3 and later, as a package with no dependencies. Both connect and reconnect, keep the room's state up to date from JSON or binary patches, send commands and report the room's answer, and follow a player who is moved to another room. They ask for binary patches by default. Lockstep, prediction and interpolation remain in the TypeScript client only.
+- `clients/godot` is a client in GDScript for Godot 4, and `clients/unity` one in C# for Unity 2021.3 and later, as a package with no dependencies. Both connect and reconnect, keep the room's state up to date from JSON or binary patches, send commands and report the room's answer, and follow a player who is moved to another room. They ask for binary patches by default.
 - Both are tested in CI against a Worker with two of the test rooms: the Godot client in Godot 4.5, the Unity client compiled as Unity compiles it and run on .NET.
 
 **Arrays are patched element by element.** An array that changed was sent whole, however little of it changed, which made `units: Unit[]` the expensive way to write a state.

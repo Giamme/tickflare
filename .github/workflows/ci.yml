@@ -113,5 +113,8 @@ jobs:
           set -o pipefail
           timeout 300 dotnet run --project clients/unity/Tests~/Tests -c Release --no-build 2>&1 | tee unity.log
           grep -q " checks, 0 failed" unity.log
+      - name: Compile the client as for a WebGL build
+        # Only compiled: the browser socket needs a browser and Unity's WebGL player to run.
+        run: dotnet build clients/unity/Tests~/Library -c Release -p:DefineConstants=UNITY_WEBGL
       - if: failure()
         run: cat server.log

@@ -384,7 +384,7 @@ export class Zone extends Room<State, Command, Env> {
 
 ### Godot and Unity
 
-Both have a client: connect, reconnect, the state kept up to date, commands with the room's answer. They ask for their patches in binary, a little over a third of the size, because an engine's WebSocket is not compressed. For other engines the protocol is written down, with test vectors. [Godot and Unity](/guide/engines)
+Both have a client: connect, reconnect, the state kept up to date, commands with the room's answer, and the browser client's interpolation and prediction. They ask for their patches in binary, a little over a third of the size, because an engine's WebSocket is not compressed. For other engines the protocol is written down, with test vectors. [Godot and Unity](/guide/engines)
 
 </div>
 <div>

@@ -14,7 +14,7 @@ Every limit here is one of three kinds: Cloudflare's, which nobody can lift; Tic
 | A room nobody is in | Stands still and stays, until your code says otherwise | Tickflare |
 | Storage | 10 GB a room, 10 GB for accounts and match history | Cloudflare |
 | Where a room runs | Where it was created; it does not move | Cloudflare |
-| Clients | TypeScript, Godot and Unity; lockstep and prediction in TypeScript only | Not built |
+| Clients | TypeScript, Godot and Unity; lockstep in TypeScript only | Not built |
 
 Cloudflare's own numbers are on its [Durable Objects limits](https://developers.cloudflare.com/durable-objects/platform/limits/) page.
 
@@ -228,7 +228,7 @@ Seeing across a border is a recipe built on `signal`, not something a room does 
 
 ## Clients
 
-The full client is TypeScript, for browsers and Node. The clients for [Godot and Unity](./engines) connect, reconnect, keep the state and send commands, in event mode and state sync: what `Predictor`, `Interpolator` and `LockstepClient` do, a game in those engines has to do for itself for now. Neither has been used in a shipped game yet. The Unity client is tested on .NET and not inside the Unity editor, and a WebGL build needs a socket of its own.
+The full client is TypeScript, for browsers and Node. The clients for [Godot and Unity](./engines) connect, reconnect, keep the state, send commands, interpolate and predict, in event mode and state sync; their predictors and interpolators replay the same cases as the browser's. Lockstep is not in them: it needs every client to compute the same thing, which only clients of one engine could do, and only with a simulation in integer arithmetic. Neither has been used in a shipped game yet. The Unity client is tested on .NET and not inside the Unity editor, and its WebGL socket has never run.
 
 There is no client for native code or other engines. [The protocol](../reference/protocol) is JSON over a WebSocket and is written down, so one can be written. For an engine whose WebSocket is not compressed there are [binary patches](../reference/protocol#binary-patches), with test vectors to check a decoder against.
 
@@ -242,7 +242,8 @@ Tickflare is at 0.1. It has a test suite that runs against Cloudflare's own runt
 
 In the order we would take them, by how much each removes for the work it needs:
 
-1. **Lockstep, prediction and interpolation in the Godot and Unity clients.**
-2. **A view for each of very many players.** Working out a view only for the players whose part of the state changed, where today every view is made on every tick, is what a room of a thousand players with a view each would need.
+1. **A view for each of very many players.** Working out a view only for the players whose part of the state changed, where today every view is made on every tick, is what a room of a thousand players with a view each would need.
+2. **The Unity client in the editor and in a WebGL build.** It is tested on .NET only, and its WebGL socket has never run.
+3. **Lockstep in the Godot and Unity clients**, for games whose simulation is in integer arithmetic, between clients of the same engine.
 
 None of these is promised. They are here so that you can see where the edges are, and which of them are meant to move.

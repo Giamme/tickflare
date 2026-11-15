@@ -135,8 +135,16 @@ namespace Tickflare
         /// </summary>
         public Func<Task<string>> TokenProvider { get; set; }
 
-        /// <summary>Makes the socket for each connection. A <see cref="TickflareWebSocket"/> unless set.</summary>
-        public Func<ITickflareSocket> SocketFactory { get; set; } = () => new TickflareWebSocket();
+        /// <summary>
+        /// Makes the socket for each connection. A <see cref="TickflareWebSocket"/> unless set, and in a
+        /// WebGL build a <see cref="TickflareBrowserSocket"/>, which is untested.
+        /// </summary>
+        public Func<ITickflareSocket> SocketFactory { get; set; } =
+#if UNITY_WEBGL && !UNITY_EDITOR
+            () => new TickflareBrowserSocket();
+#else
+            () => new TickflareWebSocket();
+#endif
 
         /// <summary>
         /// The room's state as this player sees it, as <see cref="TickflareJson"/> gives it: a
@@ -261,6 +269,9 @@ namespace Tickflare
         /// </summary>
         public void Update()
         {
+#if UNITY_WEBGL && !UNITY_EDITOR
+            TickflareBrowserSocket.Pump();
+#endif
             while (_incoming.TryDequeue(out Incoming incoming))
             {
                 // From a connection that has been given up since.
