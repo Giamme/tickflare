@@ -59,7 +59,7 @@ Neither engine runs in the development workspace: Godot may not be executed ther
 
 ## Order
 
-6, 3, 7. Item 4 is done: interpolation and prediction in both engine clients, checked against `test/vectors/prediction.json`; a WebGL socket for Unity, compiled and never run; lockstep not ported, and `docs/guide/engines.md` says why. Unity in the editor stays untested (decision C). Item 1 is done: two 40-minute soaks on Cloudflare (510 rooms, 11 room-hours, `soak` in `bench/load.mjs`) found no room awake past its last player, and the limits page says the cause of the first run's two rooms is still unknown. Item 5 is done: parties come from join tokens (`JoinTokenClaims.party`), and `Matchmaker.teams` splits matches into sides. Item 2 is done: a running simulation keeps an alarm 30 seconds ahead (`AWAKE_MS` in `src/server/room.ts`), which also keeps Cloudflare from evicting a room whose players send nothing but keepalives. Item 6 is small and reuses what item 1 teaches about the analytics. Item 7 waits for the owner. Tell the owner what was found after each item; do not batch the news.
+3, 7. Item 6 is done: `tools/rooms-report.mjs` (`tickflare-rooms`), a sample of its output on the costs page, and a workflow for it in Force Projection's PR #39. Item 4 is done: interpolation and prediction in both engine clients, checked against `test/vectors/prediction.json`; a WebGL socket for Unity, compiled and never run; lockstep not ported, and `docs/guide/engines.md` says why. Unity in the editor stays untested (decision C). Item 1 is done: two 40-minute soaks on Cloudflare (510 rooms, 11 room-hours, `soak` in `bench/load.mjs`) found no room awake past its last player, and the limits page says the cause of the first run's two rooms is still unknown. Item 5 is done: parties come from join tokens (`JoinTokenClaims.party`), and `Matchmaker.teams` splits matches into sides. Item 2 is done: a running simulation keeps an alarm 30 seconds ahead (`AWAKE_MS` in `src/server/room.ts`), which also keeps Cloudflare from evicting a room whose players send nothing but keepalives. Item 7 waits for the owner. Tell the owner what was found after each item; do not batch the news.
 
 ---
 
@@ -78,21 +78,6 @@ Neither engine runs in the development workspace: Godot may not be executed ther
 4. Measure again on Cloudflare (`scenarios=rates`) and replace the row in the limits page.
 
 **Done when** the 1,000-player row with a view each is at 8 ticks a second or better on Cloudflare, or the limits page explains from measurement why it is not and what a game can do. No other row gets worse.
-
----
-
-## 6. A tool that shows which rooms are awake
-
-**Why.** A room that stays awake is billed, and today the only way to see it is Cloudflare's dashboard. `bench/analytics.mjs` already asks Cloudflare's analytics for active time, CPU time, billed duration and connections by room; it only needs pointing at a real Worker.
-
-**Steps.**
-
-1. Turn it into `tools/rooms-report.mjs`: arguments for the Worker's name and a period (`--since 24h`); it finds the Worker's Durable Object namespaces itself, as the measure workflow does; it prints one line per room with active time, what that cost, and the most connections it had, sorted by cost, and marks rooms that were awake with nobody connected or awake for hours.
-2. It needs an API token that may read account analytics. The token in the repository's secrets could on 2026-11-14. Run from a laptop it takes the token from the environment; never from an argument.
-3. Document it on the costs page under a heading such as "Checking what you are billed for", with what the numbers mean. The dataset and its fields are printed by `node bench/analytics.mjs --describe` (mode `describe` of the workflow).
-4. For Force Projection, a small workflow started by hand that runs the report on the game's Worker, as a pull request against `dev`. Mask the account's address in its output as the measure workflow does.
-
-**Done when** the report runs against a deployed Worker and the costs page shows a sample of its output.
 
 ---
 

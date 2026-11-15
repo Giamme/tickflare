@@ -85,7 +85,20 @@ CLOUDFLARE_API_TOKEN=… CLOUDFLARE_ACCOUNT_ID=… npx tickflare-rooms --worker 
 
 It lists the Worker's rooms, the most expensive first: how long each was awake, what that cost at list price before what the plan includes, the most connections it had at once, and how long it was awake with nobody connected. It marks a room that was awake for ten minutes or more with nobody connected, and one awake for three hours or more.
 
-<!-- SAMPLE -->
+Its output for one of the benchmark runs on Cloudflare, five rooms that each had 750 or 1,000 players for a quarter to half a minute:
+
+```
+Since 2026-11-15T00:54:48.000Z: 5 rooms, awake 1.6 min in all, $0.03 at list price before what the plan includes.
+
+Room         Class  Awake   Alone  Cost      Most connected
+rmwh4h5kf-2  Bench  28.6 s  0.0 s  $0.00668  1000
+rmwh4h5kf-0  Bench  17.4 s  0.0 s  $0.00666  1000
+rmwh4h5kf-3  Bench  17.0 s  0.0 s  $0.00666  1000
+rmwh4h5kf-1  Bench  16.8 s  0.0 s  $0.00666  1000
+rmwh4h5kf-4  Bench  15.2 s  0.0 s  $0.00491  750
+```
+
+**Awake** is the time Cloudflare counted the room in memory, and **Alone** the part of it with no WebSocket connected. **Cost** adds what Cloudflare charges for: the time awake, as 128 MB for each second; rows written; and requests, with incoming WebSocket messages counted twenty to one. In these rooms almost all of it is rows written, about six for each player who came and went, most of them by the benchmark room's own log. A room that runs for an hour with the same players is the other way round: almost all of it is time awake. Messages sent to players are not billed, so the report leaves them out.
 
 A room awake with nobody connected is either playing on by design, as a match with [`ticksWhileEmpty()`](./state-sync#playing-on-with-nobody-connected) does until it ends, or a room that should have gone to sleep: look at what it was doing.
 

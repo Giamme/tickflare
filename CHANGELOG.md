@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+**A thousand players with a view each.**
+
+- On every tick a room found its players' sockets by searching the list of seats once for each socket, and read every socket's tags again; `players` and the check for whether anyone is connected did the same. That is work that grows with the square of the players, and at a thousand it was most of the tick. Seats are now looked up in a set, and a socket's tags are read once while the room is in memory. On Cloudflare, a thousand players who each see their own part of a thousand units went from 1.3 ticks a second to 8.6 to 9.9 of 10, and joined in 6 to 8 seconds instead of 16.
+- Binary patches were parsed and encoded again for every player whose view is an object of its own, which with a custom view is every player. Within a tick, a patch is now encoded once for all the players who are sent the same one, and so is the frame around it. A thousand players on binary patches who all see the same hundred units went from 1.1 ticks a second to 9.9.
+
 **Interpolation and prediction in the Godot and Unity clients.**
 
 - `TickflareInterpolator` and `TickflarePredictor` do in Godot and Unity what `Interpolator` and `Predictor` do in the browser. The predictor works on a copy of the room's state, since these clients change their state in place, and makes it again when a frame arrives or a command is sent or answered.
