@@ -12,6 +12,11 @@ on:
       seconds:
         description: How long to listen
         default: "120"
+      format:
+        description: pretty, or json for the whole of each event (stack traces included)
+        type: choice
+        default: pretty
+        options: [pretty, json]
 
 permissions:
   contents: read
@@ -35,6 +40,7 @@ jobs:
         env:
           WORKER: ${{ inputs.worker }}
           SECONDS_TO_LISTEN: ${{ inputs.seconds }}
+          FORMAT: ${{ inputs.format }}
         run: |
           echo "Listening to $WORKER for $SECONDS_TO_LISTEN seconds."
-          timeout "$SECONDS_TO_LISTEN" npx wrangler tail "$WORKER" --format pretty || true
+          timeout "$SECONDS_TO_LISTEN" npx wrangler tail "$WORKER" --format "$FORMAT" || true
