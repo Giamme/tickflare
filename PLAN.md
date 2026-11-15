@@ -59,35 +59,7 @@ Neither engine runs in the development workspace: Godot may not be executed ther
 
 ## Order
 
-1, then 6, 3, 4, 7. Item 5 is done: parties come from join tokens (`JoinTokenClaims.party`), and `Matchmaker.teams` splits matches into sides. Item 2 is done: a running simulation keeps an alarm 30 seconds ahead (`AWAKE_MS` in `src/server/room.ts`), which also keeps Cloudflare from evicting a room whose players send nothing but keepalives. Item 6 is small and reuses what item 1 teaches about the analytics. Item 7 waits for the owner. Tell the owner what was found after each item; do not batch the news.
-
----
-
-## 1. Find out why two rooms stayed awake
-
-**What happened.** In the first measurement on Cloudflare, two rooms (20,000 units with 20 players; 1,000 units with 100 players at 30 ticks) were still counted as active, and as sending messages, nine minutes after every player had disconnected. They stopped when the Worker was deleted. It has not happened in three runs since, nor locally.
-
-**What is known.**
-
-- In later runs, rooms that were restarted by Cloudflare (for memory) lost most of their connections, and the clients of the lost ones were never told: their `close()` got no answer. So connections can die on one side only.
-- The message count of the two rooms grew at about one tick a second times their socket count, which fits a room restarted with default settings and still holding sockets it believed open.
-- In the later runs the load script asked each room how it was two seconds after its players left. That request is itself an event, which makes the room look at its connections again. It may have hidden the problem.
-- Since then a ticking room closes connections that are silent for `silentAfterMs` (two minutes). That bounds the damage. It does not explain it.
-
-**Leading guess, unproven.** A room is restarted while its players are leaving. The new instance finds sockets still attached, takes them for connected, and resumes ticking. The closes that would have told it otherwise were delivered to the old instance, or never.
-
-**Steps.**
-
-1. Give the benchmark room (`bench/worker.ts`) a log it keeps in its own SQLite table, capped at a few hundred rows: instance started, simulation started and stopped, each connection closed with its code, each silent connection closed. Serve it from the existing `how` request with `?log=1`.
-2. Add a command to the benchmark room that makes it restart itself (`this.ctx.abort()`), so a restart can be caused on purpose.
-3. Add a `soak` scenario to `bench/load.mjs`: about 10 rooms of 20 to 100 players, for 30 to 45 minutes, in cycles. In each cycle the players join, play for 20 to 60 seconds, and go in one of these ways, chosen at random: a clean close; `terminate()` with no close frame; a clean close sent in the same moment as the restart command; a restart with the players staying. Record for every room when its last player went.
-4. Do not ask the rooms how they are during the soak. Watch from outside: keep the Worker (`keep=yes`), wait 15 minutes, and ask the analytics by room (`mode=analytics`). A room whose active time is much longer than the time it had players is a hit. Only then read its log.
-5. Run the soak twice: once with `silentAfterMs = 0` in the benchmark room, to let the problem show, and once with the default, to confirm the safeguard ends it within about two minutes.
-6. Raise the workflow's timeout for this scenario and delete the Worker afterwards.
-
-**Done when** either the cause is found, fixed, and covered by a test in `test/`, or the limits page says how many room-hours were run without it happening and that the cause is still unknown. Replace the paragraph "One thing from those runs is not explained" in `docs/guide/limits.md` either way.
-
-**Cost.** Ten rooms for 45 minutes is 7.5 room-hours, under five cents on a paid plan. See question A.
+6, 3, 7. Item 4 is done: interpolation and prediction in both engine clients, checked against `test/vectors/prediction.json`; a WebGL socket for Unity, compiled and never run; lockstep not ported, and `docs/guide/engines.md` says why. Unity in the editor stays untested (decision C). Item 1 is done: two 40-minute soaks on Cloudflare (510 rooms, 11 room-hours, `soak` in `bench/load.mjs`) found no room awake past its last player, and the limits page says the cause of the first run's two rooms is still unknown. Item 5 is done: parties come from join tokens (`JoinTokenClaims.party`), and `Matchmaker.teams` splits matches into sides. Item 2 is done: a running simulation keeps an alarm 30 seconds ahead (`AWAKE_MS` in `src/server/room.ts`), which also keeps Cloudflare from evicting a room whose players send nothing but keepalives. Item 6 is small and reuses what item 1 teaches about the analytics. Item 7 waits for the owner. Tell the owner what was found after each item; do not batch the news.
 
 ---
 
@@ -106,23 +78,6 @@ Neither engine runs in the development workspace: Godot may not be executed ther
 4. Measure again on Cloudflare (`scenarios=rates`) and replace the row in the limits page.
 
 **Done when** the 1,000-player row with a view each is at 8 ticks a second or better on Cloudflare, or the limits page explains from measurement why it is not and what a game can do. No other row gets worse.
-
----
-
-## 4. Finish the engine clients
-
-**Where they are.** Both connect, reconnect, keep the state from JSON and binary patches, send commands, and follow presence and room hand-over. Neither has interpolation, prediction or lockstep. The Unity client has never run inside the Unity editor, and has no socket for WebGL builds.
-
-**Steps, in this order.**
-
-1. **Interpolation.** Port `src/client/interpolate.ts` (60 lines) to GDScript and C#. It is small and self-contained.
-2. **Prediction.** Port `src/client/predict.ts`. One real difference: the TypeScript client never changes a state object, it makes new ones (`produce` in `src/client/draft.ts`), while the engine clients change the state in place. So the engine predictor has to keep the room's state and the predicted one apart: a deep copy of the room's state, with the unconfirmed commands applied to the copy, redone when a frame arrives or a command is sent, not on every rendered frame. Use the `c` field of frames and the `tick` of acks as the protocol reference describes.
-3. **Shared test cases.** As for binary patches, generate cases from the TypeScript tests into `test/vectors/`: a list of frames and commands in, the states a player is shown out. All three clients run the same cases. This is what keeps three implementations the same.
-4. **Unity in the editor.** Needs the owner (question C). At the least: install the package from the git URL in a real project, put `TickflareRunner` on an object, connect to a deployed example. Write down the result in `clients/unity/README.md`, which today says it is untested.
-5. **Unity on WebGL.** An `ITickflareSocket` on the browser's WebSocket: a `.jslib` file and a small C# class. It cannot be tested without Unity either; ship it marked as untested until the owner has run it.
-6. **Lockstep, last, and only after checking it is possible.** Lockstep needs every client to compute the same simulation and the same hash. The hash in `src/lockstep.ts` is the SHA-256 of the state as JSON, so two engines agree only if they write numbers as text identically, and floating-point results can differ between engines anyway. Before porting, decide and document: lockstep between clients of the same engine only, with a hash the game supplies. If that is not good enough, do not build it.
-
-**Done when** items 1 to 3 pass in CI for both engines and `docs/guide/engines.md` no longer lists them as missing. Items 4 to 6 are each done or listed there as still open, truthfully.
 
 ---
 

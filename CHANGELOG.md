@@ -38,6 +38,7 @@
 **Measured on Cloudflare.**
 
 - `bench/` holds a Worker with a room in which everything moves on every tick, a script that plays in it, and one that asks Cloudflare's analytics what it counted. The workflow *Measure on Cloudflare* deploys the Worker under a key made for the run, measures, and deletes it.
+- A `soak` scenario plays ten rooms at a time for 40 minutes, with players who leave cleanly, drop without a word, or stay through a restart the room is made to do, and then sets Cloudflare's count of each room's awake time against the time it had players. Two soaks, 510 rooms and 11 room-hours, found no room awake for more than a second after its last player went, with the silent-connection safeguard on or off. Why two rooms of the first run stayed awake is still not known; the limits page says so.
 - The limits and costs pages of the guide have what came back: rooms held their tick rate on a fifth of a processor, bytes on the wire were as measured locally, an idle room with five players was billed two thirds of a second in ninety, and a thousand players joining one room at once did not work, which the two changes above this one are for. Measured again with them, a thousand players join a room in sixteen seconds and it ticks at 9.5 of 10.
 
 **Matchmaking by skill and by region.**
