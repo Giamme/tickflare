@@ -3,6 +3,8 @@ name: Release
 # Publishes the package to npm when a version tag is pushed:
 #   npm version 0.1.1 --no-git-tag-version, add the version's section to CHANGELOG.md, commit,
 #   then: git tag v0.1.1 && git push origin v0.1.1
+# or make the release on GitHub (Releases, Draft a new release, a new tag v0.1.1 on main), which
+# makes the tag; the run then fills in the release's notes from the changelog.
 # The tag must match the version in package.json. The package is published with provenance, so
 # npm shows which commit and which run built it.
 #
@@ -66,4 +68,9 @@ jobs:
           version=${GITHUB_REF_NAME#v}
           # The version's section of the changelog, up to the next version's.
           awk -v v="## $version" '$0 == v { on = 1; next } on && /^## / { exit } on' CHANGELOG.md > notes.md
-          gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file notes.md
+          # A release made by hand on GitHub, which is what made the tag, gets the notes.
+          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            gh release edit "$GITHUB_REF_NAME" --notes-file notes.md
+          else
+            gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file notes.md
+          fi
