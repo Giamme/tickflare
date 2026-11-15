@@ -17,6 +17,36 @@ async function quiet(seen: { frames: unknown[] }, ms = 300): Promise<void> {
  * What a deploy or a crash leaves behind is whatever is in storage. These
  * tests tear rooms down without warning and look at what they resume from.
  */
+describe("a room saved by an older version", () => {
+  it("gets the tables that came later, and plays on", async () => {
+    const room = freshRoom();
+    const stub = env.LAZY.get(env.LAZY.idFromName(room));
+    const p1 = await follow<TickState>("/lazy", room, "p1");
+    p1.send({ type: "timer", ms: 40 });
+    await until(() => p1.state!.log.includes("timer:bell"), "the first timer");
+    // A timer to fire after the restart, and the tables a room from before had none of.
+    p1.send({ type: "timer", ms: 400 });
+    await sleep(50);
+    await runInDurableObject(stub, (_instance, state) => {
+      for (const table of ["tickflare_forwards", "tickflare_arrivals", "tickflare_outbox"]) {
+        state.storage.sql.exec(`DROP TABLE IF EXISTS ${table}`);
+      }
+    });
+    await abortAllDurableObjects();
+
+    // Its alarm fires the timer, and a player who comes back can play.
+    const p2 = await follow<TickState>("/lazy", room, "p2");
+    await until(() => (p2.state?.log.filter((entry) => entry === "timer:bell").length ?? 0) >= 2, "the timer after the restart");
+    p2.send({ type: "timer", ms: 40 });
+    await until(() => (p2.state?.log.filter((entry) => entry === "timer:bell").length ?? 0) >= 3, "a timer set after the restart");
+    const after = env.LAZY.get(env.LAZY.idFromName(room));
+    const tables = await runInDurableObject(after, (_instance, state) =>
+      state.storage.sql.exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'tickflare_%'").toArray().map((row) => row.name),
+    );
+    expect(tables).toEqual(expect.arrayContaining(["tickflare_forwards", "tickflare_arrivals", "tickflare_outbox"]));
+  });
+});
+
 describe("a ticking room that is torn down", () => {
   it("has either the timer or its effect in storage, never neither", async () => {
     const room = freshRoom();

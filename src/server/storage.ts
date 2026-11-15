@@ -92,6 +92,9 @@ export class RoomStorage {
     const sql = (this.#sql = storage.sql);
     this.#made = this.#exists();
     if (!this.#made) return;
+    // A room saved by an older version may lack tables and columns that came later: it gets them
+    // now, before anything reads them. Making a table that is there already writes nothing.
+    this.#tables();
     this.#findSplit();
     // The tick counter used to be a row of its own in tickflare_meta, which made every save of a
     // ticking room two rows. A room that was created before has no column for it yet.
@@ -105,8 +108,7 @@ export class RoomStorage {
   /** Creates the tables, before the first thing is written. */
   #make(): void {
     if (this.#made) return;
-    const sql = this.#sql;
-    sql.exec(
+    this.#sql.exec(
       `CREATE TABLE IF NOT EXISTS tickflare_room (
          id INTEGER PRIMARY KEY CHECK (id = 1),
          seq INTEGER NOT NULL,
@@ -115,6 +117,18 @@ export class RoomStorage {
          tick INTEGER NOT NULL DEFAULT 0
        )`,
     );
+    this.#tables();
+    this.#made = true;
+    if (this.#roomId !== undefined) this.setMeta("room", this.#roomId);
+  }
+
+  /**
+   * Every table but `tickflare_room`, made if it is not there. A table added to Tickflare goes
+   * here, so that rooms saved before it get it too. (`tickflare_parts` is made when first
+   * written, and read only once it exists.)
+   */
+  #tables(): void {
+    const sql = this.#sql;
     // WITHOUT ROWID: a table keyed by text otherwise keeps a second index, and every write to it is
     // billed as two rows. These two are written on every save and every timer.
     sql.exec(
@@ -134,8 +148,6 @@ export class RoomStorage {
          expires INTEGER
        )`,
     );
-    this.#made = true;
-    if (this.#roomId !== undefined) this.setMeta("room", this.#roomId);
   }
 
   /** Whether the room has stored anything at all. */

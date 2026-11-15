@@ -10,6 +10,8 @@ Everything below went into it while the repository was private: first the last r
 
 ### The last round before release
 
+**Rooms saved by an older version load.** A table that came into Tickflare later was only made for new rooms, so a room saved before it failed when it loaded, or when its alarm fired: the arena example's rooms from before handover did, with `no such table: tickflare_forwards`. A room now gets every table it lacks when it loads.
+
 **A thousand players with a view each.**
 
 - On every tick a room found its players' sockets by searching the list of seats once for each socket, and read every socket's tags again; `players` and the check for whether anyone is connected did the same. That is work that grows with the square of the players, and at a thousand it was most of the tick. Seats are now looked up in a set, and a socket's tags are read once while the room is in memory. On Cloudflare, a thousand players who each see their own part of a thousand units went from 1.3 ticks a second to 8.1 to 9.9 of 10 in seven of ten rooms in the east of North America, and joined in 6 to 8 seconds instead of 16. Rooms in the west were slow whatever the code. The limits page has every run.
