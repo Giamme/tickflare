@@ -71,6 +71,17 @@ const V2_TAG = "\u0001v=2";
 /** Marks the socket of a client that speaks version 3: it is told who came and went, not the whole list of players. */
 const V3_TAG = "\u0001v=3";
 const isMark = (tag: string) => tag.charCodeAt(0) === 1;
+
+/** What a socket's tags say: whose it is, and what its client asked for. */
+interface SocketInfo {
+  id: string | undefined;
+  /** Whether it has any tag besides the player's id. */
+  marked: boolean;
+  binary: boolean;
+  arrays: boolean;
+  /** Version 3: presence as changes. */
+  presence: boolean;
+}
 /**
  * In a room with more than `PRESENCE_CROWD` connections, the least time
  * between two tellings of who is here, in milliseconds. What changes sooner
@@ -444,7 +455,9 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
 
   /** Everyone with a seat, in join order. */
   protected get players(): Player[] {
-    return this.#roster.map((id) => ({ id, connected: id === this.#connecting || this.#isConnected(id) }));
+    // One pass over the sockets, not one per player: a join tells everyone this list.
+    const connected = this.#connectedIds();
+    return this.#roster.map((id) => ({ id, connected: id === this.#connecting || connected.has(id) }));
   }
 
   /** Number of state changes so far. */
@@ -684,7 +697,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     this.#load();
     this.#apply(() => this.onSignal(fromRoomId, data));
     await this.#finish();
-    return this.#seatedSockets().length > 0;
+    return this.#anySeated();
   }
 
   /**
@@ -1226,7 +1239,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
    * and lets it try again.
    */
   #stayAwake(): void {
-    const wanted = this.#wantsTicks(this.#seatedSockets().length > 0, true);
+    const wanted = this.#wantsTicks(this.#anySeated(), true);
     const now = Date.now();
     if (wanted) {
       // Set again once it has fired. A clock that reads a little early still counts it as fired.
@@ -1241,7 +1254,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
 
   /** Starts the simulation if it should be running and stops it if it should not. */
   #syncLoop(): void {
-    const wanted = this.#wantsTicks(this.#seatedSockets().length > 0);
+    const wanted = this.#wantsTicks(this.#anySeated());
     if (wanted && this.#loop === undefined) {
       this.#loop = setInterval(() => this.#runTick(), 1000 / this.tickRate);
     } else if (!wanted && this.#loop !== undefined) {
@@ -1365,7 +1378,8 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
 
     // Seats left by players who dropped while no timeout was running for them (the option was
     // added or shortened since, or the room was torn down mid-event) get one now.
-    const adrift = this.#roster.filter((id) => !this.#timers.has(AWAY_TIMER + id) && !this.#isConnected(id));
+    const connected = this.#connectedIds();
+    const adrift = this.#roster.filter((id) => !this.#timers.has(AWAY_TIMER + id) && !connected.has(id));
     if (adrift.length > 0 && Number.isFinite(this.seatTimeoutMs)) {
       this.#apply(() => adrift.forEach((id) => this.#startSeatTimeout(id)));
     }
@@ -1642,8 +1656,8 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
 
   /** The version of the protocol spoken on this socket: the one its client asked for, or the newest this room knows. */
   #versionOf(ws: WebSocket): number {
-    const tags = this.ctx.getTags(ws);
-    return tags.includes(V3_TAG) ? PROTOCOL_VERSION : tags.includes(V2_TAG) ? 2 : 1;
+    const info = this.#socketInfo(ws);
+    return info.presence ? PROTOCOL_VERSION : info.arrays ? 2 : 1;
   }
 
   /**
@@ -1685,7 +1699,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     for (const { ws } of sockets) {
       if (ws === except) continue;
       let frame: string;
-      if (change !== "whole" && !fresh.has(ws) && this.ctx.getTags(ws).includes(V3_TAG)) {
+      if (change !== "whole" && !fresh.has(ws) && this.#socketInfo(ws).presence) {
         // Nothing they do not know already.
         if (!change) continue;
         frame = brief ??= JSON.stringify({ t: "presence", ...change } satisfies ServerMessage);
@@ -1749,23 +1763,70 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     }
   }
 
-  /** Open sockets of players who still hold a seat. */
+  /**
+   * Open sockets of players who still hold a seat.
+   *
+   * This runs several times a tick, so it costs what the sockets cost and no
+   * more: seats are looked up in a set, not the list, and each socket's tags
+   * are read once. With a thousand players, looking each one up in the list
+   * and asking for its tags every time was most of what a tick cost.
+   */
   #seatedSockets(): SeatedSocket[] {
     const sockets: SeatedSocket[] = [];
+    const seated = new Set(this.#roster);
     for (const ws of this.ctx.getWebSockets()) {
-      const tags = this.ctx.getTags(ws);
-      const id = tags.find((tag) => !isMark(tag));
-      if (id && ws.readyState === SOCKET_OPEN && this.#roster.includes(id)) {
-        sockets.push(
-          tags.length > 1 ? { ws, id, binary: tags.includes(BINARY_TAG), arrays: tags.includes(V2_TAG) } : { ws, id },
-        );
-      }
+      if (ws.readyState !== SOCKET_OPEN) continue;
+      const info = this.#socketInfo(ws);
+      if (info.id === undefined || !seated.has(info.id)) continue;
+      sockets.push(info.marked ? { ws, id: info.id, binary: info.binary, arrays: info.arrays } : { ws, id: info.id });
     }
     return sockets;
   }
 
+  /** Whether any seated player has an open socket: `#seatedSockets().length > 0`, without making the list. */
+  #anySeated(): boolean {
+    if (this.#roster.length === 0) return false;
+    const seated = new Set(this.#roster);
+    for (const ws of this.ctx.getWebSockets()) {
+      if (ws.readyState !== SOCKET_OPEN) continue;
+      const id = this.#socketInfo(ws).id;
+      if (id !== undefined && seated.has(id)) return true;
+    }
+    return false;
+  }
+
+  /** What a socket's tags say. They never change, so they are read once a socket, while this instance lasts. */
+  #socketInfo(ws: WebSocket): SocketInfo {
+    let info = this.#infos.get(ws);
+    if (!info) {
+      const tags = this.ctx.getTags(ws);
+      info = {
+        id: tags.find((tag) => !isMark(tag)),
+        marked: tags.length > 1,
+        binary: tags.includes(BINARY_TAG),
+        arrays: tags.includes(V2_TAG),
+        presence: tags.includes(V3_TAG),
+      };
+      this.#infos.set(ws, info);
+    }
+    return info;
+  }
+
+  #infos = new WeakMap<WebSocket, SocketInfo>();
+
+  /** The players with an open socket, found in one pass over the sockets. */
+  #connectedIds(): Set<string> {
+    const ids = new Set<string>();
+    for (const ws of this.ctx.getWebSockets()) {
+      if (ws.readyState !== SOCKET_OPEN) continue;
+      const id = this.#socketInfo(ws).id;
+      if (id !== undefined) ids.add(id);
+    }
+    return ids;
+  }
+
   #playerOf(ws: WebSocket): string | undefined {
-    return this.ctx.getTags(ws).find((tag) => !isMark(tag));
+    return this.#socketInfo(ws).id;
   }
 
   #isConnected(playerId: string, except?: WebSocket): boolean {

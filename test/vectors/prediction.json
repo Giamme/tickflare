@@ -1,0 +1,1120 @@
+{
+  "prediction": [
+    {
+      "name": "event mode",
+      "about": "No ticks: each command shows at once, and leaves when the room's state shows it or the room refuses it.",
+      "tickRate": 0,
+      "you": "p1",
+      "ticks": false,
+      "events": [
+        {
+          "at": 0,
+          "read": {
+            "state": null,
+            "lead": 1
+          }
+        },
+        {
+          "at": 0,
+          "frame": {
+            "tick": 0,
+            "state": {
+              "units": {
+                "p1": {
+                  "x": 0,
+                  "target": 0
+                },
+                "p2": {
+                  "x": 3,
+                  "target": 3
+                }
+              }
+            }
+          }
+        },
+        {
+          "at": 1,
+          "read": {
+            "state": {
+              "units": {
+                "p1": {
+                  "x": 0,
+                  "target": 0
+                },
+                "p2": {
+                  "x": 3,
+                  "target": 3
+                }
+              }
+            },
+            "lead": 1
+          }
+        },
+        {
+          "at": 10,
+          "send": {
+            "type": "move",
+            "to": 5
+          }
+        },
+        {
+          "at": 11,
+          "read": {
+            "state": {
+              "units": {
+                "p1": {
+                  "x": 0,
+                  "target": 5
+                },
+                "p2": {
+                  "x": 3,
+                  "target": 3
+                }
+              }
+            },
+            "lead": 1
+          }
+        },
+        {
+          "at": 40,
+          "frame": {
+            "tick": 0,
+            "state": {
+              "units": {
+                "p1": {
+                  "x": 0,
+                  "target": 5
+                },
+                "p2": {
+                  "x": 3,
+                  "target": 3
+                }
+              }
+            },
+            "c": 1
+          }
+        },
+        {
+          "at": 41,
+          "read": {
+            "state": {
+              "units": {
+                "p1": {
+                  "x": 0,
+                  "target": 5
+                },
+                "p2": {
+                  "x": 3,
+                  "target": 3
+                }
+              }
+            },
+            "lead": 1
+          }
+        },
+        {
+          "at": 50,
+          "send": {
+            "type": "move",
+            "to": 7
+          }
+        },
+        {
+          "at": 51,
+          "send": {
+            "type": "move",
+            "to": 9
+          }
+        },
+        {
+          "at": 52,
+          "read": {
+            "state": {
+              "units": {
+                "p1": {
+                  "x": 0,
+                  "target": 9
+                },
+                "p2": {
+                  "x": 3,
+                  "target": 3
+                }
+              }
+            },
+            "lead": 1
+          }
+        },
+        {
+          "at": 60,
+          "reject": 2
+        },
+        {
+          "at": 61,
+          "read": {
+            "state": {
+              "units": {
+                "p1": {
+                  "x": 0,
+                  "target": 9
+                },
+                "p2": {
+                  "x": 3,
+                  "target": 3
+                }
+              }
+            },
+            "lead": 1
+          }
+        },
+        {
+          "at": 70,
+          "frame": {
+            "tick": 0,
+            "state": {
+              "units": {
+                "p1": {
+                  "x": 0,
+                  "target": 4
+                },
+                "p2": {
+                  "x": 1,
+                  "target": 1
+                }
+              }
+            }
+          }
+        },
+        {
+          "at": 71,
+          "read": {
+            "state": {
+              "units": {
+                "p1": {
+                  "x": 0,
+                  "target": 9
+                },
+                "p2": {
+                  "x": 1,
+                  "target": 1
+                }
+              }
+            },
+            "lead": 1
+          }
+        },
+        {
+          "at": 80,
+          "ack": 3
+        },
+        {
+          "at": 81,
+          "read": {
+            "state": {
+              "units": {
+                "p1": {
+                  "x": 0,
+                  "target": 4
+                },
+                "p2": {
+                  "x": 1,
+                  "target": 1
+                }
+              }
+            },
+            "lead": 1
+          }
+        }
+      ]
+    },
+    {
+      "name": "ticking",
+      "about": "Ten ticks a second. The prediction runs as far ahead of the room's state as a command takes to show, measured from the commands so far, and walks the player's own unit with the game's tick.",
+      "tickRate": 10,
+      "you": "p1",
+      "ticks": true,
+      "events": [
+        {
+          "at": 30,
+          "frame": {
+            "tick": 0,
+            "state": {
+              "units": {
+                "p1": {
+                  "x": 0,
+                  "target": 0
+                }
+              }
+            }
+          }
+        },
+        {
+          "at": 130,
+          "frame": {
+            "tick": 1,
+            "state": {
+              "units": {
+                "p1": {
+                  "x": 0,
+                  "target": 0
+                }
+              }
+            }
+          }
+        },
+        {
+          "at": 230,
+          "frame": {
+            "tick": 2,
+            "state": {
+              "units": {
+                "p1": {
+                  "x": 0,
+                  "target": 0
+                }
+              }
+            }
+          }
+        },
+        {
+          "at": 330,
+          "frame": {
+            "tick": 3,
+            "state": {
+              "units": {
+                "p1": {
+                  "x": 0,
+                  "target": 0
+                }
+              }
+            }
+          }
+        },
+        {
+          "at": 345,
+          "read": {
+            "state": {
+              "units": {
+                "p1": {
+                  "x": 0,
+                  "target": 0
+                }
+              }
+            },
+            "lead": 1
+          }
+        },
+        {
+          "at": 350,
+          "send": {
+            "type": "move",
+            "to": 6
+          }
+        },
+        {
+          "at": 351,
+          "read": {
+            "state": {
+              "units": {
+                "p1": {
+                  "x": 1,
+                  "target": 6
+                }
+              }
+            },
+            "lead": 1
+          }
+        },
+        {
+          "at": 399,
+          "read": {
+            "state": {
+              "units": {
+                "p1": {
+                  "x": 1,
+                  "target": 6
+                }
+              }
+            },
+            "lead": 1
+          }
+        },
+        {
+          "at": 430,
+          "frame": {
+            "tick": 4,
+            "state": {
+              "units": {
+                "p1": {
+                  "x": 0,
+                  "target": 0
+                }
+              }
+            }
+          }
+        },
+        {
+          "at": 530,
+          "frame": {
+            "tick": 5,
+            "state": {
+              "units": {
+                "p1": {
+                  "x": 0,
+                  "target": 6
+                }
+              }
+            },
+            "c": 1
+          }
+        },
+        {
+          "at": 531,
+          "read": {
+            "state": {
+              "units": {
+                "p1": {
+                  "x": 2,
+                  "target": 6
+                }
+              }
+            },
+            "lead": 2
+          }
+        },
+        {
+          "at": 580,
+          "read": {
+            "state": {
+              "units": {
+                "p1": {
+                  "x": 2,
+                  "target": 6
+                }
+              }
+            },
+            "lead": 2
+          }
+        },
+        {
+          "at": 630,
+          "frame": {
+            "tick": 6,
+            "state": {
+              "units": {
+                "p1": {
+                  "x": 1,
+                  "target": 6
+                }
+              }
+            }
+          }
+        },
+        {
+          "at": 631,
+          "read": {
+            "state": {
+              "units": {
+                "p1": {
+                  "x": 3,
+                  "target": 6
+                }
+              }
+            },
+            "lead": 2
+          }
+        },
+        {
+          "at": 680,
+          "read": {
+            "state": {
+              "units": {
+                "p1": {
+                  "x": 3,
+                  "target": 6
+                }
+              }
+            },
+            "lead": 2
+          }
+        },
+        {
+          "at": 730,
+          "frame": {
+            "tick": 7,
+            "state": {
+              "units": {
+                "p1": {
+                  "x": 2,
+                  "target": 6
+                }
+              }
+            }
+          }
+        },
+        {
+          "at": 731,
+          "read": {
+            "state": {
+              "units": {
+                "p1": {
+                  "x": 4,
+                  "target": 6
+                }
+              }
+            },
+            "lead": 2
+          }
+        },
+        {
+          "at": 780,
+          "read": {
+            "state": {
+              "units": {
+                "p1": {
+                  "x": 4,
+                  "target": 6
+                }
+              }
+            },
+            "lead": 2
+          }
+        },
+        {
+          "at": 830,
+          "frame": {
+            "tick": 8,
+            "state": {
+              "units": {
+                "p1": {
+                  "x": 3,
+                  "target": 6
+                }
+              }
+            }
+          }
+        },
+        {
+          "at": 831,
+          "read": {
+            "state": {
+              "units": {
+                "p1": {
+                  "x": 5,
+                  "target": 6
+                }
+              }
+            },
+            "lead": 2
+          }
+        },
+        {
+          "at": 880,
+          "read": {
+            "state": {
+              "units": {
+                "p1": {
+                  "x": 5,
+                  "target": 6
+                }
+              }
+            },
+            "lead": 2
+          }
+        },
+        {
+          "at": 930,
+          "frame": {
+            "tick": 9,
+            "state": {
+              "units": {
+                "p1": {
+                  "x": 4,
+                  "target": 6
+                }
+              }
+            }
+          }
+        },
+        {
+          "at": 931,
+          "read": {
+            "state": {
+              "units": {
+                "p1": {
+                  "x": 6,
+                  "target": 6
+                }
+              }
+            },
+            "lead": 2
+          }
+        },
+        {
+          "at": 980,
+          "read": {
+            "state": {
+              "units": {
+                "p1": {
+                  "x": 6,
+                  "target": 6
+                }
+              }
+            },
+            "lead": 2
+          }
+        },
+        {
+          "at": 985,
+          "send": {
+            "type": "move",
+            "to": 2
+          }
+        },
+        {
+          "at": 986,
+          "read": {
+            "state": {
+              "units": {
+                "p1": {
+                  "x": 4,
+                  "target": 2
+                }
+              }
+            },
+            "lead": 2
+          }
+        },
+        {
+          "at": 1025,
+          "read": {
+            "state": {
+              "units": {
+                "p1": {
+                  "x": 4,
+                  "target": 2
+                }
+              }
+            },
+            "lead": 2
+          }
+        },
+        {
+          "at": 1030,
+          "frame": {
+            "tick": 10,
+            "state": {
+              "units": {
+                "p1": {
+                  "x": 5,
+                  "target": 6
+                }
+              }
+            }
+          }
+        },
+        {
+          "at": 1031,
+          "read": {
+            "state": {
+              "units": {
+                "p1": {
+                  "x": 3,
+                  "target": 2
+                }
+              }
+            },
+            "lead": 2
+          }
+        },
+        {
+          "at": 1130,
+          "frame": {
+            "tick": 11,
+            "state": {
+              "units": {
+                "p1": {
+                  "x": 5,
+                  "target": 2
+                }
+              }
+            },
+            "c": 2
+          }
+        },
+        {
+          "at": 1131,
+          "read": {
+            "state": {
+              "units": {
+                "p1": {
+                  "x": 3,
+                  "target": 2
+                }
+              }
+            },
+            "lead": 2
+          }
+        },
+        {
+          "at": 1230,
+          "frame": {
+            "tick": 12,
+            "state": {
+              "units": {
+                "p1": {
+                  "x": 4,
+                  "target": 2
+                }
+              }
+            }
+          }
+        },
+        {
+          "at": 1231,
+          "read": {
+            "state": {
+              "units": {
+                "p1": {
+                  "x": 2,
+                  "target": 2
+                }
+              }
+            },
+            "lead": 2
+          }
+        },
+        {
+          "at": 1330,
+          "frame": {
+            "tick": 13,
+            "state": {
+              "units": {
+                "p1": {
+                  "x": 3,
+                  "target": 2
+                }
+              }
+            }
+          }
+        },
+        {
+          "at": 1331,
+          "read": {
+            "state": {
+              "units": {
+                "p1": {
+                  "x": 2,
+                  "target": 2
+                }
+              }
+            },
+            "lead": 2
+          }
+        },
+        {
+          "at": 1700,
+          "read": {
+            "state": {
+              "units": {
+                "p1": {
+                  "x": 2,
+                  "target": 2
+                }
+              }
+            },
+            "lead": 2
+          }
+        },
+        {
+          "at": 2400,
+          "read": {
+            "state": {
+              "units": {
+                "p1": {
+                  "x": 2,
+                  "target": 2
+                }
+              }
+            },
+            "lead": 2
+          }
+        }
+      ]
+    },
+    {
+      "name": "ticking, refused",
+      "about": "A command the room refuses is taken back the moment it says so, in a ticking room too.",
+      "tickRate": 20,
+      "you": "p1",
+      "ticks": true,
+      "events": [
+        {
+          "at": 25,
+          "frame": {
+            "tick": 0,
+            "state": {
+              "units": {
+                "p1": {
+                  "x": 4,
+                  "target": 4
+                }
+              }
+            }
+          }
+        },
+        {
+          "at": 75,
+          "frame": {
+            "tick": 1,
+            "state": {
+              "units": {
+                "p1": {
+                  "x": 4,
+                  "target": 4
+                }
+              }
+            }
+          }
+        },
+        {
+          "at": 80,
+          "send": {
+            "type": "move",
+            "to": 0
+          }
+        },
+        {
+          "at": 81,
+          "read": {
+            "state": {
+              "units": {
+                "p1": {
+                  "x": 3,
+                  "target": 0
+                }
+              }
+            },
+            "lead": 1
+          }
+        },
+        {
+          "at": 120,
+          "read": {
+            "state": {
+              "units": {
+                "p1": {
+                  "x": 3,
+                  "target": 0
+                }
+              }
+            },
+            "lead": 1
+          }
+        },
+        {
+          "at": 125,
+          "frame": {
+            "tick": 2,
+            "state": {
+              "units": {
+                "p1": {
+                  "x": 4,
+                  "target": 4
+                }
+              }
+            }
+          }
+        },
+        {
+          "at": 126,
+          "read": {
+            "state": {
+              "units": {
+                "p1": {
+                  "x": 3,
+                  "target": 0
+                }
+              }
+            },
+            "lead": 1
+          }
+        },
+        {
+          "at": 130,
+          "reject": 1
+        },
+        {
+          "at": 131,
+          "read": {
+            "state": {
+              "units": {
+                "p1": {
+                  "x": 4,
+                  "target": 4
+                }
+              }
+            },
+            "lead": 1
+          }
+        }
+      ]
+    },
+    {
+      "name": "ticking, without the game's tick",
+      "about": "Without a tick to run, a ticking room's commands are predicted as in event mode: applied once, on the room's latest state.",
+      "tickRate": 10,
+      "you": "p1",
+      "ticks": false,
+      "events": [
+        {
+          "at": 30,
+          "frame": {
+            "tick": 0,
+            "state": {
+              "units": {
+                "p1": {
+                  "x": 0,
+                  "target": 0
+                }
+              }
+            }
+          }
+        },
+        {
+          "at": 40,
+          "send": {
+            "type": "move",
+            "to": 3
+          }
+        },
+        {
+          "at": 41,
+          "read": {
+            "state": {
+              "units": {
+                "p1": {
+                  "x": 0,
+                  "target": 3
+                }
+              }
+            },
+            "lead": 1
+          }
+        },
+        {
+          "at": 120,
+          "read": {
+            "state": {
+              "units": {
+                "p1": {
+                  "x": 0,
+                  "target": 3
+                }
+              }
+            },
+            "lead": 1
+          }
+        },
+        {
+          "at": 130,
+          "frame": {
+            "tick": 1,
+            "state": {
+              "units": {
+                "p1": {
+                  "x": 0,
+                  "target": 3
+                }
+              }
+            },
+            "c": 1
+          }
+        },
+        {
+          "at": 131,
+          "read": {
+            "state": {
+              "units": {
+                "p1": {
+                  "x": 0,
+                  "target": 3
+                }
+              }
+            },
+            "lead": 1
+          }
+        }
+      ]
+    }
+  ],
+  "interpolation": [
+    {
+      "name": "glide",
+      "about": "Two fields smoothed over 100 ms; a field that is not named is left alone.",
+      "durationMs": 100,
+      "fields": [
+        "x",
+        "y"
+      ],
+      "events": [
+        {
+          "at": 0,
+          "read": "a",
+          "values": null
+        },
+        {
+          "at": 0,
+          "update": {
+            "a": {
+              "x": 0,
+              "y": 0,
+              "hp": 9
+            }
+          }
+        },
+        {
+          "at": 0,
+          "read": "a",
+          "values": {
+            "x": 0,
+            "y": 0
+          }
+        },
+        {
+          "at": 50,
+          "read": "a",
+          "values": {
+            "x": 0,
+            "y": 0
+          }
+        },
+        {
+          "at": 100,
+          "update": {
+            "a": {
+              "x": 10,
+              "y": -4,
+              "hp": 8
+            },
+            "b": {
+              "x": 5,
+              "y": 5,
+              "hp": 1
+            }
+          }
+        },
+        {
+          "at": 100,
+          "read": "a",
+          "values": {
+            "x": 0,
+            "y": 0
+          }
+        },
+        {
+          "at": 125,
+          "read": "a",
+          "values": {
+            "x": 2.5,
+            "y": -1
+          }
+        },
+        {
+          "at": 150,
+          "read": "a",
+          "values": {
+            "x": 5,
+            "y": -2
+          }
+        },
+        {
+          "at": 150,
+          "read": "b",
+          "values": {
+            "x": 5,
+            "y": 5
+          }
+        },
+        {
+          "at": 160,
+          "update": {
+            "a": {
+              "x": 20,
+              "y": 0,
+              "hp": 8
+            },
+            "b": {
+              "x": 6,
+              "y": 5,
+              "hp": 1
+            }
+          }
+        },
+        {
+          "at": 160,
+          "read": "a",
+          "values": {
+            "x": 6,
+            "y": -2.4
+          }
+        },
+        {
+          "at": 210,
+          "read": "a",
+          "values": {
+            "x": 13,
+            "y": -1.2
+          }
+        },
+        {
+          "at": 260,
+          "read": "a",
+          "values": {
+            "x": 20,
+            "y": 0
+          }
+        },
+        {
+          "at": 400,
+          "read": "a",
+          "values": {
+            "x": 20,
+            "y": 0
+          }
+        },
+        {
+          "at": 400,
+          "update": {
+            "b": {
+              "x": 7,
+              "y": 5,
+              "hp": 1
+            }
+          }
+        },
+        {
+          "at": 400,
+          "read": "a",
+          "values": null
+        },
+        {
+          "at": 450,
+          "read": "b",
+          "values": {
+            "x": 6.5,
+            "y": 5
+          }
+        },
+        {
+          "at": 460,
+          "clear": true
+        },
+        {
+          "at": 460,
+          "read": "b",
+          "values": null
+        }
+      ]
+    }
+  ]
+}

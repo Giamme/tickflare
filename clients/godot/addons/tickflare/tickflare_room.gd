@@ -34,6 +34,9 @@ signal status_changed(status: String, code: int, reason: String)
 ## The room handed this player to another room, and the client is connecting
 ## there.
 signal moved(room_id: String)
+## A command was sent, with the id it has in [member unconfirmed]. Emitted
+## before [method send] starts waiting for the answer.
+signal command_sent(id: int, command: Variant)
 
 # Loaded by path, so that the client works in a project that has not been
 # imported yet, where global class names are not known.
@@ -154,8 +157,11 @@ func _request(frame: Dictionary, command: Variant, is_command: bool) -> Dictiona
 	pending.leaving = not is_command
 	_pending[id] = pending
 	if is_command:
-		unconfirmed.append({"id": id, "command": command})
+		# A new array, so that one held from before is still what it was.
+		unconfirmed = unconfirmed + [{"id": id, "command": command}]
 	_socket.send_text(JSON.stringify(frame))
+	if is_command:
+		command_sent.emit(id, command)
 	var answer: Array = await pending.settled
 	return {"ok": true} if answer[0] else {"ok": false, "reason": answer[1]}
 

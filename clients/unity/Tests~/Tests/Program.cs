@@ -90,6 +90,82 @@ namespace Tickflare.Tests
         }
     }
 
+    /// <summary>A room as far as a predictor can tell. It does what TickflareRoom does with frames.</summary>
+    internal sealed class FakeRoomView : ITickflareRoomView
+    {
+        private readonly Dictionary<long, TaskCompletionSource<bool>> _pending = new Dictionary<long, TaskCompletionSource<bool>>();
+        private List<TickflareSentCommand> _unconfirmed = new List<TickflareSentCommand>();
+        private long _next = 1;
+
+        public FakeRoomView(string you, double tickRate)
+        {
+            You = you;
+            TickRate = tickRate;
+        }
+
+        public object State { get; private set; }
+        public long Tick { get; private set; }
+        public double TickRate { get; }
+        public string You { get; }
+        public IReadOnlyList<TickflareSentCommand> Unconfirmed => _unconfirmed;
+        public event Action<object> StateChanged;
+        public event Action<TickflareSentCommand> CommandSent;
+
+        public Task SendAsync(object command)
+        {
+            long id = _next++;
+            var sent = new TickflareSentCommand { Id = id, Command = command };
+            _unconfirmed = new List<TickflareSentCommand>(_unconfirmed) { sent };
+            // Answered inline, as a client answers on the thread that reads frames.
+            var answer = new TaskCompletionSource<bool>();
+            _pending[id] = answer;
+            CommandSent?.Invoke(sent);
+            return answer.Task;
+        }
+
+        public void Frame(Dictionary<string, object> frame)
+        {
+            Tick = (long)(double)frame["tick"];
+            long? c = frame.TryGetValue("c", out object shows) ? (long)(double)shows : (long?)null;
+            if (c.HasValue) Shown(c.Value);
+            State = TickflarePredictor.DeepCopy(frame["state"]);
+            StateChanged?.Invoke(State);
+            if (c.HasValue)
+            {
+                foreach (long id in new List<long>(_pending.Keys))
+                {
+                    if (id <= c.Value) Settle(id, true);
+                }
+            }
+        }
+
+        public void Ack(long id, long? tick)
+        {
+            if (tick.HasValue && tick.Value > Tick) Tick = tick.Value;
+            Shown(id);
+            Settle(id, true);
+        }
+
+        public void Reject(long id)
+        {
+            _unconfirmed = _unconfirmed.FindAll(sent => sent.Id != id);
+            Settle(id, false);
+        }
+
+        private void Shown(long id)
+        {
+            _unconfirmed = _unconfirmed.FindAll(sent => sent.Id > id);
+        }
+
+        private void Settle(long id, bool ok)
+        {
+            if (!_pending.TryGetValue(id, out TaskCompletionSource<bool> answer)) return;
+            _pending.Remove(id);
+            if (ok) answer.SetResult(true);
+            else answer.SetException(new TickflareRejectedException("refused"));
+        }
+    }
+
     internal static class Program
     {
         private static readonly List<string> Failures = new List<string>();
@@ -128,6 +204,7 @@ namespace Tickflare.Tests
             TestVectors();
             TestBadFrames();
             TestPresence();
+            TestPredictionVectors();
             TestUrls();
             string server = Environment.GetEnvironmentVariable("TICKFLARE_TEST_URL");
             if (string.IsNullOrEmpty(server))
@@ -406,6 +483,118 @@ namespace Tickflare.Tests
             CheckSame(Names(after), "b (away), c (away), d, e", "a list of players changed by who is new, different and gone");
             CheckSame(Names(known), "a, b, c (away)", "the list it was made from is as it was");
             CheckSame(Names(TickflarePresence.Apply(new List<TickflarePlayer>(), new List<TickflarePlayer>(), null)), "", "nothing changed in an empty list");
+        }
+
+        // The game every prediction case is played with: see test/vectors/prediction.ts.
+        private static Dictionary<string, object> Units(object state)
+        {
+            return (Dictionary<string, object>)((Dictionary<string, object>)state)["units"];
+        }
+
+        private static void WalkerApply(object state, object command, string you)
+        {
+            var move = (Dictionary<string, object>)command;
+            if ((string)move["type"] == "move" && Units(state).TryGetValue(you, out object unit)) ((Dictionary<string, object>)unit)["target"] = move["to"];
+        }
+
+        private static void WalkerTick(object state, string you)
+        {
+            if (!Units(state).TryGetValue(you, out object found)) return;
+            var unit = (Dictionary<string, object>)found;
+            double x = (double)unit["x"];
+            double target = (double)unit["target"];
+            if (x < target) unit["x"] = Math.Min(target, x + 1);
+            else if (x > target) unit["x"] = Math.Max(target, x - 1);
+        }
+
+        private static void TestPredictionVectors()
+        {
+            string path = FindUp(Path.Combine("test", "vectors", "prediction.json"));
+            Check(path != null, "the prediction cases are found");
+            if (path == null) return;
+            var vectors = (Dictionary<string, object>)J(File.ReadAllText(path));
+            // Answers settle inline here, as they would on a game's main thread between two frames.
+            SynchronizationContext context = SynchronizationContext.Current;
+            SynchronizationContext.SetSynchronizationContext(null);
+            try
+            {
+                foreach (object item in (List<object>)vectors["prediction"])
+                {
+                    var test = (Dictionary<string, object>)item;
+                    string name = (string)test["name"];
+                    double clock = 0;
+                    var room = new FakeRoomView((string)test["you"], (double)test["tickRate"]);
+                    Action<object, string> tick = (bool)test["ticks"] ? WalkerTick : null;
+                    var predicted = new TickflarePredictor(room, WalkerApply, tick, () => clock);
+                    int changes = 0;
+                    predicted.StateChanged += _ => changes++;
+                    foreach (object each in (List<object>)test["events"])
+                    {
+                        var e = (Dictionary<string, object>)each;
+                        clock = (double)e["at"];
+                        if (e.TryGetValue("frame", out object frame))
+                        {
+                            room.Frame((Dictionary<string, object>)frame);
+                        }
+                        else if (e.TryGetValue("send", out object command))
+                        {
+                            _ = predicted.SendAsync(command).ContinueWith(sent => sent.Exception, TaskContinuationOptions.OnlyOnFaulted);
+                        }
+                        else if (e.TryGetValue("ack", out object ack))
+                        {
+                            room.Ack((long)(double)ack, e.TryGetValue("tick", out object at) ? (long)(double)at : (long?)null);
+                        }
+                        else if (e.TryGetValue("reject", out object reject))
+                        {
+                            room.Reject((long)(double)reject);
+                        }
+                        else if (e.TryGetValue("read", out object read))
+                        {
+                            var expected = (Dictionary<string, object>)read;
+                            string what = "prediction '" + name + "' at " + clock + " ms";
+                            CheckSame(predicted.State, expected["state"], what);
+                            CheckSame(predicted.Lead, expected["lead"], what + ", lead");
+                        }
+                    }
+                    Check(changes > 0, "prediction '" + name + "' said when it changed");
+                    predicted.Dispose();
+                }
+            }
+            finally
+            {
+                SynchronizationContext.SetSynchronizationContext(context);
+            }
+
+            foreach (object item in (List<object>)vectors["interpolation"])
+            {
+                var test = (Dictionary<string, object>)item;
+                string[] fields = ((List<object>)test["fields"]).ConvertAll(field => (string)field).ToArray();
+                var glide = new TickflareInterpolator((double)test["durationMs"], fields);
+                foreach (object each in (List<object>)test["events"])
+                {
+                    var e = (Dictionary<string, object>)each;
+                    double now = (double)e["at"];
+                    if (e.TryGetValue("update", out object update))
+                    {
+                        glide.Update((Dictionary<string, object>)update, now);
+                    }
+                    else if (e.ContainsKey("clear"))
+                    {
+                        glide.Clear();
+                    }
+                    else if (e.TryGetValue("read", out object id))
+                    {
+                        object got = null;
+                        if (glide.TryGet((string)id, out Dictionary<string, double> values, now))
+                        {
+                            var shown = new Dictionary<string, object>();
+                            foreach (KeyValuePair<string, double> value in values) shown[value.Key] = value.Value;
+                            got = shown;
+                        }
+                        CheckSame(got, e["values"], "interpolation '" + test["name"] + "', " + id + " at " + now + " ms");
+                    }
+                }
+            }
         }
 
         private static void TestUrls()

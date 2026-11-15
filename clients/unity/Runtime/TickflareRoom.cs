@@ -67,7 +67,7 @@ namespace Tickflare
     /// changed in place as patches arrive, so keep no reference to a part of it that you expect to
     /// stay as it was.
     /// </summary>
-    public sealed class TickflareRoom : IDisposable
+    public sealed class TickflareRoom : ITickflareRoomView, IDisposable
     {
         /// <summary>The version of the protocol this client speaks.</summary>
         public const int ProtocolVersion = 3;
@@ -188,6 +188,14 @@ namespace Tickflare
         /// <summary>Something went wrong that the client recovers from by itself. For logs.</summary>
         public event Action<string> Warning;
 
+        /// <summary>A command was sent, with the id it has in <see cref="Unconfirmed"/>. Raised before the answer is awaited.</summary>
+        public event Action<TickflareSentCommand> CommandSent;
+
+        Task ITickflareRoomView.SendAsync(object command)
+        {
+            return SendAsync(command);
+        }
+
         /// <summary>
         /// Connects to the room at <paramref name="url"/>, a <c>ws://</c> or <c>wss://</c> address
         /// ending in the room's id, and keeps the connection up until <see cref="Close"/>.
@@ -305,6 +313,7 @@ namespace Tickflare
             _pending[id] = pending;
             string idText = id.ToString(CultureInfo.InvariantCulture);
             string frame;
+            TickflareSentCommand sent = null;
             if (leaving)
             {
                 frame = "{\"t\":\"leave\",\"id\":" + idText + "}";
@@ -312,9 +321,11 @@ namespace Tickflare
             else
             {
                 frame = "{\"t\":\"cmd\",\"id\":" + idText + ",\"data\":" + commandJson + "}";
-                _unconfirmed = new List<TickflareSentCommand>(_unconfirmed) { new TickflareSentCommand { Id = id, Command = command } };
+                sent = new TickflareSentCommand { Id = id, Command = command };
+                _unconfirmed = new List<TickflareSentCommand>(_unconfirmed) { sent };
             }
             _ = SendQuietly(connection, frame);
+            if (sent != null) CommandSent?.Invoke(sent);
             return pending.Done.Task;
         }
 

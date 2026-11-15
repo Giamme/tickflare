@@ -10,6 +10,70 @@ extends SceneTree
 const Room = preload("res://addons/tickflare/tickflare_room.gd")
 const Patch = preload("res://addons/tickflare/tickflare_patch.gd")
 const BinaryReader = preload("res://addons/tickflare/tickflare_binary.gd")
+const Predictor = preload("res://addons/tickflare/tickflare_predictor.gd")
+const Interpolator = preload("res://addons/tickflare/tickflare_interpolator.gd")
+
+
+## A room as far as a predictor can tell: state, ticks, commands not yet shown,
+## and the answers to them. It does what TickflareRoom does with frames.
+class FakeRoom extends RefCounted:
+	signal state_changed(state: Variant)
+	signal command_sent(id: int, command: Variant)
+	var state: Variant = null
+	var tick := 0
+	var tick_rate := 0.0
+	var you := ""
+	var unconfirmed: Array = []
+	var _next := 1
+	var _pending := {}
+
+	class Answer extends RefCounted:
+		signal settled(ok: bool)
+
+	func _init(player: String, rate: float) -> void:
+		you = player
+		tick_rate = rate
+
+	func send(command: Variant) -> Dictionary:
+		var id := _next
+		_next += 1
+		unconfirmed = unconfirmed + [{"id": id, "command": command}]
+		var answer := Answer.new()
+		_pending[id] = answer
+		command_sent.emit(id, command)
+		var ok: bool = await answer.settled
+		return {"ok": true} if ok else {"ok": false, "reason": "refused"}
+
+	func frame(f: Dictionary) -> void:
+		tick = int(f["tick"])
+		if f.has("c"):
+			_shown(int(f["c"]))
+		state = f["state"].duplicate(true)
+		state_changed.emit(state)
+		if f.has("c"):
+			for id: int in _pending.keys():
+				if id <= int(f["c"]):
+					_settle(id, true)
+
+	func ack(id: int, at_tick: Variant) -> void:
+		if at_tick != null and int(at_tick) > tick:
+			tick = int(at_tick)
+		_shown(id)
+		_settle(id, true)
+
+	func reject(id: int) -> void:
+		unconfirmed = unconfirmed.filter(func(sent: Dictionary) -> bool: return int(sent["id"]) != id)
+		_settle(id, false)
+
+	func _shown(id: int) -> void:
+		unconfirmed = unconfirmed.filter(func(sent: Dictionary) -> bool: return int(sent["id"]) > id)
+
+	func _settle(id: int, ok: bool) -> void:
+		var answer: Answer = _pending.get(id)
+		if answer == null:
+			return
+		_pending.erase(id)
+		answer.settled.emit(ok)
 
 var _failures: Array[String] = []
 var _checks := 0
@@ -25,6 +89,7 @@ func _run() -> void:
 	_test_vectors()
 	_test_bad_frames()
 	_test_presence()
+	_test_prediction_vectors()
 	_test_urls()
 	var server := OS.get_environment("TICKFLARE_TEST_URL")
 	if server == "":
@@ -133,6 +198,68 @@ func _test_bad_frames() -> void:
 	_check(BinaryReader.new().decode("7b041414020161016202010301020302".hex_decode()) == null, "bytes that do not start as a frame are refused")
 	_check(BinaryReader.new().decode("b10400000001050308".hex_decode()) == null, "a key that was never defined is refused")
 	_check(BinaryReader.new().decode("b104000001016101013f".hex_decode()) == null, "a kind of value from a later version is refused")
+
+
+## The game every prediction case is played with: see test/vectors/prediction.ts.
+func _walker_apply(state: Variant, command: Variant, you: String) -> void:
+	var units: Dictionary = state["units"]
+	if command["type"] == "move" and units.has(you):
+		units[you]["target"] = command["to"]
+
+
+func _walker_tick(state: Variant, you: String) -> void:
+	var units: Dictionary = state["units"]
+	if not units.has(you):
+		return
+	var unit: Dictionary = units[you]
+	if unit["x"] < unit["target"]:
+		unit["x"] = minf(unit["target"], unit["x"] + 1)
+	elif unit["x"] > unit["target"]:
+		unit["x"] = maxf(unit["target"], unit["x"] - 1)
+
+
+func _test_prediction_vectors() -> void:
+	var path := ProjectSettings.globalize_path("res://").path_join("../../test/vectors/prediction.json").simplify_path()
+	var file := FileAccess.open(path, FileAccess.READ)
+	_check(file != null, "the prediction cases can be opened at %s" % path)
+	if file == null:
+		return
+	var vectors: Dictionary = JSON.parse_string(file.get_as_text())
+	_check(vectors["prediction"].size() >= 4, "there are prediction cases")
+	for case: Dictionary in vectors["prediction"]:
+		var clock := [0.0]
+		var room := FakeRoom.new(case["you"], float(case["tickRate"]))
+		var tick := Callable(self, "_walker_tick") if case["ticks"] else Callable()
+		var predicted := Predictor.new(room, Callable(self, "_walker_apply"), tick, func() -> float: return clock[0])
+		var changes := [0]
+		predicted.state_changed.connect(func(_state: Variant) -> void: changes[0] += 1)
+		for event: Dictionary in case["events"]:
+			clock[0] = float(event["at"])
+			if event.has("frame"):
+				room.frame(event["frame"])
+			elif event.has("send"):
+				predicted.send(event["send"])
+			elif event.has("ack"):
+				room.ack(int(event["ack"]), event.get("tick"))
+			elif event.has("reject"):
+				room.reject(int(event["reject"]))
+			elif event.has("read"):
+				var what := "prediction '%s' at %d ms" % [case["name"], int(event["at"])]
+				_check_same(predicted.state, event["read"]["state"], what)
+				_check_same(predicted.lead, event["read"]["lead"], what + ", lead")
+		_check(changes[0] > 0, "prediction '%s' said when it changed" % case["name"])
+		predicted.close()
+
+	for case: Dictionary in vectors["interpolation"]:
+		var glide := Interpolator.new(float(case["durationMs"]), case["fields"])
+		for event: Dictionary in case["events"]:
+			var now := float(event["at"])
+			if event.has("update"):
+				glide.update(event["update"], now)
+			elif event.has("clear"):
+				glide.clear()
+			elif event.has("read"):
+				_check_same(glide.at(event["read"], now), event["values"], "interpolation '%s', %s at %d ms" % [case["name"], event["read"], int(now)])
 
 
 func _test_presence() -> void:
