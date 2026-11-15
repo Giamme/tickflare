@@ -264,7 +264,7 @@ export class DeltaSender {
         deliver(
           ws,
           isPlainObject(live) && (base === undefined || isPlainObject(base))
-            ? viewUpdate(base, live, fields)
+            ? viewUpdate(base, live, fields, binary === true || arrays !== true)
             : updateFor(base, live),
           binary,
           arrays,
@@ -293,7 +293,10 @@ function plainForm(update: Update): { patch: string; parsed?: Patch; binary?: Ui
  * and the patch from each copy that was being held before.
  */
 class FieldCache {
-  #byValue = new Map<object, { json?: string; next?: unknown; patches: Map<unknown, string | null> }>();
+  #byValue = new Map<
+    object,
+    { json?: string; next?: unknown; patches: Map<unknown, string | null>; parsed?: Map<unknown, unknown> }
+  >();
 
   #entry(live: object) {
     let entry = this.#byValue.get(live);
@@ -319,7 +322,11 @@ class FieldCache {
     let json: string | null = null;
     if (patch) {
       json = JSON.stringify(patch);
-      entry.next ??= applyPatch(base, JSON.parse(json));
+      if (entry.next === undefined) {
+        const parsed = JSON.parse(json) as Patch;
+        entry.next = applyPatch(base, parsed);
+        (entry.parsed ??= new Map()).set(base, parsed);
+      }
     } else {
       entry.next ??= base;
     }
@@ -344,10 +351,25 @@ class FieldCache {
       json = `[${this.json(live)}]`;
     } else {
       json = JSON.stringify(patch);
-      entry.next ??= applyPatch({ v: base }, { v: JSON.parse(json) }).v;
+      if (entry.next === undefined) {
+        const parsed = JSON.parse(json) as Patch[string];
+        entry.next = applyPatch({ v: base }, { v: parsed }).v;
+        (entry.parsed ??= new Map()).set(base, parsed);
+      }
     }
     entry.patches.set(base, json);
     return json;
+  }
+
+  /**
+   * The change `patch` or `arrayChange` gave for `base` and `live`, as an
+   * object read back from its JSON: parsed once, for everyone who is sent it.
+   */
+  parsed(base: unknown, live: object, json: string): unknown {
+    const entry = this.#entry(live);
+    let parsed = entry.parsed?.get(base);
+    if (parsed === undefined) (entry.parsed ??= new Map()).set(base, (parsed = JSON.parse(json)));
+    return parsed;
   }
 
   /** The copy of `live` that everyone who holds it after this send shares. */
@@ -365,6 +387,7 @@ function viewUpdate(
   base: Record<string, unknown> | undefined,
   live: Record<string, unknown>,
   fields: FieldCache,
+  parse = false,
 ): Update {
   if (base === undefined) {
     const parts: string[] = [];
@@ -387,20 +410,32 @@ function viewUpdate(
 
   const parts: string[] = [];
   const next: Record<string, unknown> = { ...base };
+  // For a client that needs the patch as an object, binary or without array patches: the same
+  // patch, built from what is parsed already instead of parsing it again for each player.
+  // `__proto__` would be the object's prototype here, where it is an ordinary key in JSON.
+  let parsed: Patch | undefined = parse ? {} : undefined;
   for (const key of Object.keys(live)) {
     const to = live[key];
     if (to === undefined) continue;
     const from = Object.prototype.hasOwnProperty.call(base, key) ? base[key] : undefined;
     const name = JSON.stringify(key);
+    if (key === "__proto__") parsed = undefined;
     if (typeof to === "object" && to !== null) {
       if (isPlainObject(from) && isPlainObject(to)) {
         const patch = fields.patch(from, to);
-        if (patch !== null) parts.push(`${name}:${patch}`);
+        if (patch !== null) {
+          parts.push(`${name}:${patch}`);
+          if (parsed) parsed[key] = fields.parsed(from, to, patch) as Patch;
+        }
       } else if (Array.isArray(from) && Array.isArray(to)) {
         const change = fields.arrayChange(from, to);
-        if (change !== null) parts.push(`${name}:${change}`);
+        if (change !== null) {
+          parts.push(`${name}:${change}`);
+          if (parsed) parsed[key] = fields.parsed(from, to, change) as Patch[string];
+        }
       } else if (from === undefined || !jsonEqual(from, to)) {
         parts.push(`${name}:[${fields.json(to)}]`);
+        if (parsed) parsed[key] = [fields.next(to)];
       }
       next[key] = fields.next(to);
     } else if (from === undefined || !jsonEqual(from, to)) {
@@ -408,16 +443,19 @@ function viewUpdate(
       if (json === undefined) continue;
       parts.push(`${name}:[${json}]`);
       next[key] = JSON.parse(json);
+      if (parsed) parsed[key] = [next[key]];
     }
   }
   for (const key of Object.keys(base)) {
     if (base[key] !== undefined && (!Object.prototype.hasOwnProperty.call(live, key) || live[key] === undefined)) {
       parts.push(`${JSON.stringify(key)}:0`);
       delete next[key];
+      if (key === "__proto__") parsed = undefined;
+      else if (parsed) parsed[key] = 0;
     }
   }
   if (parts.length === 0) return { next: base };
-  return { patch: `{${parts.join(",")}}`, next };
+  return parsed ? { patch: `{${parts.join(",")}}`, parsed, next } : { patch: `{${parts.join(",")}}`, next };
 }
 
 /** What brings a socket from `base` to `live`, and the snapshot it will then hold. */

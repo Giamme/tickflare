@@ -232,6 +232,35 @@ describe("DeltaSender and sockets that asked for binary", () => {
     expect(players.a.keys).toEqual(expect.arrayContaining(["a", "b", "world", "hand"]));
   });
 
+  it("sends a view's every kind of change in binary as it does in JSON", () => {
+    const sender = new DeltaSender();
+    const json = new Mirror("json");
+    const arrays = new BinaryMirror();
+    const plain = new BinaryMirror();
+    const sockets = [
+      { ws: json.ws, id: "json", arrays: true },
+      { ws: arrays.ws, id: "arrays", binary: true, arrays: true },
+      { ws: plain.ws, id: "plain", binary: true },
+    ];
+    const views: Record<string, unknown>[] = [
+      { units: { a: { x: 1 } }, list: [1, 2, 3], round: 1, gone: "soon", odd: { y: 1 } },
+      { units: { a: { x: 2 }, b: { x: 0 } }, list: [1, 5, 3], round: 2, odd: [1, 2] },
+      { units: { b: { x: 1 } }, list: [1, 5, 3, 4], round: 2.5, odd: "now a string", ["__proto__"]: { z: 1 } },
+      { units: { b: { x: 1 } }, list: [9], round: 3, ["__proto__"]: { z: 2 }, back: true },
+    ];
+    views.forEach((view, n) => {
+      // A view with `__proto__` as a key of its own, as JSON.parse makes it. Clients never apply
+      // that key, so what matters is that binary and JSON clients end the same.
+      const live = JSON.parse(JSON.stringify(view)) as Record<string, unknown>;
+      sender.send(sockets, n + 1, n + 1, undefined, () => live);
+      const { ["__proto__"]: _, ...rest } = live;
+      expect(json.state).toEqual(rest);
+      for (const mirror of [arrays, plain]) expect(JSON.stringify(mirror.state)).toBe(JSON.stringify(json.state));
+    });
+    expect(arrays.binary.length).toBeGreaterThan(0);
+    expect(plain.binary.length).toBeGreaterThan(0);
+  });
+
   it("sends players whose views change alike the same bytes, and each the names it lacks", () => {
     const sender = new DeltaSender();
     const players = { a: new BinaryMirror(), b: new BinaryMirror(), c: new BinaryMirror(), d: new BinaryMirror() };
