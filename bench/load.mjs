@@ -124,11 +124,14 @@ async function watch(ws, ms, binary) {
   };
 }
 
-/** A room asked for `rate` ticks a second, with everything in it moving on every tick. */
-async function tickRate({ units, rate, sight, players, cps = 0 }) {
+/**
+ * A room asked for `rate` ticks a second, with everything in it moving on every tick. `deflate`
+ * false opens the sockets without compression, and `binary` asks for binary patches.
+ */
+async function tickRate({ units, rate, sight, players, cps = 0, deflate = true, binary = false }) {
   const room = freshRoom();
   const opening = performance.now();
-  const sockets = await openMany("/rooms", room, players);
+  const sockets = await openMany("/rooms", room, players, { deflate, binary });
   const joined = (performance.now() - opening) / 1000;
   try {
     // Every join is told to everyone. Wait for that to be over: a second with nothing said.
@@ -155,7 +158,7 @@ async function tickRate({ units, rate, sight, players, cps = 0 }) {
             for (let n = 0; n < cps / 10; n++) command(sockets[(nextId + n) % sockets.length], { type: "move" });
           }, 100)
         : null;
-    const seen = await watch(sockets[0], MEASURE_MS, false);
+    const seen = await watch(sockets[0], MEASURE_MS, binary);
     if (timer) clearInterval(timer);
     // The room's own log, while its players are still there: what it says of its ticks and sockets.
     const log = await fetch(`${BASE.replace(/^ws/, "http")}/rooms/${room}/how?player=p0&log=1&key=${KEY}`)
@@ -173,6 +176,7 @@ async function tickRate({ units, rate, sight, players, cps = 0 }) {
       sight,
       players,
       cps,
+      binary,
       asked: rate,
       managed: +(seen.ticks / seen.seconds).toFixed(1),
       wireKBps: +(seen.wire / seen.seconds / 1024).toFixed(1),
