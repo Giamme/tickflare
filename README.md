@@ -67,8 +67,9 @@ The room saves every change before anyone hears about it, rolls back what `rejec
 - **[Matchmaking](docs/guide/matchmaking.md)** by skill and region, with parties and teams, which reserves a room near its players, and **[match results](docs/guide/match-results.md)** through a Queue into D1, with replays in R2.
 - **[Worlds across rooms](docs/guide/worlds.md)**: handover between rooms and seeing across borders.
 - **[A report of what each room cost](docs/guide/costs.md#checking-what-you-are-billed-for)**, from Cloudflare's own analytics, which marks rooms that stayed awake with nobody in them.
-- **[Clients for Godot and Unity](docs/guide/engines.md)**, and **[a written-down protocol](docs/reference/protocol.md)** for other engines, with binary patches for those whose WebSocket is not compressed.
+- **[Clients for Godot and Unity](docs/guide/engines.md)**, with the browser client's interpolation and prediction, and **[a written-down protocol](docs/reference/protocol.md)** for other engines, with binary patches for those whose WebSocket is not compressed.
 - **[A client](docs/guide/client.md)** for browsers and Node that reconnects on its own, and **[prediction](docs/guide/state-sync.md#showing-a-players-own-moves-at-once)**: a player's own move shows on the click and is corrected by the room.
+- **[Measured on Cloudflare](docs/guide/limits.md#the-same-rooms-on-cloudflare)**: what a room holds, such as five hundred players who each see their own part of the world at ten ticks a second, with every run written down, the ones that fell short included.
 
 ## Install
 
@@ -95,6 +96,8 @@ npm run typecheck
 npm run build       # dist/ for the tickflare and tickflare/client entry points
 npm run docs:dev    # the documentation site on http://localhost:5173
 ```
+
+[`bench/`](bench) holds a room in which everything moves on every tick and the scripts that load it; the *Measure on Cloudflare* workflow deploys it under a key made for the run, measures, can ask Cloudflare for a CPU profile of a room, and deletes it.
 
 The documentation lives in [`docs/`](docs): guides in Markdown, and an API reference generated from the doc comments in `src/`. Every export needs a doc comment, or the docs build fails. [`docs.yml`](.github/workflows/docs.yml) builds the site on every change and deploys it to Cloudflare from `main`.
 
