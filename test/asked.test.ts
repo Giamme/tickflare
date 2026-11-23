@@ -101,17 +101,19 @@ describe("a lockstep room whose players ask for the turns", () => {
     const p1 = await join(freshRoom(), "p1");
     await until(() => latest(p1) === 1);
     await sleep(2200); // 44 turns' worth
+    // The room's clock starts again from when it reads this ask, which is no earlier than now.
+    const asked = Date.now();
     p1.send(ask);
     await until(() => closed(p1).length === 2);
-    const at = Date.now();
     expect(closed(p1)[1]!.c).toBe(30);
 
     // The clock starts again from here: the time it stood still is not owed.
     p1.send(ask);
     await sleep(15);
-    // A turn is 50 ms. On a machine so busy that this much has gone by already, the next turn is
-    // due and says nothing about the one before.
-    if (Date.now() - at < 40) expect(closed(p1)).toHaveLength(2);
+    // A turn is 50 ms, and half a turn early is on time: an ask 25 ms after the one that restarted
+    // the clock finds the next turn due. On a machine so busy that this much has gone by since the
+    // first ask was sent, the second says nothing about the time the room stood still.
+    if (Date.now() - asked < 25) expect(closed(p1)).toHaveLength(2);
   });
 
   it("checkpoints the turn counter in the room's row, not every turn", async () => {
