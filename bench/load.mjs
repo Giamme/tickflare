@@ -33,9 +33,9 @@ async function profileRoom(kind, room, label, ms) {
   const started = Date.now();
   let response;
   let body;
-  // Cloudflare can answer that it has seen no executions yet, or could not start: try again, with
-  // what is left of the time.
-  for (let attempt = 0; ; attempt++) {
+  // Cloudflare can answer that it has seen no executions yet, or could not start, for a while after
+  // a Worker is deployed: keep trying every two seconds, with what is left of the time.
+  for (;;) {
     const left = ms - (Date.now() - started);
     response = await fetch(
       `https://api.cloudflare.com/client/v4/accounts/${account}/workers/workers/${worker}/versions/latest-deployed/profile`,
@@ -46,8 +46,8 @@ async function profileRoom(kind, room, label, ms) {
       },
     );
     body = Buffer.from(await response.arrayBuffer());
-    if (response.ok || attempt === 3 || ![404, 429, 503].includes(response.status) || left < 3000) break;
-    await sleep(1000);
+    if (response.ok || ![404, 429, 503].includes(response.status) || left < 5000) break;
+    await sleep(2000);
   }
   if (!response.ok) return { error: `${response.status}: ${body.toString("utf8").slice(0, 300)}` };
   mkdirSync("profiles", { recursive: true });
