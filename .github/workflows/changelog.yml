@@ -3,7 +3,7 @@ name: Changelog
 # Fails a pull request in which a user-visible commit has no changelog fragment in
 # .changelog/unreleased/, or a fragment is a draft. Commits of internal types (chore:, ci:, docs:,
 # refactor:, test:…), merges, and commits marked [skip changelog] pass. CONTRIBUTING.md says how
-# to write a fragment. Every push to main with a fragment is released (release.yml), so the
+# to write a fragment. Every push to main with a fragment goes into the next release (release.yml), so the
 # fragments have to come with the pull requests.
 on:
   pull_request:

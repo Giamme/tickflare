@@ -1,16 +1,26 @@
 name: Release
 
-# Releases on every push to main that brings a user-visible change. Changelogger
-# (.changelog/changelogger.py) picks the version from the fragments in .changelog/unreleased/
-# (before 1.0: a breaking change or a new feature makes 0.x+1, anything else a patch), bumps
-# package.json and the Unity package together, and compiles CHANGELOG.md. The package is then
-# tested, the release commit "chore(release): v<version>" and its tag are pushed, the package is
-# published to npm with provenance, and the version gets a GitHub release with its notes. A push
-# with nothing user-visible releases nothing.
+# Releases through a pull request, because main only takes changes that way.
+#
+# 1. A push to main that brings a user-visible change cuts a release: changelogger
+#    (.changelog/changelogger.py) picks the version from the fragments in .changelog/unreleased/
+#    (before 1.0: a breaking change or a new feature makes 0.x+1, anything else a patch), bumps
+#    package.json and the Unity package together, and compiles CHANGELOG.md. The package is
+#    tested, and the release commit "chore(release): v<version>" goes to the branch `release`,
+#    with a pull request into main. Every later push to main cuts it again from there, so the
+#    pull request always holds everything unreleased. A push with nothing user-visible cuts
+#    nothing.
+# 2. Merging that pull request publishes: a push to main whose package.json has a version that is
+#    not on npm yet is tested, tagged, published to npm with provenance, and given a GitHub
+#    release with its notes; the docs are deployed again for the changelog page.
 #
 # A tag pushed by hand (a pre-release or a hotfix made locally with changelogger) is published the
-# same way. The tags this workflow pushes do not start it again: GitHub runs no workflows for what
-# its own token pushes. For the same reason it starts the docs deploy itself.
+# same way. What this workflow pushes with its own token starts no workflow, CI included, which
+# is why it runs the tests itself and starts the docs deploy itself.
+#
+# For step 1 to open the pull request, Settings > Actions > General > Workflow permissions must
+# allow GitHub Actions to create pull requests. Without it the branch is still pushed, and the
+# run's summary links to where the pull request can be opened by hand.
 #
 # npm accepts the publish through trusted publishing, set up on npmjs.com for this repository and
 # this file, or the repository secret NPM_TOKEN.
@@ -20,9 +30,10 @@ on:
     tags: ["v*"]
 
 permissions:
-  contents: write # the release commit, its tag and the GitHub release
+  contents: write # the release branch, the tag and the GitHub release
+  pull-requests: write # the release pull request
   id-token: write # provenance, and trusted publishing
-  actions: write # starting the docs deploy for the release commit
+  actions: write # starting the docs deploy for the release
 
 concurrency:
   group: release
@@ -30,21 +41,45 @@ concurrency:
 
 jobs:
   release:
-    # The release commit lands on main too: never release it again.
-    if: github.ref_type == 'tag' || !startsWith(github.event.head_commit.message, 'chore(release):')
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
-          # The branch head, not the pushed commit: a queued run starts after the last release.
+          # The branch head, not the pushed commit: a queued run starts from the latest main.
           ref: ${{ github.ref }}
       - uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: npm
           registry-url: https://registry.npmjs.org
+
+      - name: Publish the version in package.json if it is not out yet
+        id: publish
+        run: |
+          version=$(node -p "require('./package.json').version")
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            if [ "${GITHUB_REF_NAME#v}" != "$version" ]; then
+              echo "::error::The tag is $GITHUB_REF_NAME but package.json says $version."
+              exit 1
+            fi
+          elif [ -n "$(npm view "tickflare@$version" version 2>/dev/null)" ]; then
+            echo "tickflare@$version is out already."
+            exit 0
+          fi
+          if ! grep -q "^## $version\$" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no section for $version."
+            exit 1
+          fi
+          if [ "$GITHUB_REF_TYPE" = "branch" ] && ! git rev-parse -q --verify "refs/tags/v$version" > /dev/null; then
+            # The release pull request was merged. Tagged here, pushed once the tests pass.
+            git config user.name "github-actions[bot]"
+            git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
+            git tag -a "v$version" -m "Tickflare $version"
+            echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Cut a release if anything is unreleased
         id: cut
@@ -63,48 +98,31 @@ jobs:
           npm install --package-lock-only --ignore-scripts
           git add -A .changelog CHANGELOG.md package.json package-lock.json clients/unity/package.json
           git commit -m "chore(release): v$after"
-          git tag -a "v$after" -m "Tickflare $after"
+          python3 .changelog/changelogger.py notes "$after" > "$RUNNER_TEMP/cut-notes.md"
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           echo "version=$after" >> "$GITHUB_OUTPUT"
+          # Back to what was pushed to main: that is what is tested, and published if it is due. The
+          # release commit changes nothing but versions and the changelog.
+          git checkout --quiet --detach HEAD~1
 
-      - name: The version to publish
-        id: version
-        env:
-          CUT: ${{ steps.cut.outputs.version }}
-        run: |
-          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
-            version=${GITHUB_REF_NAME#v}
-            if [ "$version" != "$(node -p "require('./package.json').version")" ]; then
-              echo "::error::The tag is $GITHUB_REF_NAME but package.json says otherwise."
-              exit 1
-            fi
-            if ! grep -q "^## $version\$" CHANGELOG.md; then
-              echo "::error::CHANGELOG.md has no section for $version."
-              exit 1
-            fi
-          else
-            version=$CUT
-          fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-
-      - if: steps.version.outputs.version != ''
+      - if: steps.publish.outputs.version != '' || steps.cut.outputs.version != ''
         run: npm ci
-      - if: steps.version.outputs.version != ''
+      - if: steps.publish.outputs.version != '' || steps.cut.outputs.version != ''
         run: npm run typecheck
-      - if: steps.version.outputs.version != ''
+      - if: steps.publish.outputs.version != '' || steps.cut.outputs.version != ''
         run: npm test
 
-      - name: Push the release commit and its tag
-        if: steps.version.outputs.version != '' && github.ref_type == 'branch'
+      - name: Push the tag
+        if: steps.publish.outputs.tag != ''
         env:
-          VERSION: ${{ steps.version.outputs.version }}
-        # If main moved on meanwhile, this fails and publishes nothing; the next run releases it all.
-        run: git push --atomic origin HEAD:main "v$VERSION"
+          TAG: ${{ steps.publish.outputs.tag }}
+        run: git push origin "$TAG"
 
       - name: Publish to npm
-        if: steps.version.outputs.version != ''
+        if: steps.publish.outputs.version != ''
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-          VERSION: ${{ steps.version.outputs.version }}
+          VERSION: ${{ steps.publish.outputs.version }}
         run: |
           if npm view "tickflare@$VERSION" version > /dev/null 2>&1; then
             echo "tickflare@$VERSION is on npm already."
@@ -115,20 +133,47 @@ jobs:
           npm publish
 
       - name: Release on GitHub
-        if: steps.version.outputs.version != ''
+        if: steps.publish.outputs.version != ''
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.version.outputs.version }}
+          VERSION: ${{ steps.publish.outputs.version }}
         run: |
           python3 .changelog/changelogger.py notes "$VERSION" > notes.md
           if gh release view "v$VERSION" > /dev/null 2>&1; then
             gh release edit "v$VERSION" --notes-file notes.md
           else
-            gh release create "v$VERSION" --title "v$VERSION" --notes-file notes.md
+            gh release create "v$VERSION" --title "v$VERSION" --notes-file notes.md --verify-tag
           fi
 
       - name: Deploy the docs, whose changelog page has the new version
-        if: steps.version.outputs.version != '' && github.ref_type == 'branch'
+        if: steps.publish.outputs.version != '' && github.ref_type == 'branch'
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh workflow run docs.yml --ref main
+
+      - name: Open or update the release pull request
+        if: steps.cut.outputs.version != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.cut.outputs.version }}
+          COMMIT: ${{ steps.cut.outputs.commit }}
+        run: |
+          git push --force origin "$COMMIT:refs/heads/release"
+          {
+            echo "Merging this publishes **tickflare $VERSION** to npm, tags it and makes its GitHub release."
+            echo
+            echo "It is cut again from main on every push there, so it holds everything unreleased; edits made to this branch by hand are replaced. CI does not run on it: the release workflow ran the tests on this commit before pushing it."
+            echo
+            echo "## What is in it"
+            echo
+            cat "$RUNNER_TEMP/cut-notes.md"
+          } > "$RUNNER_TEMP/body.md"
+          title="chore(release): v$VERSION"
+          pr=$(gh pr list --head release --base main --state open --json number --jq '.[0].number // empty')
+          if [ -n "$pr" ]; then
+            gh pr edit "$pr" --title "$title" --body-file "$RUNNER_TEMP/body.md"
+          elif ! gh pr create --base main --head release --title "$title" --body-file "$RUNNER_TEMP/body.md"; then
+            url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/compare/main...release?expand=1"
+            echo "::warning::Could not open the release pull request. Allow GitHub Actions to create pull requests (Settings > Actions > General), or open it by hand: $url"
+            echo "The release commit for v$VERSION is on the branch \`release\`. [Open the pull request]($url)." >> "$GITHUB_STEP_SUMMARY"
+          fi
