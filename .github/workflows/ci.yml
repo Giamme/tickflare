@@ -1,5 +1,11 @@
 name: CI
 
+# Every pull request and every push to main. A pull request that only changes documentation
+# (DOCS_ONLY below) runs no tests: the Docs workflow builds the site, and the Changelog workflow
+# checks the fragments. The "CI passed" job at the end is the one check main requires: it fails
+# when any job did, and passes for a documentation-only change. The release pull request gets
+# that check from the Release workflow, which tested the commit before pushing it.
+
 on:
   push:
     branches: [main]
@@ -8,12 +14,49 @@ on:
 permissions:
   contents: read
 
+# A newer commit on a pull request makes its running check obsolete. On main every run is the
+# record for its commit, so none is cancelled there.
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
+  plan:
+    name: Pick the jobs
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.pick.outputs.run }}
+    steps:
+      # A pull request is checked out as its merge into the base branch: with the merge's parents
+      # fetched, HEAD^1..HEAD is exactly what the pull request changes.
+      - uses: actions/checkout@v6
+        if: github.event_name == 'pull_request'
+        with:
+          fetch-depth: 2
+      - id: pick
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          python3 - >> "$GITHUB_OUTPUT" <<'PY'
+          import fnmatch, os, subprocess, sys
+          # Files no test, build or client reads. fnmatch's * also matches /, so docs/* is the
+          # whole folder and *.md is every Markdown file in the repository.
+          DOCS_ONLY = ['docs/*', '*.md', '.changelog/unreleased/*', 'LICENSE',
+                       '.github/ISSUE_TEMPLATE/*', '.github/pull_request_template.md']
+          run = True
+          if os.environ['EVENT'] == 'pull_request':
+              changed = subprocess.run(['git', 'diff', '--name-only', '-z', 'HEAD^1', 'HEAD'], check=True,
+                                       capture_output=True, text=True).stdout.split('\0')
+              changed = [path for path in changed if path]
+              print('changed files:', *changed, sep='\n  ', file=sys.stderr)
+              run = not all(any(fnmatch.fnmatchcase(path, glob) for glob in DOCS_ONLY) for path in changed)
+          print('run=' + ('true' if run else 'false'))
+          PY
+
   test:
+    needs: plan
+    if: needs.plan.outputs.run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -30,6 +73,8 @@ jobs:
 
   # The Godot client, run in Godot against a local Worker.
   godot-client:
+    needs: plan
+    if: needs.plan.outputs.run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
@@ -79,6 +124,8 @@ jobs:
 
   # The Unity client, compiled as Unity compiles it and run on .NET against a local Worker.
   unity-client:
+    needs: plan
+    if: needs.plan.outputs.run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
@@ -118,3 +165,23 @@ jobs:
         run: dotnet build clients/unity/Tests~/Library -c Release -p:DefineConstants=UNITY_WEBGL
       - if: failure()
         run: cat server.log
+
+  passed:
+    name: CI passed
+    if: always()
+    needs: [plan, test, godot-client, unity-client]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every job passed
+        env:
+          PLAN: ${{ needs.plan.result }}
+          RUN: ${{ needs.plan.outputs.run }}
+          TEST: ${{ needs.test.result }}
+          GODOT: ${{ needs.godot-client.result }}
+          UNITY: ${{ needs.unity-client.result }}
+        run: |
+          echo "plan: $PLAN, tests needed: $RUN, test: $TEST, godot-client: $GODOT, unity-client: $UNITY"
+          [ "$PLAN" = success ] || exit 1
+          if [ "$RUN" = false ]; then echo "Documentation only: no tests to run."; exit 0; fi
+          [ "$TEST" = success ] && [ "$GODOT" = success ] && [ "$UNITY" = success ]

@@ -40,6 +40,8 @@ The Godot and Unity clients have tests of their own in `clients/`, which CI runs
   Write it for someone using Tickflare: what changed for them, and what to do if it breaks something. The changelog is also a page of the docs, so link to the site (`https://tickflare.gridpaper.dev/...`) rather than to files in the repository. A commit nobody using Tickflare would notice (tests, CI, a refactor) needs no fragment if its message starts with `test:`, `ci:`, `refactor:`, `docs:` or `chore:`, or says `[skip changelog]`. CI checks every pull request for this.
 - **The protocol stays readable by old clients.** A change to what goes over the wire raises `PROTOCOL_VERSION` and keeps answering clients that ask for an older one, and comes with test vectors in `test/vectors/` if it touches binary patches or prediction.
 
+CI runs the typecheck, the tests, the build and both clients on every pull request, and the check **CI passed** has to be green before it can be merged. A pull request that only changes documentation (`docs/`, Markdown files, changelog fragments) skips the tests; the docs build and the changelog check still run.
+
 Write the docs plainly: short sentences, what a thing does and when to use it, numbers where there are numbers. Measured claims say how they were measured.
 
 ## Releases
