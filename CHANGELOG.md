@@ -2,6 +2,13 @@
 
 How versions work before 1.0: a new minor version (0.2, 0.3) can change the API in ways that need changes in your code, and each such change is listed here with what to change. A patch version (0.1.1) fixes things and changes nothing you call. The [protocol](https://tickflare.gridpaper.dev/reference/protocol) has a version of its own: the room says which one it speaks, and keeps answering clients of older ones.
 
+## 0.2.0
+
+- `BufferedInterpolator` draws what moves at the room's own pace: it keeps the last few states of each thing by tick and draws a moment a little behind the room's clock, with a delay that adapts to the jitter it measures. When updates stop it carries things on at their last speed for a few ticks, it draws a jump as one (`snap(id)` or `snapDistance`), and it turns angles the short way round. It has the same `update` and `at` as `Interpolator`, which stays for a player's own predicted moves. See [Drawing at the room's pace](https://tickflare.gridpaper.dev/guide/state-sync#drawing-at-the-room-s-pace).
+- A ticking room keeps to a fixed clock. When it wakes late, because a tick or an event took long or the machine was busy, it runs every tick that has come due since, each with the same `dt`, and sends one patch for them all, so a room that falls behind now and then gets back on time instead of slowing the game down. After a stall of more than `maxCatchUpTicks` ticks (5 by default) it runs that many and lets the rest go. `onTick` can therefore run several times back to back; set `maxCatchUpTicks = 1` to keep the old behaviour. See [Keeping time](https://tickflare.gridpaper.dev/guide/state-sync#keeping-time).
+
+- Rooms tell clients their clock: protocol version 4 adds the clock to `welcome` and a `clock` frame, and `RoomClient.serverTick()` estimates the tick the room is on right now, using `RoomClient.rtt`, the smoothed round trip. Clients of version 3 and earlier, including the Godot and Unity clients, are sent nothing new. See [The room's clock](https://tickflare.gridpaper.dev/reference/protocol#the-room-s-clock).
+
 ## 0.1.0
 
 The first public release, on npm as `tickflare`, with its documentation at <https://tickflare.gridpaper.dev> and the four examples deployed to play from the [examples page](https://tickflare.gridpaper.dev/guide/examples).
