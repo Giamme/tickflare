@@ -34,7 +34,7 @@ Shows: commands and `reject()`, seats and `seatTimeoutMs`, a turn clock with `se
 
 A real-time room at 20 ticks a second: click to move a dot and eat pellets. Your own dot sets off on the click, ahead of the room's answer. It is also a row of rooms: walk into the left or right wall and the dot is handed to the arena next door, and dots near a wall are visible from the other side.
 
-Shows: `tickRate` and `onTick`, patches, `Interpolator`, `Predictor`, `movePlayer` and `onArrive`, `signal` and `onSignal`.
+Shows: `tickRate` and `onTick`, patches, `Interpolator`, `BufferedInterpolator`, `Predictor`, `movePlayer` and `onArrive`, `signal` and `onSignal`.
 
 ## Skirmish: lockstep
 

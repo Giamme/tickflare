@@ -89,6 +89,21 @@ Some matches have to reach their end whoever is watching: a ranked match should 
 
 It is checked like `shouldTick()`, so it can depend on the state: `return this.state.ranked` plays ranked matches to the end and lets the others stand still.
 
+### Keeping time
+
+Ticks keep to a fixed clock. When the simulation starts, tick `n` falls due `n / tickRate` seconds later, whenever the one before it actually ran. A room that wakes late, because a tick or an event took long or the machine was busy, runs every tick that has come due since, each with the same `dt`, and sends one patch for all of them. So the game runs at the speed you set however the room is loaded, and a client can tell which tick the room is on.
+
+- **The catch-up has a cap.** A room runs at most `maxCatchUpTicks` ticks back to back, 5 by default. After a longer stall it runs that many and lets the rest go: the clock moves on, and the game is that much behind the wall clock for good, instead of racing through a burst of ticks. Set it to 1 to never catch up.
+- **Time spent stopped is not owed back.** When the simulation stops and starts again, its clock starts over from the tick it stopped at.
+- **Saves are counted in ticks**, as before, so catching up does not change when they happen.
+- **Lockstep is the exception to one patch:** a lockstep room that catches up still sends each turn in a frame of its own, since its players have to see every turn.
+
+The room tells clients its clock, in `welcome` and in a [`clock` frame](/reference/protocol#the-room-s-clock) every five seconds and whenever it starts, stops or moves on. `room.serverTick()` turns that and the round trip into the tick the room is on at this moment, fraction included, which is what [interpolation](#smoothing-on-the-client) and [prediction](#showing-a-player-s-own-moves-at-once) need to line the screen up with the room:
+
+```ts
+const behind = room.serverTick()! - room.tick; // how many ticks the room is ahead of the latest patch
+```
+
 ## Keeping ticks cheap
 
 - **Key collections that come and go by id.** Patches go into objects key by key, and into arrays element by element. But an array whose elements shift, because one was taken out before the end, is sent whole.
@@ -96,7 +111,7 @@ It is checked like `shouldTick()`, so it can depend on the state: `return this.s
 - **Share the public part of views.** With many players, return the same object for the part of the view everyone sees. It is then diffed and serialised once per tick instead of once per player. See [State and views](./state-and-views#views-that-share-a-public-part).
 - **Pick the lowest rate that feels right.** 10 to 20 ticks a second with client-side interpolation looks smooth for most games. Each tick costs CPU on the server and bandwidth for everyone.
 
-A room has a single thread. If a tick takes longer than `1 / tickRate` seconds, the simulation slows down rather than skipping ahead.
+A room has a single thread. A room that is late now and then [catches up](#keeping-time); one whose ticks take longer than `1 / tickRate` seconds every time cannot, and runs slow.
 
 ## Smoothing on the client
 
@@ -121,6 +136,29 @@ requestAnimationFrame(frame);
 ```
 
 Because it always starts from what is on screen, a late or bunched update bends the motion instead of making it jump. Use `room.tickRate` once connected to set the duration: `new Interpolator(1000 / room.tickRate, ["x", "y"])`.
+
+### Drawing at the room's pace
+
+`Interpolator` adds almost no delay, but its pace is the network's: two patches that arrive together make a thing rush, and a late one makes it stop and lurch. `BufferedInterpolator` keeps the last few states of each thing by the tick they are of, and draws a moment a little behind the tick the room is on, from the [room's clock](#keeping-time), blending the two states on either side. Things then move at the room's own pace whatever the network does, and a patch that covers several ticks, after the room [caught up](#keeping-time), is spread over them. The same `update` and `at`, and the `RoomClient` to read the ticks from:
+
+```ts
+import { BufferedInterpolator, RoomClient } from "tickflare/client";
+
+const room = new RoomClient<State>(url, { token });
+const glide = new BufferedInterpolator(room, ["x", "y"], { snapDistance: 200 });
+
+room.on("state", (state) => glide.update(state.dots));
+// In the render loop, as before:
+const { x, y } = glide.at(id) ?? room.state!.dots[id]!;
+```
+
+- **The delay** is two ticks behind the newest state it should have by now (`delayTicks`), plus a margin of twice the jitter it measures, which it keeps adjusting. `glide.delay` says what it is at, in ticks behind the room's clock, the network's own delay included. What it draws never goes back in time: when the delay grows, it waits for the clock.
+- **When updates stop**, each thing carries on at its last speed for up to `maxExtrapolationTicks` (3), then stays where it got to.
+- **Jumps.** A respawn or a handover should not slide across the map. Call `glide.snap(id)` after the `update` that brought the jump, or set `snapDistance` and any change farther than that between two states in a row is one. Either way it is drawn when its tick comes.
+- **Angles.** Name the fields that are angles in radians, `{ angles: ["heading"] }`, and they turn the short way round through ±π.
+- **When the simulation stops**, it shows the latest state. Against a room older than 0.2, which does not say where its clock is, it times the patches as they arrive instead.
+
+Which to use: `BufferedInterpolator` for other players and everything else that moves on its own, where an even pace matters more than a tenth of a second. `Interpolator` for a player's [own predicted moves](#showing-a-player-s-own-moves-at-once), which must answer at once, and where the delay would be felt. The arena example uses both.
 
 ## Showing a player's own moves at once
 
@@ -156,7 +194,7 @@ const mine = predicted.state?.dots[room.you!];
 - **Predict what the player controls, and nothing else.** `tick` is called with the whole state, but where other players' dots will be is not this player's to know: leave them to the room and to `Interpolator`.
 - **With `tick`, read `predicted.state` when you draw.** It moves on with time, between the room's frames too. `onState` tells you about the room's frames and about commands.
 
-The arena example does this: the player's own dot is drawn from the prediction through an `Interpolator` of its own, the others from the room's state.
+The arena example does this: the player's own dot is drawn from the prediction through an `Interpolator` of its own, the others from the room's state through a `BufferedInterpolator`.
 
 It works in event mode as well, without `tick`: a piece placed on a board appears on the click and is taken back if the room says no.
 
@@ -173,4 +211,3 @@ const predicted = new Predictor(room, {
 ## What is not there yet
 
 - Prediction is for a player's own commands. There is nothing for guessing where other players will be, and no rollback of a whole simulation.
-- When a tick runs late, the simulation slows down instead of catching up.

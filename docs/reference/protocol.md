@@ -2,7 +2,7 @@
 
 Rooms and clients talk over one WebSocket per player, in JSON text frames. `tickflare/client` speaks this protocol for you; this page is for writing a client in another language, and for reading frames in your browser's developer tools.
 
-The protocol is at version 3. A client says which version it speaks with `v` in the query when it connects, `?v=3`, and the room's `welcome` frame says which one it will use on that connection: the one asked for, or its own latest if that is older. A client that does not say is spoken to in version 1, so a client written for version 1 goes on working. Version 2 added [array patches](#patches). Version 3 added [presence as changes](#presence).
+The protocol is at version 4. A client says which version it speaks with `v` in the query when it connects, `?v=4`, and the room's `welcome` frame says which one it will use on that connection: the one asked for, or its own latest if that is older. A client that does not say is spoken to in version 1, so a client written for version 1 goes on working. Version 2 added [array patches](#patches). Version 3 added [presence as changes](#presence). Version 4 added [the room's clock](#the-room-s-clock).
 
 Offer `permessage-deflate` when you connect, as browsers do. Cloudflare then compresses the frames, which makes patches of rounded numbers four to five times smaller on the wire; a client that does not offer it is sent them as they are. If your WebSocket library cannot do that, ask for [binary patches](#binary-patches) instead, which are a little over a third of the size of the JSON ones.
 
@@ -28,10 +28,11 @@ The room does the same from its side while it is ticking: a connection that has 
 
 | Frame | Meaning |
 | --- | --- |
-| `{ "t": "welcome", "v", "you", "seq", "tick", "tickRate", "state", "players" }` | First frame on every connection |
+| `{ "t": "welcome", "v", "you", "seq", "tick", "tickRate", "ms"?, "epoch"?, "state", "players" }` | First frame on every connection |
 | `{ "t": "patch", "seq", "tick", "from"?, "c"?, "p" }` | The state changed: only the difference from what this player last received |
 | `{ "t": "state", "seq", "tick", "c"?, "state" }` | The state changed, and this is the player's whole view: the room does not know what they hold, or the view is not an object |
 | `{ "t": "presence", "players" }` or `{ "t": "presence", "set"?, "gone"? }` | Someone joined, dropped, came back or left: see [Presence](#presence) |
+| `{ "t": "clock", "tick", "ms"?, "epoch"? }` | Version 4: where the room's clock is, or that it stopped: see [The room's clock](#the-room-s-clock) |
 | `{ "t": "ack", "id", "seq", "tick"? }` | The command or leave with this `id` was applied, and the view the player holds shows it |
 | `{ "t": "reject", "id", "reason" }` | The command or leave with this `id` was refused; nothing changed |
 | `{ "t": "msg", "d" }` | A message the room sent with `send` or `broadcast` |
@@ -42,7 +43,7 @@ Fields:
 - `you` is this player's id. `players` is everyone with a seat, in join order: `[{ "id": "…", "connected": true }]`.
 - `seq` counts changes to the state. A `state` or `patch` carries the `seq` of the change it brings the player up to. That need not be the next one: a ticking room sends one patch for all the changes since the last tick, and a change that leaves a player's view as it was is not sent to them at all.
 - `from`, on a patch sent outside a simulation, is the `seq` of the view the patch is a patch of. A client whose view is of another `seq` has missed something. It must not apply the patch; the way back is to reconnect, which begins with a `welcome` and the whole view. A ticking room leaves `from` out.
-- `tick` and `tickRate` are the ticks run so far and the ticks a second; both 0 in event mode.
+- `tick` and `tickRate` are the ticks run so far and the ticks a second; both 0 in event mode. `ms` and `epoch`, in version 4, are in a `welcome` sent while the simulation runs: see [The room's clock](#the-room-s-clock).
 - An `ack` means that the view the player holds shows the command. In event mode it comes straight after the `patch` or `state` frame the command caused. In a room that is ticking, a command's effect is sent with the next tick, and so is its `ack`, after that tick's `patch`; the `ack` then carries the `tick` the view is of, since a tick that leaves a player's view as it was sends them no patch. A `leave` is always answered at once, after any acks still owed.
 - `c`, on a `patch` or `state`, is the `id` of the latest of this player's own commands that the frame is the first to show. That command and every earlier one have been applied; their `ack` frames follow. A client that draws its own commands ahead of the room drops them at this frame, in the same step as it takes the new state, so that none is shown twice or not at all.
 - A `welcome` can arrive on a connection that is already open. The room was taken out of memory in the middle of a simulation and has resumed from its last save: take the whole view from it, and give up the commands you were waiting to hear about.
@@ -50,6 +51,16 @@ Fields:
 - `error` reasons are `invalid_json`, `invalid_message`, `message_too_large`, `binary_not_supported` or `rate_limited`.
 
 The TypeScript types for every frame are exported from `tickflare` as `ClientMessage`, `ServerMessage` and the individual frame types (`WelcomeFrame`, `PatchFrame`, …).
+
+## The room's clock
+
+A ticking room keeps its ticks to a fixed clock: tick `n` falls due `n / tickRate` seconds after the simulation started, and a room that wakes late runs every tick that has come due, up to a cap, and sends one `patch` for them all. A client of version 4 is told where that clock is, so that it can work out which tick the room is on at any moment, between frames:
+
+- `tick` is the latest tick the room has run, and `ms` is how many milliseconds before the frame was sent it fell due: usually less than one tick. At a moment `elapsed` milliseconds after the frame was sent, the room is at tick `tick + (ms + elapsed) * tickRate / 1000`. The frame takes about half a round trip to arrive; the runtime answers `ping` with `pong` without waking the room, which makes it a fair way to time the round trip.
+- `epoch` changes each time the clock starts over: when the simulation starts again after it stopped, and when the room lets ticks go after a stall it could not catch up on. Readings of one epoch describe one clock and can be averaged; one of a new epoch replaces what came before.
+- A `clock` frame without `ms` says the simulation has stopped, at `tick`. It stays there until a frame says otherwise.
+
+The `welcome` of a connection made while the simulation runs has `ms` and `epoch`. After that a `clock` frame comes when the simulation starts, stops, or moves on after a stall, and every five seconds while it runs. A client of version 3 or earlier is sent none of this. `RoomClient.serverTick()` is the reference implementation.
 
 ## Presence
 
@@ -84,7 +95,7 @@ This patch moves unit `u7`, removes unit `u3`, sets `phase`, and makes `path` th
 
 ## Binary patches
 
-A client can ask for its patches in binary: add `patches=b1` to the query when it connects, `wss://my-game.example/rooms/lobby?token=<token>&v=3&patches=b1`. Every `patch` frame then arrives as a binary WebSocket message in the format below. Everything else stays as it is: `welcome`, `state`, `presence`, `ack`, `reject`, `msg` and `error` are JSON text messages, and so is everything the client sends. A patch that cannot be said in binary is sent as JSON, so read whichever arrives: a text message is JSON, a binary message is a patch.
+A client can ask for its patches in binary: add `patches=b1` to the query when it connects, `wss://my-game.example/rooms/lobby?token=<token>&v=4&patches=b1`. Every `patch` frame then arrives as a binary WebSocket message in the format below. Everything else stays as it is: `welcome`, `state`, `presence`, `ack`, `reject`, `msg` and `error` are JSON text messages, and so is everything the client sends. A patch that cannot be said in binary is sent as JSON, so read whichever arrives: a text message is JSON, a binary message is a patch.
 
 It is for clients whose WebSocket is not compressed, such as the ones for [Godot and Unity](../guide/engines), whose decoders are two more to read: [GDScript](https://github.com/Giamme/tickflare/blob/main/clients/godot/addons/tickflare/tickflare_binary.gd) and [C#](https://github.com/Giamme/tickflare/blob/main/clients/unity/Runtime/TickflareBinaryReader.cs). Compressed, the JSON is already smaller than these frames are uncompressed; [the measurements](../guide/limits#bandwidth) are in the guide. `RoomClient` asks for binary with its `binary` option, and `decodePatchFrame`, exported from `tickflare` and `tickflare/client`, is the reference decoder.
 

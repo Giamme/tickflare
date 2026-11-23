@@ -8,7 +8,7 @@
 | `LockstepClient` | [Lockstep](./lockstep) rooms |
 | `findMatch` | Waiting in a [matchmaking](./matchmaking) queue |
 | `AccountClient` | [Accounts](./accounts): guests, sign-up, data, leaderboards |
-| `Interpolator` | Smoothing positions between ticks |
+| `Interpolator`, `BufferedInterpolator` | Smoothing positions between ticks: see [which to use](./state-sync#smoothing-on-the-client) |
 
 The client keeps no secrets from the server and enforces no rules. It shows what the room sends and asks the room to do things.
 
@@ -40,6 +40,8 @@ What it holds, all read-only:
 | `you` | This player's id, once connected |
 | `status` | `connecting`, `open` or `closed` |
 | `tick`, `tickRate` | Ticks run so far, and ticks a second (0 in event mode) |
+| `serverTick()` | The tick the room is on right now, by estimate, fraction included: see [keeping time](./state-sync#keeping-time). Undefined in event mode |
+| `rtt` | The round trip to the room in milliseconds, smoothed. Measured every few seconds while the room ticks, otherwise with the keepalive |
 | `unconfirmed` | The commands sent that `state` does not show yet, oldest first |
 
 ### Sending commands
