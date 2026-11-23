@@ -56,8 +56,8 @@ async function profileRoom(kind, room, label, ms) {
   return { file, bytes: body.length };
 }
 
-function open(prefix, room, n, { deflate = true, binary = false, hint } = {}) {
-  const url = `${BASE}${prefix}/${room}?player=p${n}&v=3${binary ? "&patches=b1" : ""}${hint ? `&hint=${hint}` : ""}&key=${KEY}`;
+function open(prefix, room, n, { deflate = true, binary = false, hint, compression } = {}) {
+  const url = `${BASE}${prefix}/${room}?player=p${n}&v=3${binary ? "&patches=b1" : ""}${hint ? `&hint=${hint}` : ""}${compression ? `&compression=${compression}` : ""}&key=${KEY}`;
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(url, { perMessageDeflate: deflate, handshakeTimeout: 20_000 });
     ws.once("open", () => {
@@ -164,13 +164,13 @@ async function watch(ws, ms, binary) {
 
 /**
  * A room asked for `rate` ticks a second, with everything in it moving on every tick, or the share
- * `moving` of its units. `versioned` gives its views versions. `deflate` false opens the sockets
+ * `moving` of its units. `versioned` gives its views versions, and `compression` "fast" sets the room's compression so. `deflate` false opens the sockets
  * without compression, and `binary` asks for binary patches.
  */
-async function tickRate({ units, rate, sight, players, cps = 0, moving, versioned = false, deflate = true, binary = false, profile: kind = PROFILE, hint }) {
+async function tickRate({ units, rate, sight, players, cps = 0, moving, versioned = false, compression, deflate = true, binary = false, profile: kind = PROFILE, hint }) {
   const room = freshRoom();
   const opening = performance.now();
-  const sockets = await openMany("/rooms", room, players, { deflate, binary, hint });
+  const sockets = await openMany("/rooms", room, players, { deflate, binary, hint, compression });
   const joined = (performance.now() - opening) / 1000;
   try {
     // Every join is told to everyone. Wait for that to be over: a second with nothing said.
@@ -197,7 +197,7 @@ async function tickRate({ units, rate, sight, players, cps = 0, moving, versione
             for (let n = 0; n < cps / 10; n++) command(sockets[(nextId + n) % sockets.length], { type: "move" });
           }, 100)
         : null;
-    const label = `${room}-${players}p-${units}u-sight${sight}${moving === undefined ? "" : `-moving${moving}`}${versioned ? "-versioned" : ""}${binary ? "-binary" : deflate ? "" : "-plain"}${hint ? `-${hint}` : ""}`;
+    const label = `${room}-${players}p-${units}u-sight${sight}${moving === undefined ? "" : `-moving${moving}`}${versioned ? "-versioned" : ""}${compression ? `-${compression}` : ""}${binary ? "-binary" : deflate ? "" : "-plain"}${hint ? `-${hint}` : ""}`;
     const profiling = kind
       ? profileRoom(kind, room, label, Math.max(1000, MEASURE_MS - 1000)).catch((error) => ({ error: String(error?.message ?? error) }))
       : undefined;
@@ -222,6 +222,7 @@ async function tickRate({ units, rate, sight, players, cps = 0, moving, versione
       cps,
       moving: moving ?? 1,
       versioned,
+      compression: compression ?? "small",
       binary,
       hint,
       profile,

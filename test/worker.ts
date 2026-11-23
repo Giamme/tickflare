@@ -723,6 +723,8 @@ export type ZoneCommand =
 /** A ticking room whose views have versions: each player sees their own zone. */
 export class ZoneRoom extends Room<ZoneState, ZoneCommand> {
   protected override tickRate = 50;
+  /** And compressed for speed: see compression.test.ts. */
+  protected override compression = "fast" as const;
   /** How many times each player's view was built. */
   #built = new Map<string, number>();
 

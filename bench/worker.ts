@@ -93,6 +93,12 @@ export class Bench extends Room<State, Command, Env> {
     return `sockets open ${states[1]}, closing ${states[2]}, closed ${states[3]}; players connected ${this.players.filter((p) => p.connected).length} of ${this.players.length}`;
   }
 
+  /** `?compression=fast` on a player's connection sets the room's compression for it: see `Room.compression`. */
+  override async fetch(request: Request): Promise<Response> {
+    this.compression = new URL(request.url).searchParams.get("compression") === "fast" ? "fast" : "small";
+    return super.fetch(request);
+  }
+
   override async webSocketClose(ws: WebSocket, code: number, reason: string): Promise<void> {
     this.#log(`close ${code}${reason ? ` ${reason}` : ""} from ${this.ctx.getTags(ws)[0] ?? "?"}`);
     await super.webSocketClose(ws, code, reason);
