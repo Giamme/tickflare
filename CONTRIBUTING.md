@@ -44,7 +44,7 @@ Write the docs plainly: short sentences, what a thing does and when to use it, n
 
 ## Releases
 
-Every change that lands on `main` with a fragment is released: the *Release* workflow picks the version from the fragments (before 1.0, a breaking change or a new feature makes the next 0.x, anything else a patch), updates `CHANGELOG.md`, tags the version, publishes it to npm and makes its GitHub release. Pull requests are how changes are grouped into one release.
+Releases go through a pull request of their own. When a change with a fragment lands on `main`, the *Release* workflow picks the version from the fragments (before 1.0, a breaking change or a new feature makes the next 0.x, anything else a patch), updates `CHANGELOG.md` and the version, runs the tests, and opens the pull request *chore(release): v…* from the branch `release`. Every later change to `main` updates it, so it always holds everything unreleased. Merging it tags the version, publishes it to npm and makes its GitHub release.
 
 ## Measuring on Cloudflare
 
