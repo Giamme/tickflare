@@ -95,12 +95,6 @@ interface SocketInfo {
  */
 const PRESENCE_GAP_MS = 100;
 const PRESENCE_CROWD = 64;
-/**
- * The compression window of a room set to `"fast"`, as a power of two: 4 KB.
- * Measured locally with 500 players, 9 and 10 cost a little less CPU and sent
- * a quarter more bytes than this, and 13 cost about an eighth more.
- */
-const FAST_WINDOW_BITS = 12;
 /** Prefix of every timer name the kernel keeps for itself. */
 const KERNEL_TIMER = "tickflare:";
 /** Prefix of the kernel's own timers, which give up the seats of players who stay away. */
@@ -253,22 +247,6 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
    * silence. A room that is not ticking never does either: it is asleep.
    */
   protected silentAfterMs = 120_000;
-
-  /**
-   * How the room's WebSockets are compressed, for clients that offer it, as
-   * browsers and Node do. Read as each player connects.
-   *
-   * - `"small"`, the default: Cloudflare's own setting, a 32 KB window that
-   *   remembers what was sent before. The smallest frames.
-   * - `"fast"`: a 4 KB window. Measured with Wrangler's local runtime, a room
-   *   of 500 players who each see the units near them used about 40% less of
-   *   its thread a tick, and its frames were about 30% larger on the wire.
-   *   For rooms with hundreds of players, where the room's one thread is
-   *   what runs out first.
-   *
-   * A client that asks for a window of its own gets what it asked for.
-   */
-  protected compression: "small" | "fast" = "small";
 
   /**
    * Whether the kernel follows what each hook writes to the state, rather
@@ -890,29 +868,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     if (Number(asked.get("v")) >= 4) marks.push(V4_TAG);
     const response = this.#connect(playerId, name, marks);
     await this.#finish();
-    return this.#compress(request, response);
-  }
-
-  /**
-   * The answer to a WebSocket upgrade, with the compression the room is set
-   * to. With `"fast"`, a client that offers `permessage-deflate` without a
-   * window of its own is told the room's: RFC 7692 lets a server name a
-   * smaller window than the client offered, and Cloudflare's runtime
-   * compresses with what the answer says.
-   */
-  #compress(request: Request, response: Response): Response {
-    if (this.compression !== "fast" || response.status !== 101 || !response.webSocket) return response;
-    const offers = (request.headers.get("Sec-WebSocket-Extensions") ?? "").split(",").map((offer) => offer.trim().toLowerCase());
-    const plain = offers.some((offer) => {
-      const [name, ...params] = offer.split(";").map((part) => part.trim());
-      return name === "permessage-deflate" && !params.some((param) => param.startsWith("server_max_window_bits=") || param === "server_no_context_takeover");
-    });
-    if (!plain) return response;
-    return new Response(null, {
-      status: 101,
-      webSocket: response.webSocket,
-      headers: { "Sec-WebSocket-Extensions": `permessage-deflate; server_max_window_bits=${FAST_WINDOW_BITS}` },
-    });
+    return response;
   }
 
   /** Durable Object entry point for incoming frames. Tickflare's: override `parseCommand` and `onCommand` instead. */

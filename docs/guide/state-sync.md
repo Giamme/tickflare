@@ -109,8 +109,6 @@ const behind = room.serverTick()! - room.tick; // how many ticks the room is ahe
 - **Key collections that come and go by id.** Patches go into objects key by key, and into arrays element by element. But an array whose elements shift, because one was taken out before the end, is sent whole.
 - **Round positions.** One decimal is usually enough, and a third of the bytes on the wire: [what a moving unit costs](./limits#bandwidth).
 - **Share the public part of views.** With many players, return the same object for the part of the view everyone sees. It is then diffed and serialised once per tick instead of once per player. See [State and views](./state-and-views#views-that-share-a-public-part).
-- **Skip views that did not change.** Where most of the world stands still from one tick to the next, give views [a version](./state-and-views#views-that-did-not-change).
-- **With hundreds of players, compress for speed.** Compressing every player's frame is most of a busy room's tick. `protected override compression = "fast"` uses a smaller window: about 40% less of the room's thread, for frames about 30% larger. See [Compression](./limits#compression).
 - **Pick the lowest rate that feels right.** 10 to 20 ticks a second with client-side interpolation looks smooth for most games. Each tick costs CPU on the server and bandwidth for everyone.
 
 A room has a single thread. A room that is late now and then [catches up](#keeping-time); one whose ticks take longer than `1 / tickRate` seconds every time cannot, and runs slow.

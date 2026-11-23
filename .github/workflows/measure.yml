@@ -19,7 +19,7 @@ on:
         required: false
         default: "900"
       table:
-        description: "rates: the rooms to measure, as JSON, in place of the usual list. [{\"units\":1000,\"sight\":100,\"players\":1000,\"rate\":10}]. A row may add \"moving\":0.1 (the share of units that move), \"versioned\":true (views with versions), \"compression\":\"fast\", \"binary\":true, \"deflate\":false, or \"profile\":\"cpu\" (or \"heap\") for a profile of its room from Cloudflare."
+        description: "rates: the rooms to measure, as JSON, in place of the usual list. [{\"units\":1000,\"sight\":100,\"players\":1000,\"rate\":10}]. A row may add \"moving\":0.1 (the share of units that move), \"versioned\":true (views with versions), \"binary\":true, \"deflate\":false, or \"profile\":\"cpu\" (or \"heap\") for a profile of its room from Cloudflare."
         required: false
         default: ""
       silent_ms:

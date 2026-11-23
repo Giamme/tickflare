@@ -84,7 +84,6 @@ Two things in Tickflare's design set these numbers:
 **What you can do today**
 
 - Send each player what they can see. A `view()` that filters by sight is the single biggest saving, in time and in bandwidth.
-- With hundreds of players, set [`compression = "fast"`](#compression): compressing each player's frame is most of such a tick.
 - Give views [a version](./state-and-views#views-that-did-not-change) when most of the world stands still from one tick to the next. Players whose view did not change then cost almost nothing: with a thousand players and nothing moving, a tick took a quarter of the time, measured locally. It saves nothing where everything moves on every tick, as in the rooms above.
 - Keep what never changes out of the state: a map, unit definitions. Send it once as a message, or let the page load it.
 - In event mode, keep a large state out of rooms that take many commands: each one that changes anything writes all of it. Tick instead, even slowly, and the state is written every few seconds.
@@ -110,7 +109,7 @@ So a hundred units moving ten times a second is about 6 KB a second to every pla
 
 - **Round what you send.** A position with all its decimals costs three times one rounded to a tenth, on the wire as in JSON. `Math.round(x * 10) / 10`, in the simulation or in `view()`.
 - **A client of your own has to offer compression** (`permessage-deflate`), or it is sent the JSON as it is, unless it asks for binary patches. To see whether a connection has it, look for `Sec-WebSocket-Extensions` among the response headers of the WebSocket in your browser's developer tools.
-- **Compression costs little in a small room, and most of the tick in a big one.** Rooms of twenty players ticked as fast with it as without, up to 1.2 MB of JSON a second to each. With hundreds of players it is another matter: [see below](#compression).
+- **Compression costs the room nothing we could measure.** Rooms ticked as fast with it as without, up to 1.2 MB of JSON a second to each of twenty players.
 
 **Binary patches are for clients that cannot compress.** A client can ask for its patches [in binary](../reference/protocol#binary-patches), with every name sent once and numbers packed. The same units, measured the same way, in bytes on the wire for each unit that moves:
 
@@ -127,26 +126,6 @@ A player is sent their whole view when they connect. With a custom `view()`, the
 **What you can do today.** Filter with `view()`. Round positions to whole numbers. Send where a thing is going and when it gets there instead of where it is; [the costs guide](./costs#slow-games-do-not-tick) shows how. Tick slower.
 
 **What would lift it.** A binary encoding in place of JSON, and sending numbers as differences. Not built.
-
-### Compression
-
-Each player's connection is compressed on its own, so a room of a thousand compresses a thousand frames a tick. Measured locally, that ran on the room's one thread and was most of a tick. By default Cloudflare compresses with a 32 KB window that remembers what was sent before, which makes the smallest frames. A room can ask for a 4 KB window instead:
-
-```ts
-protected override compression = "fast" as const;
-```
-
-Measured with Wrangler's local runtime: a room ticking 10 times a second, with every one of 1,000 units moving, and players who each see the units near them. The time is the CPU time of the room's thread for each tick:
-
-| | `"small"`, the default | `"fast"` |
-| --- | --- | --- |
-| 500 players | 88 ms a tick | 55 ms a tick |
-| 1,000 players | the room's thread is full: 6.5 patches a second | 10 patches a second, the thread nearly full |
-| Bytes on the wire for each frame, of about 1 KB of JSON | 150 | 192 |
-
-Without compression the same room of 500 took 29 ms a tick, and each frame was all 1,008 bytes. Windows of 512 bytes and 1 KB cost a little less than 4 KB and made frames a quarter larger again; 8 KB cost about an eighth more. We have not yet measured the setting on Cloudflare's network.
-
-The setting is read as each player connects, so set it on the class, not partway through a match. A client that asks for a window of its own, or for none, gets what it asked for. Use it for rooms of hundreds of players, where the room's one thread is what runs out; a small room has time to spare, and its players are better served by the smaller frames.
 
 ## A room's state: saved whole
 
@@ -272,7 +251,7 @@ Tickflare is at 0.1. It has a test suite that runs against Cloudflare's own runt
 
 In the order we would take them, by how much each removes for the work it needs:
 
-1. **A thousand players with a view each, on any machine.** The room holds ten ticks a second on most machines in the east of North America and falls well short in the west, at four times the CPU a tick. Views can now be [made only for the players whose part of the state changed](./state-and-views#views-that-did-not-change), which cuts the work when much of the world stands still. It does nothing for the rooms measured here, where everything moves on every tick and every view changes. Measured locally, building and comparing a thousand views is about a fifth of such a tick and compressing a thousand frames is most of the rest; with [`compression = "fast"`](#compression) a room of a thousand keeps up locally where it did not. What is left is sending a thousand frames, one at a time.
+1. **A thousand players with a view each, on any machine.** The room holds ten ticks a second on most machines in the east of North America and falls well short in the west, at four times the CPU a tick. Views can now be [made only for the players whose part of the state changed](./state-and-views#views-that-did-not-change), which cuts the work when much of the world stands still. It does nothing for the rooms measured here, where everything moves on every tick and every view changes. Measured locally, building and comparing a thousand views is about a fifth of such a tick and compressing each player's frame most of the rest, but that did not carry over: on Cloudflare, asking for a smaller compression window, which cut the local tick by a third, saved nothing. What such a tick spends its time on there is still to be profiled.
 2. **The Unity client in the editor and in a WebGL build.** It is tested on .NET only, and its WebGL socket has never run.
 3. **Lockstep in the Godot and Unity clients**, for games whose simulation is in integer arithmetic, between clients of the same engine.
 
