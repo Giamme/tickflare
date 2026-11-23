@@ -99,7 +99,7 @@ A **WebGL** build has no `ClientWebSocket`, which is what the client talks throu
 
 ## Smoothing and prediction
 
-Both clients have the browser client's [`Interpolator`](./state-sync#smoothing-on-the-client) and [`Predictor`](./state-sync#showing-a-player-s-own-moves-at-once), and behave as they do: the three are checked against the same cases.
+Both clients have the browser client's [`Interpolator`](./state-sync#smoothing-on-the-client) and [`Predictor`](./state-sync#showing-a-player-s-own-moves-at-once), and behave as they do: the three are checked against the same cases. They do not have `BufferedInterpolator` yet, nor the room's clock it draws by: they speak version 3 of the protocol.
 
 `TickflareInterpolator` glides each moving thing from where it is drawn to its latest position, over one tick:
 

@@ -37,6 +37,7 @@ export {
 } from "./accounts.js";
 export { Interpolator } from "./interpolate.js";
 export { ServerClock } from "./clock.js";
+export { BufferedInterpolator, type BufferedInterpolatorOptions, type TickSource } from "./buffered.js";
 export { Predictor, type PredictorOptions } from "./predict.js";
 export { produce } from "./draft.js";
 export { decodePatchFrame } from "../binary.js";

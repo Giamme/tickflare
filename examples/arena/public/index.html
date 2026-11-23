@@ -80,7 +80,7 @@
     </main>
 
     <script type="module">
-      import { Interpolator, Predictor, RoomClient } from "./tickflare-client.js";
+      import { BufferedInterpolator, Interpolator, Predictor, RoomClient } from "./tickflare-client.js";
 
       const SIZE = 480;
       /** How far a dot walks in a second, as in the room. */
@@ -102,7 +102,8 @@
       addEventListener("hashchange", () => location.reload());
 
       // Positions arrive 20 times a second (10 for the arena next door); these smooth them for drawing.
-      const glide = new Interpolator(1000 / 20, ["x", "y"]);
+      // The other dots are drawn a little in the past, at the room's own pace: see `glide` below.
+      let glide;
       const ghostGlide = new Interpolator(1000 / 10, ["x", "y"]);
       const ghostsOf = (state) =>
         Object.fromEntries(
@@ -125,7 +126,7 @@
           showCell(roomId);
         },
         onState(state) {
-          glide.update(state.dots);
+          glide?.update(state.dots);
           ghostGlide.update(ghostsOf(state));
           renderScores(state);
         },
@@ -144,6 +145,10 @@
             status === "open" ? "Connected." : status === "closed" ? closedBecause : "Connecting…";
         },
       });
+
+      // Drawn two ticks and a margin behind the room's clock, so the dots keep an even pace however
+      // the patches arrive. A dot that moves farther than this between two patches jumped.
+      glide = new BufferedInterpolator(client, ["x", "y"], { snapDistance: 100 });
 
       // The player's own dot does not wait for the room. A move is applied here the way the room's
       // onCommand applies it, and walked forward the way its onTick walks it, so the dot sets off

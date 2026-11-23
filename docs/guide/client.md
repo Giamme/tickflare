@@ -8,7 +8,7 @@
 | `LockstepClient` | [Lockstep](./lockstep) rooms |
 | `findMatch` | Waiting in a [matchmaking](./matchmaking) queue |
 | `AccountClient` | [Accounts](./accounts): guests, sign-up, data, leaderboards |
-| `Interpolator` | Smoothing positions between ticks |
+| `Interpolator`, `BufferedInterpolator` | Smoothing positions between ticks: see [which to use](./state-sync#smoothing-on-the-client) |
 
 The client keeps no secrets from the server and enforces no rules. It shows what the room sends and asks the room to do things.
 

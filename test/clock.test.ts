@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { BufferedInterpolator, RoomClient } from "../src/client/index.js";
 import type { LockstepView } from "../src/lockstep.js";
 import { PROTOCOL_VERSION } from "../src/protocol.js";
 import { follow, freshRoom, sleep, until } from "./helpers.js";
+import { WorkerSocket } from "./worker-socket.js";
 import type { TickState } from "./worker.js";
 
 // The rooms run in this isolate, so moving `Date.now` here moves the clock their simulation
@@ -145,5 +147,34 @@ describe("a lockstep room catching up", () => {
     const ticks = patchTicks(p1);
     for (let i = 1; i < ticks.length; i++) expect(ticks[i]! - ticks[i - 1]!, `patch ${i}`).toBe(1);
     expect(turns.every((turn, i) => turn?.[0] === ticks[i])).toBe(true);
+  });
+});
+
+describe("RoomClient against a ticking room", () => {
+  it("knows the room's tick between frames, and draws through a BufferedInterpolator a steady way behind it", async () => {
+    vi.stubGlobal("WebSocket", WorkerSocket);
+    const client = new RoomClient<TickState>(`wss://tickflare.test/ticks/${freshRoom()}?player=p1`);
+    const glide = new BufferedInterpolator(client, ["x"]);
+    client.on("state", (state) => glide.update({ count: { x: state.count } }));
+    try {
+      await until(() => client.tick >= 10 && client.rtt !== undefined, "ticks and a round trip");
+      const estimate = client.serverTick()!;
+      // Here the round trip is next to nothing: the estimate is the latest tick, give or take one.
+      expect(Math.abs(estimate - client.tick)).toBeLessThan(2);
+
+      const drawn: number[] = [];
+      for (let i = 0; i < 10; i++) {
+        await sleep(20);
+        drawn.push(glide.at("count")!.x);
+      }
+      // What is drawn only goes forward, about a tick for every 20 ms, a couple of ticks behind.
+      for (let i = 1; i < drawn.length; i++) expect(drawn[i]!).toBeGreaterThanOrEqual(drawn[i - 1]!);
+      expect(drawn[drawn.length - 1]! - drawn[0]!).toBeGreaterThan(4);
+      expect(drawn[drawn.length - 1]!).toBeLessThan(client.serverTick()!);
+      expect(drawn[drawn.length - 1]!).toBeGreaterThan(client.serverTick()! - glide.delay - 3);
+    } finally {
+      client.close();
+      vi.unstubAllGlobals();
+    }
   });
 });

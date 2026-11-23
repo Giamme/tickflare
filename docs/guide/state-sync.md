@@ -137,6 +137,29 @@ requestAnimationFrame(frame);
 
 Because it always starts from what is on screen, a late or bunched update bends the motion instead of making it jump. Use `room.tickRate` once connected to set the duration: `new Interpolator(1000 / room.tickRate, ["x", "y"])`.
 
+### Drawing at the room's pace
+
+`Interpolator` adds almost no delay, but its pace is the network's: two patches that arrive together make a thing rush, and a late one makes it stop and lurch. `BufferedInterpolator` keeps the last few states of each thing by the tick they are of, and draws a moment a little behind the tick the room is on, from the [room's clock](#keeping-time), blending the two states on either side. Things then move at the room's own pace whatever the network does, and a patch that covers several ticks, after the room [caught up](#keeping-time), is spread over them. The same `update` and `at`, and the `RoomClient` to read the ticks from:
+
+```ts
+import { BufferedInterpolator, RoomClient } from "tickflare/client";
+
+const room = new RoomClient<State>(url, { token });
+const glide = new BufferedInterpolator(room, ["x", "y"], { snapDistance: 200 });
+
+room.on("state", (state) => glide.update(state.dots));
+// In the render loop, as before:
+const { x, y } = glide.at(id) ?? room.state!.dots[id]!;
+```
+
+- **The delay** is two ticks behind the newest state it should have by now (`delayTicks`), plus a margin of twice the jitter it measures, which it keeps adjusting. `glide.delay` says what it is at, in ticks behind the room's clock, the network's own delay included. What it draws never goes back in time: when the delay grows, it waits for the clock.
+- **When updates stop**, each thing carries on at its last speed for up to `maxExtrapolationTicks` (3), then stays where it got to.
+- **Jumps.** A respawn or a handover should not slide across the map. Call `glide.snap(id)` after the `update` that brought the jump, or set `snapDistance` and any change farther than that between two states in a row is one. Either way it is drawn when its tick comes.
+- **Angles.** Name the fields that are angles in radians, `{ angles: ["heading"] }`, and they turn the short way round through ±π.
+- **When the simulation stops**, it shows the latest state. Against a room older than 0.2, which does not say where its clock is, it times the patches as they arrive instead.
+
+Which to use: `BufferedInterpolator` for other players and everything else that moves on its own, where an even pace matters more than a tenth of a second. `Interpolator` for a player's [own predicted moves](#showing-a-player-s-own-moves-at-once), which must answer at once, and where the delay would be felt. The arena example uses both.
+
 ## Showing a player's own moves at once
 
 A player who clicks waits for the click to reach the room, for the next tick, and for the patch to come back before anything moves: a tenth of a second on a good connection, a quarter on a poor one. `Predictor` shows the move straight away and lets the room correct it:
@@ -171,7 +194,7 @@ const mine = predicted.state?.dots[room.you!];
 - **Predict what the player controls, and nothing else.** `tick` is called with the whole state, but where other players' dots will be is not this player's to know: leave them to the room and to `Interpolator`.
 - **With `tick`, read `predicted.state` when you draw.** It moves on with time, between the room's frames too. `onState` tells you about the room's frames and about commands.
 
-The arena example does this: the player's own dot is drawn from the prediction through an `Interpolator` of its own, the others from the room's state.
+The arena example does this: the player's own dot is drawn from the prediction through an `Interpolator` of its own, the others from the room's state through a `BufferedInterpolator`.
 
 It works in event mode as well, without `tick`: a piece placed on a board appears on the click and is taken back if the room says no.
 
