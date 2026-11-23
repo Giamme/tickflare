@@ -18,8 +18,12 @@ import type { Patch } from "./patch.js";
  *
  * Version 3 adds presence as changes: a `presence` frame can say who is new
  * or different (`set`) and who is gone (`gone`) in place of the whole list.
+ *
+ * Version 4 adds the room's clock: while the simulation runs, `welcome`
+ * says where the clock is (`ms` and `epoch`), and `clock` frames say it
+ * again every few seconds, whenever it starts, stops or moves on.
  */
-export const PROTOCOL_VERSION = 3;
+export const PROTOCOL_VERSION = 4;
 
 /** The keepalive a client sends, as a plain text frame. @internal */
 export const PING = "ping";
@@ -76,6 +80,10 @@ export interface WelcomeFrame<View = unknown> {
   tick: number;
   /** Ticks a second; 0 in event mode. */
   tickRate: number;
+  /** Version 4, while the simulation runs: as in `ClockFrame`. Absent while it does not. */
+  ms?: number;
+  /** Version 4, while the simulation runs: as in `ClockFrame`. */
+  epoch?: number;
   /** This player's whole view. */
   state: View;
   /** Everyone with a seat, in join order. */
@@ -163,6 +171,37 @@ export interface AckFrame {
   tick?: number;
 }
 
+/**
+ * Version 4: where the room's clock is. Ticks fall due on a fixed clock, one
+ * every `1 / tickRate` seconds from when the simulation started, so a client
+ * that knows how long ago one tick was due can tell which tick the room is on
+ * at any moment: `tick + (ms + elapsed) * tickRate / 1000`, where `elapsed`
+ * is the time since the frame was sent, about half a round trip when it
+ * arrives. `RoomClient.serverTick()` works this out.
+ *
+ * Sent every five seconds while the simulation runs, and at once when it
+ * starts, stops, or lets ticks go after a stall. The same reading is in
+ * `welcome` for a client that connects while it runs.
+ */
+export interface ClockFrame {
+  /** Frame type. */
+  t: "clock";
+  /** The latest tick the room has run. */
+  tick: number;
+  /**
+   * How long before this frame was sent `tick` fell due, in milliseconds:
+   * usually less than one tick, more when the room is running late. Absent
+   * when the simulation has stopped, at `tick`, until a frame says otherwise.
+   */
+  ms?: number;
+  /**
+   * Which run of the clock this is. It changes when the simulation starts
+   * again, and when the room lets ticks go after a stall; while it stays the
+   * same, readings can be averaged.
+   */
+  epoch?: number;
+}
+
 /** The command or leave with this `id` was refused, and nothing changed. */
 export interface RejectFrame {
   /** Frame type. */
@@ -198,6 +237,7 @@ export type ServerMessage<View = unknown> =
   | StateFrame<View>
   | PatchFrame
   | PresenceFrame
+  | ClockFrame
   | AckFrame
   | RejectFrame
   | ErrorFrame

@@ -1,6 +1,6 @@
 import type { CatchUp, LockstepView, Replay, Snapshot, TurnEntry, TurnsMessage } from "../lockstep.js";
 import type { Player } from "../protocol.js";
-import { Room, reject } from "./room.js";
+import { Room, patchEachTick, reject } from "./room.js";
 import { pieces } from "./storage.js";
 
 /** What a lockstep room keeps: what clients see, and the inputs waiting for the next turn. */
@@ -137,6 +137,12 @@ export abstract class LockstepRoom<Input, Env = Cloudflare.Env> extends Room<
   #candidate: (Snapshot & { by: string }) | undefined;
   /** Names this run of the room: see `CatchUp.epoch`. */
   #epoch: string | undefined;
+
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
+    // The view is one turn: when the room catches up on several, each still needs a frame of its own.
+    patchEachTick(this);
+  }
 
   /**
    * Turn an untrusted client payload into an input. Every client will feed

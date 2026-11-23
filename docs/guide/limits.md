@@ -39,7 +39,7 @@ What we measured, with Wrangler's local runtime on a two-core 2.1 GHz machine th
 | 5,000 units, by sight, and 480 commands a second | 100 | 8.3 |
 | 20,000 units, by sight, and 400 commands a second | 20 | 8.7 |
 
-Treat these as the right order of size, not as a promise: Cloudflare's machines are not this one, and with many players the same run varies by a tick a second or more. When a room cannot keep up, its simulation runs slow; it does not skip ahead to catch up.
+Treat these as the right order of size, not as a promise: Cloudflare's machines are not this one, and with many players the same run varies by a tick a second or more. These were measured before 0.2, when a room ran one tick per wake-up. Since then a room that wakes late [catches up](./state-sync#keeping-time), up to `maxCatchUpTicks` ticks at once with one patch for them all, so one that falls a little behind gets back on time. One that cannot keep up at all still runs slow: past the cap, it lets ticks go.
 
 ### The same rooms on Cloudflare
 

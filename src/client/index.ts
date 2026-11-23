@@ -8,6 +8,7 @@
  */
 import { BINARY_PATCHES, decodePatchFrame } from "../binary.js";
 import { applyPatch } from "../patch.js";
+import { ServerClock, localNow } from "./clock.js";
 import { roomIn, withFreshToken, type TokenSource } from "./token.js";
 import {
   CloseCode,
@@ -35,6 +36,7 @@ export {
   type Profile,
 } from "./accounts.js";
 export { Interpolator } from "./interpolate.js";
+export { ServerClock } from "./clock.js";
 export { Predictor, type PredictorOptions } from "./predict.js";
 export { produce } from "./draft.js";
 export { decodePatchFrame } from "../binary.js";
@@ -190,6 +192,10 @@ export class RoomClient<View = unknown, Command = unknown> {
   #pingTimer: ReturnType<typeof setInterval> | undefined;
   /** A keepalive was sent and nothing has come back since. */
   #unanswered = false;
+  /** When each `ping` that has not been answered yet was sent, oldest first, by `localNow()`. */
+  #pingsAt: number[] = [];
+  /** Which tick the room is on, from what it says of its clock. */
+  readonly #clock = new ServerClock();
 
   constructor(url: string | URL, options: RoomClientOptions<View> = {}) {
     this.#url = String(url);
@@ -215,6 +221,31 @@ export class RoomClient<View = unknown, Command = unknown> {
   /** The room's simulation rate in ticks per second; 0 in event mode. */
   get tickRate(): number {
     return this.#tickRate;
+  }
+
+  /**
+   * The tick the room is on right now, by estimate, with the fraction of the
+   * next that has passed: for drawing the game in step with the room, or
+   * sending a command in time for a tick. Worked out from the clock the room
+   * sends (see `ClockFrame`) and the round trip to it, so it carries on
+   * between frames, and is usually ahead of `tick`, which is the latest the
+   * room has sent. While the room's simulation is stopped, the tick it
+   * stopped at. Undefined in event mode, before the room has said where its
+   * clock is, and with a room older than 0.2.
+   *
+   * @param now the moment to estimate it for, from `performance.now()`
+   */
+  serverTick(now?: number): number | undefined {
+    return this.#clock.tick(now);
+  }
+
+  /**
+   * The round trip to the room in milliseconds, smoothed over the latest
+   * keepalives. Undefined until one has come back. In a ticking room the
+   * client measures it every few seconds; otherwise with the keepalive.
+   */
+  get rtt(): number | undefined {
+    return this.#clock.rtt;
   }
 
   /** This player's id, as the server knows it. Set once connected. */
@@ -370,7 +401,11 @@ export class RoomClient<View = unknown, Command = unknown> {
       if (typeof data !== "string") return;
       // Anything the server sends shows the connection is alive.
       this.#unanswered = false;
-      if (data === PONG) return;
+      if (data === PONG) {
+        const sentAt = this.#pingsAt.shift();
+        if (sentAt !== undefined) this.#clock.roundTrip(localNow() - sentAt);
+        return;
+      }
       this.#handle(JSON.parse(data) as ServerMessage<View>);
     });
 
@@ -389,6 +424,8 @@ export class RoomClient<View = unknown, Command = unknown> {
   #closed(code: number, reason: string): void {
     this.#socket = undefined;
     this.#stopPing();
+    this.#pingsAt = [];
+    this.#clock.reset();
     this.#forget();
 
     if (code === CloseCode.Moved && reason && !this.#stopped) {
@@ -446,7 +483,10 @@ export class RoomClient<View = unknown, Command = unknown> {
         this.#players = message.players;
         this.#tick = message.tick;
         this.#tickRate = message.tickRate;
+        this.#clock.reset();
+        if (message.ms !== undefined) this.#clock.reading(message.tick, message.tickRate, message.ms, message.epoch);
         this.#startPing();
+        if (message.tickRate > 0) this.#measure();
         this.#setStatus("open");
         this.#emit("presence", this.#players);
         this.#setState(message.state, message.seq);
@@ -469,6 +509,10 @@ export class RoomClient<View = unknown, Command = unknown> {
         this.#shown(message.c);
         this.#setState(applyPatch(this.#state as View, message.p), message.seq);
         this.#resolveUpTo(message.c);
+        break;
+      case "clock":
+        this.#clock.reading(message.tick, this.#tickRate, message.ms, message.epoch);
+        if (message.ms !== undefined) this.#measure();
         break;
       case "presence":
         this.#players = message.players ?? withPresence(this.#players, message.set, message.gone);
@@ -540,8 +584,21 @@ export class RoomClient<View = unknown, Command = unknown> {
         return;
       }
       this.#unanswered = true;
+      this.#pingsAt.push(localNow());
       socket.send(PING);
     }, interval);
+  }
+
+  /** Sends a `ping` to time the round trip, unless one is on its way already. Leaves the keepalive's watch alone. */
+  #measure(): void {
+    const socket = this.#socket;
+    if (socket?.readyState !== 1 || this.#pingsAt.length > 0) return;
+    this.#pingsAt.push(localNow());
+    try {
+      socket.send(PING);
+    } catch {
+      this.#pingsAt.pop();
+    }
   }
 
   #stopPing(): void {

@@ -99,6 +99,41 @@ describe("RoomClient", () => {
     client.close();
   });
 
+  it("measures the round trip in a ticking room, and estimates the room's tick from the clock it sends", () => {
+    const client = new RoomClient("wss://tickflare.test/rooms/r", { pingIntervalMs: 0 });
+    const socket = FakeSocket.all[0]!;
+    socket.readyState = 1;
+    const start = performance.now();
+    socket.receive({ t: "welcome", v: 4, you: "p1", seq: 0, tick: 40, tickRate: 20, ms: 0, epoch: 1, state: {}, players: [] });
+    // A ping goes out at once to time the round trip, keepalives or not.
+    expect(socket.sent).toEqual([PING]);
+    expect(client.serverTick(start)).toBeCloseTo(40);
+    expect(client.serverTick(start + 100)).toBeCloseTo(42);
+
+    vi.advanceTimersByTime(60);
+    socket.receive(PONG);
+    expect(client.rtt).toBe(performance.now() - start);
+    expect(client.rtt).toBeGreaterThan(0);
+
+    // A clock frame of a new epoch replaces the estimate, and times the round trip again.
+    socket.receive({ t: "clock", tick: 500, ms: 0, epoch: 2 });
+    expect(client.serverTick(performance.now() - client.rtt! / 2)).toBeCloseTo(500);
+    expect(socket.sent).toEqual([PING, PING]);
+    // Stopped: it stands still.
+    socket.receive({ t: "clock", tick: 510 });
+    expect(client.serverTick()).toBe(510);
+    expect(client.serverTick(performance.now() + 1000)).toBe(510);
+    client.close();
+  });
+
+  it("has no estimate of the room's tick in event mode, and sends no ping for one", () => {
+    const client = new RoomClient("wss://tickflare.test/rooms/r", { pingIntervalMs: 0 });
+    FakeSocket.all[0]!.welcome();
+    expect(client.serverTick()).toBeUndefined();
+    expect(FakeSocket.all[0]!.sent).toEqual([]);
+    client.close();
+  });
+
   it("takes any frame from the room as a sign of life", () => {
     const client = new RoomClient("wss://tickflare.test/rooms/r", { pingIntervalMs: 1000 });
     const socket = FakeSocket.all[0]!;
@@ -203,7 +238,7 @@ describe("RoomClient", () => {
     FakeSocket.all[0]!.drop(4004, "new");
 
     expect(moved).toEqual(["new"]);
-    expect(FakeSocket.all[1]!.url).toBe("wss://tickflare.test/rooms/new?token=t&v=3");
+    expect(FakeSocket.all[1]!.url).toBe("wss://tickflare.test/rooms/new?token=t&v=4");
     client.close();
   });
 
@@ -230,9 +265,9 @@ describe("RoomClient", () => {
       await vi.advanceTimersByTimeAsync(500);
 
       expect(urls()).toEqual([
-        "wss://tickflare.test/rooms/r?token=t1&v=3",
-        "wss://tickflare.test/rooms/r?token=t2&v=3",
-        "wss://tickflare.test/rooms/r?token=t3&v=3",
+        "wss://tickflare.test/rooms/r?token=t1&v=4",
+        "wss://tickflare.test/rooms/r?token=t2&v=4",
+        "wss://tickflare.test/rooms/r?token=t3&v=4",
       ]);
       expect(askedFor).toEqual(["r", "r", "r"]);
       client.close();
@@ -247,8 +282,8 @@ describe("RoomClient", () => {
       await vi.advanceTimersByTimeAsync(0);
 
       expect(urls()).toEqual([
-        "wss://tickflare.test/rooms/old?token=t1&lang=it&v=3",
-        "wss://tickflare.test/rooms/new?token=t2&lang=it&v=3",
+        "wss://tickflare.test/rooms/old?token=t1&lang=it&v=4",
+        "wss://tickflare.test/rooms/new?token=t2&lang=it&v=4",
       ]);
       expect(askedFor).toEqual(["old", "new"]);
       client.close();
@@ -265,7 +300,7 @@ describe("RoomClient", () => {
       expect(seen).toEqual(["connecting:1006:token_failed"]);
 
       await vi.advanceTimersByTimeAsync(250);
-      expect(urls()).toEqual(["wss://tickflare.test/rooms/r?token=t2&v=3"]);
+      expect(urls()).toEqual(["wss://tickflare.test/rooms/r?token=t2&v=4"]);
       warn.mockRestore();
       client.close();
     });

@@ -89,6 +89,21 @@ Some matches have to reach their end whoever is watching: a ranked match should 
 
 It is checked like `shouldTick()`, so it can depend on the state: `return this.state.ranked` plays ranked matches to the end and lets the others stand still.
 
+### Keeping time
+
+Ticks keep to a fixed clock. When the simulation starts, tick `n` falls due `n / tickRate` seconds later, whenever the one before it actually ran. A room that wakes late, because a tick or an event took long or the machine was busy, runs every tick that has come due since, each with the same `dt`, and sends one patch for all of them. So the game runs at the speed you set however the room is loaded, and a client can tell which tick the room is on.
+
+- **The catch-up has a cap.** A room runs at most `maxCatchUpTicks` ticks back to back, 5 by default. After a longer stall it runs that many and lets the rest go: the clock moves on, and the game is that much behind the wall clock for good, instead of racing through a burst of ticks. Set it to 1 to never catch up.
+- **Time spent stopped is not owed back.** When the simulation stops and starts again, its clock starts over from the tick it stopped at.
+- **Saves are counted in ticks**, as before, so catching up does not change when they happen.
+- **Lockstep is the exception to one patch:** a lockstep room that catches up still sends each turn in a frame of its own, since its players have to see every turn.
+
+The room tells clients its clock, in `welcome` and in a [`clock` frame](/reference/protocol#the-room-s-clock) every five seconds and whenever it starts, stops or moves on. `room.serverTick()` turns that and the round trip into the tick the room is on at this moment, fraction included, which is what [interpolation](#smoothing-on-the-client) and [prediction](#showing-a-player-s-own-moves-at-once) need to line the screen up with the room:
+
+```ts
+const behind = room.serverTick()! - room.tick; // how many ticks the room is ahead of the latest patch
+```
+
 ## Keeping ticks cheap
 
 - **Key collections that come and go by id.** Patches go into objects key by key, and into arrays element by element. But an array whose elements shift, because one was taken out before the end, is sent whole.
@@ -96,7 +111,7 @@ It is checked like `shouldTick()`, so it can depend on the state: `return this.s
 - **Share the public part of views.** With many players, return the same object for the part of the view everyone sees. It is then diffed and serialised once per tick instead of once per player. See [State and views](./state-and-views#views-that-share-a-public-part).
 - **Pick the lowest rate that feels right.** 10 to 20 ticks a second with client-side interpolation looks smooth for most games. Each tick costs CPU on the server and bandwidth for everyone.
 
-A room has a single thread. If a tick takes longer than `1 / tickRate` seconds, the simulation slows down rather than skipping ahead.
+A room has a single thread. A room that is late now and then [catches up](#keeping-time); one whose ticks take longer than `1 / tickRate` seconds every time cannot, and runs slow.
 
 ## Smoothing on the client
 
@@ -173,4 +188,3 @@ const predicted = new Predictor(room, {
 ## What is not there yet
 
 - Prediction is for a player's own commands. There is nothing for guessing where other players will be, and no rollback of a whole simulation.
-- When a tick runs late, the simulation slows down instead of catching up.

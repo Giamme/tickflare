@@ -70,6 +70,8 @@ const BINARY_TAG = "\u0001patches=b1";
 const V2_TAG = "\u0001v=2";
 /** Marks the socket of a client that speaks version 3: it is told who came and went, not the whole list of players. */
 const V3_TAG = "\u0001v=3";
+/** Marks the socket of a client that speaks version 4: it is told the room's clock. */
+const V4_TAG = "\u0001v=4";
 const isMark = (tag: string) => tag.charCodeAt(0) === 1;
 
 /** What a socket's tags say: whose it is, and what its client asked for. */
@@ -81,6 +83,8 @@ interface SocketInfo {
   arrays: boolean;
   /** Version 3: presence as changes. */
   presence: boolean;
+  /** Version 4: told the room's clock. */
+  clock: boolean;
 }
 /**
  * In a room with more than `PRESENCE_CROWD` connections, the least time
@@ -105,7 +109,7 @@ const DELETE_RETRY_MS = 30_000;
  *
  * Cloudflare takes an object that has had no incoming event for 70 to 140
  * seconds out of memory, simulation and all. A keepalive does not count:
- * Cloudflare answers it without waking the room. A pending `setInterval`
+ * Cloudflare answers it without waking the room. A pending timer
  * holds the object for at most 15 minutes. So without this, a match in which
  * nobody sends a command would stop, and stay stopped until someone did. An
  * alarm is an event, and when Cloudflare restarts the room for any other
@@ -127,6 +131,19 @@ const DELETE_PATIENCE_MS = 10_000;
 const FORWARD_GRACE_MS = 30_000;
 /** Consecutive failed ticks after which the simulation pauses until the next event. */
 const MAX_FAILED_TICKS = 5;
+/**
+ * Rooms that send a patch for every tick, even when they catch up several at
+ * once: a lockstep room's view is one turn, and a client must see each.
+ */
+const patchesEachTick = new WeakSet<object>();
+
+/** Has `room` send a patch for every tick it runs, also when catching up. @internal */
+export function patchEachTick(room: object): void {
+  patchesEachTick.add(room);
+}
+
+/** While the simulation runs, how often clients of version 4 are told the room's clock, in milliseconds. */
+const CLOCK_EVERY_MS = 5_000;
 
 /**
  * An authoritative game room: one Durable Object per room.
@@ -190,6 +207,22 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
 
   /** Simulation rate in ticks per second. 0, the default, is event mode: no tick loop. */
   protected tickRate = 0;
+
+  /**
+   * While the room is ticking, the most ticks it runs back to back to catch
+   * up when it wakes late. The simulation keeps to a fixed clock: tick `n`
+   * is due `n / tickRate` seconds after the clock started, and a room that
+   * wakes late, because a tick or an event took long or the machine was
+   * busy, runs every tick that has come due since, each with the same `dt`,
+   * and sends one patch for all of them.
+   *
+   * When more than this many are due, after a stall of a fraction of a
+   * second, the room runs this many and lets the rest go: the clock moves on,
+   * and the game is that much behind the wall clock for good, instead of
+   * fast-forwarding through a burst of ticks. 1 never catches up, which is
+   * how rooms ran before 0.2.
+   */
+  protected maxCatchUpTicks = 5;
 
   /**
    * While the room is ticking, how often the state is written to storage, in
@@ -345,8 +378,19 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
 
   /** Ticks run since the room was created. */
   #tick = 0;
-  /** Set while the simulation is running. */
-  #loop: ReturnType<typeof setInterval> | undefined;
+  /** Set while the simulation is running: the timer for the next wake-up. */
+  #loop: ReturnType<typeof setTimeout> | undefined;
+  /**
+   * The simulation's clock: tick `#clockTick` was due at `#clockAt`, in epoch
+   * milliseconds, and each tick after it `1000 / tickRate` later. Set when
+   * the simulation starts, and moved on when ticks are let go.
+   */
+  #clockTick = 0;
+  #clockAt = 0;
+  /** Goes up each time the clock starts over or moves on: a client keeps a clock per epoch. */
+  #epoch = 0;
+  /** When clients were last told the clock, in epoch milliseconds. */
+  #clockToldAt = 0;
   /** The committed state is newer than what is in storage. Only happens while ticking. */
   #unsaved = false;
   #ticksSinceSave = 0;
@@ -408,7 +452,9 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
 
   /**
    * Advance the simulation by one step of `dt` seconds (always `1 / tickRate`).
-   * Runs `tickRate` times a second while the room is ticking.
+   * Runs `tickRate` times a second while the room is ticking, on a fixed
+   * clock: a room that wakes late runs the ticks it owes back to back. See
+   * `maxCatchUpTicks`.
    */
   protected onTick(_dt: number): void {}
 
@@ -801,6 +847,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     if (asked.get("patches") === BINARY_PATCHES) marks.push(BINARY_TAG);
     if (Number(asked.get("v")) >= 2) marks.push(V2_TAG);
     if (Number(asked.get("v")) >= 3) marks.push(V3_TAG);
+    if (Number(asked.get("v")) >= 4) marks.push(V4_TAG);
     const response = this.#connect(playerId, name, marks);
     await this.#finish();
     return response;
@@ -978,6 +1025,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
       seq: this.#seq,
       tick: this.#tick,
       tickRate: this.tickRate,
+      ...(this.#loop !== undefined && this.#socketInfo(ws).clock ? this.#clockReading(Date.now()) : {}),
       state: this.view(player),
       players: this.players,
     } satisfies ServerMessage);
@@ -1256,14 +1304,86 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
   #syncLoop(): void {
     const wanted = this.#wantsTicks(this.#anySeated());
     if (wanted && this.#loop === undefined) {
-      this.#loop = setInterval(() => this.#runTick(), 1000 / this.tickRate);
+      // A clock of its own for every run: the time the simulation spent stopped is not owed back.
+      const now = Date.now();
+      this.#clockTick = this.#tick;
+      this.#clockAt = now;
+      this.#epoch += 1;
+      this.#schedule(now);
+      this.#tellClock(now);
     } else if (!wanted && this.#loop !== undefined) {
-      clearInterval(this.#loop);
+      clearTimeout(this.#loop);
       this.#loop = undefined;
       // Send what changed since the last tick, or it would never go out.
       this.#broadcastTick();
       if (this.#unsaved) this.#writeRoom();
+      this.#tellClock(Date.now());
     }
+  }
+
+  /** When tick `tick` is due by the simulation's clock, in epoch milliseconds. */
+  #dueAt(tick: number): number {
+    return this.#clockAt + ((tick - this.#clockTick) * 1000) / this.tickRate;
+  }
+
+  /** Sets the timer for the moment the next tick is due. */
+  #schedule(now: number): void {
+    const wait = Math.max(0, Math.ceil(this.#dueAt(this.#tick + 1) - now));
+    this.#loop = setTimeout(() => this.#wake(), wait);
+  }
+
+  /**
+   * The simulation's timer fired: run every tick that has come due since the
+   * last wake-up, up to `maxCatchUpTicks`, then send one patch for them all.
+   */
+  #wake(): void {
+    const now = Date.now();
+    const elapsed = ((now - this.#clockAt) * this.tickRate) / 1000;
+    // A hair of slack, so that floating point does not put a tick that is due a moment later.
+    const due = this.#clockTick + Math.floor(elapsed + 1e-6);
+    const cap = Math.max(1, Math.floor(this.maxCatchUpTicks) || 1);
+    let moved = false;
+    if (due - this.#tick > cap) {
+      // Too far behind to catch up: let the rest go, and move the clock on by as many ticks.
+      this.#clockTick -= due - this.#tick - cap;
+      this.#epoch += 1;
+      moved = true;
+    }
+    const until = Math.min(due, this.#tick + cap);
+    const eachTick = patchesEachTick.has(this);
+    let ran = 0;
+    let halted = false;
+    while (this.#tick < until) {
+      // What the last tick did may have stopped the simulation: checked after every tick, as ever.
+      if (ran > 0 && !this.#wantsTicks(this.#anySeated())) {
+        halted = true;
+        break;
+      }
+      if (ran > 0 && eachTick) this.#broadcastTick();
+      this.#runTick();
+      ran += 1;
+    }
+    if (halted) {
+      // `#finish` stops the simulation in a moment. Until it does, no tick is due at once.
+      this.#loop = setTimeout(() => this.#wake(), 1000 / this.tickRate);
+    } else {
+      this.#schedule(now);
+    }
+    if (ran === 0) return; // Woke a little early: nothing is due yet.
+
+    if (this.silentAfterMs > 0 && now >= this.#sweepAt) {
+      this.#sweepAt = now + Math.min(5_000, this.silentAfterMs / 2);
+      this.#closeSilent(now);
+    }
+    // Counted in ticks, as ever: catching up does not change when saves happen.
+    this.#ticksSinceSave += ran;
+    if (this.#ticksSinceSave * 1000 >= this.saveIntervalMs * this.tickRate) {
+      this.#ticksSinceSave = 0;
+      if (this.#unsaved) this.#writeRoom();
+    }
+    this.#broadcastTick();
+    if (moved || now - this.#clockToldAt >= CLOCK_EVERY_MS) this.#tellClock(now);
+    this.#finish(false).catch((err) => console.error("[tickflare] tick cleanup failed:", err));
   }
 
   #runTick(): void {
@@ -1276,19 +1396,30 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
       this.#failedTicks = 0;
       this.#stalled = true;
     }
+  }
 
-    const now = Date.now();
-    if (this.silentAfterMs > 0 && now >= this.#sweepAt) {
-      this.#sweepAt = now + Math.min(5_000, this.silentAfterMs / 2);
-      this.#closeSilent(now);
-    }
+  /** Where the clock is at `now`, for a client of version 4: see `ClockFrame`. */
+  #clockReading(now: number): { ms: number; epoch: number } {
+    return { ms: Math.max(0, Math.round(now - this.#dueAt(this.#tick))), epoch: this.#epoch };
+  }
 
-    if (++this.#ticksSinceSave * 1000 >= this.saveIntervalMs * this.tickRate) {
-      this.#ticksSinceSave = 0;
-      if (this.#unsaved) this.#writeRoom();
+  /** Tells every client of version 4 where the clock is, or that it stopped. */
+  #tellClock(now: number): void {
+    this.#clockToldAt = now;
+    let frame: string | undefined;
+    for (const ws of this.ctx.getWebSockets()) {
+      if (ws.readyState !== SOCKET_OPEN || !this.#socketInfo(ws).clock) continue;
+      frame ??= JSON.stringify({
+        t: "clock",
+        tick: this.#tick,
+        ...(this.#loop !== undefined ? this.#clockReading(now) : {}),
+      } satisfies ServerMessage);
+      try {
+        ws.send(frame);
+      } catch {
+        // Socket is closing.
+      }
     }
-    this.#broadcastTick();
-    this.#finish(false).catch((err) => console.error("[tickflare] tick cleanup failed:", err));
   }
 
   /**
@@ -1657,7 +1788,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
   /** The version of the protocol spoken on this socket: the one its client asked for, or the newest this room knows. */
   #versionOf(ws: WebSocket): number {
     const info = this.#socketInfo(ws);
-    return info.presence ? PROTOCOL_VERSION : info.arrays ? 2 : 1;
+    return info.clock ? 4 : info.presence ? 3 : info.arrays ? 2 : 1;
   }
 
   /**
@@ -1806,6 +1937,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
         binary: tags.includes(BINARY_TAG),
         arrays: tags.includes(V2_TAG),
         presence: tags.includes(V3_TAG),
+        clock: tags.includes(V4_TAG),
       };
       this.#infos.set(ws, info);
     }

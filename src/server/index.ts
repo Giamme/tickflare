@@ -68,6 +68,7 @@ export {
   CloseCode,
   PROTOCOL_VERSION,
   type AckFrame,
+  type ClockFrame,
   type ClientMessage,
   type CommandFrame,
   type ErrorFrame,
