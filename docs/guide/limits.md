@@ -79,11 +79,12 @@ Each row is from runs of a few minutes, with every player on one machine in a da
 Two things in Tickflare's design set these numbers:
 
 - **The whole state is turned into JSON whenever it is saved or sent whole, and once or twice a tick.** In event mode that is every command that changes something: the state is written in full each time, and compared with what the players hold to send them the difference. While ticking it is the tick itself, which is compared whole so that `onTick` can run on plain objects, and the save every few seconds. What a command, a join or a timer costs in between is only what it touches: the room [follows a hook's writes](./rooms#the-state-inside-a-hook) rather than going through the state after it. A hook that changes nothing, or is refused, costs the same in a room of any size.
-- **`view()` runs for every connected player on every tick**, and each result is compared with what that player was sent last.
+- **`view()` runs for every connected player on every tick**, and each result is compared with what that player was sent last, unless the room gives views [a version](./state-and-views#views-that-did-not-change) and a player's has not changed.
 
 **What you can do today**
 
 - Send each player what they can see. A `view()` that filters by sight is the single biggest saving, in time and in bandwidth.
+- Give views [a version](./state-and-views#views-that-did-not-change) when most of the world stands still from one tick to the next. Players whose view did not change then cost almost nothing: with a thousand players and nothing moving, a tick took a quarter of the time, measured locally. It saves nothing where everything moves on every tick, as in the rooms above.
 - Keep what never changes out of the state: a map, unit definitions. Send it once as a message, or let the page load it.
 - In event mode, keep a large state out of rooms that take many commands: each one that changes anything writes all of it. Tick instead, even slowly, and the state is written every few seconds.
 - Tick slower and let screens interpolate. Ten ticks a second is enough for most of what Tickflare aims at.
@@ -250,7 +251,7 @@ Tickflare is at 0.1. It has a test suite that runs against Cloudflare's own runt
 
 In the order we would take them, by how much each removes for the work it needs:
 
-1. **A thousand players with a view each, on any machine.** The room holds ten ticks a second on most machines in the east of North America and falls well short in the west, at four times the CPU a tick. Making a view only for the players whose part of the state changed, where today every view is made on every tick, would cut the work itself.
+1. **A thousand players with a view each, on any machine.** The room holds ten ticks a second on most machines in the east of North America and falls well short in the west, at four times the CPU a tick. Views can now be [made only for the players whose part of the state changed](./state-and-views#views-that-did-not-change), which cuts the work when much of the world stands still. It does nothing for the rooms measured here, where everything moves on every tick and every view changes. Measured locally, building and comparing a thousand views is about a fifth of such a tick; most of the rest is sending a thousand frames and compressing each one, which is what would have to get cheaper next.
 2. **The Unity client in the editor and in a WebGL build.** It is tested on .NET only, and its WebGL socket has never run.
 3. **Lockstep in the Godot and Unity clients**, for games whose simulation is in integer arithmetic, between clients of the same engine.
 
