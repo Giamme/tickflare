@@ -499,6 +499,24 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     return this.state;
   }
 
+  /**
+   * A number or string that changes whenever what `view(player)` returns
+   * would change, so that a player whose view has the same version as the
+   * one they were last sent is skipped: their `view()` is not called and
+   * nothing is compared. Without it, every view is built for every change and
+   * every tick. Undefined, the default, means "build the view".
+   *
+   * Make it a version, not a flag for "changed just now": it is compared with
+   * the version of what the player was last sent, which can be several ticks
+   * back. Counters that only go up are the usual way, such as one for each
+   * cell of a grid that goes up whenever anything in the cell changes, summed
+   * over the cells the player can see. If it stays the same when the view
+   * changes, the player misses the change until it moves again.
+   */
+  protected viewVersion(_player: Player): unknown {
+    return undefined;
+  }
+
   /** Everyone with a seat, in join order. */
   protected get players(): Player[] {
     // One pass over the sockets, not one per player: a join tells everyone this list.
@@ -1034,7 +1052,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     if (ticking || this.view !== Room.prototype.view) {
       // Remember exactly what this socket has, as a copy the room cannot touch. Outside the
       // simulation and without a custom view there is no need: it has the state as it is saved.
-      this.#deltas.remember(ws, (JSON.parse(welcome) as { state: unknown }).state, this.#seq);
+      this.#deltas.remember(ws, (JSON.parse(welcome) as { state: unknown }).state, this.#seq, this.#viewVersionOf(player.id));
     }
   }
 
@@ -1761,7 +1779,29 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
       custom ? (id) => this.view({ id, connected: true }) : undefined,
       true,
       answering && new Map([[answering.ws, answering.id]]),
+      this.#viewVersions(),
     );
+  }
+
+  /**
+   * The version of a player's view, for a room with a custom view and
+   * `viewVersion()`. Undefined if either is missing or it could not be had:
+   * the view is built.
+   */
+  #viewVersionOf(id: string): unknown {
+    if (this.view === Room.prototype.view || this.viewVersion === Room.prototype.viewVersion) return undefined;
+    try {
+      return this.viewVersion({ id, connected: true });
+    } catch (err) {
+      console.error(`[tickflare] viewVersion() failed for ${id}:`, err);
+      return undefined;
+    }
+  }
+
+  /** What `DeltaSender.send` asks for the version of each view, if this room gives views versions. */
+  #viewVersions(): ((id: string) => unknown) | undefined {
+    if (this.view === Room.prototype.view || this.viewVersion === Room.prototype.viewVersion) return undefined;
+    return (id) => this.viewVersion({ id, connected: true });
   }
 
   /** Sends everyone what changed in their view since the last tick. */
@@ -1781,6 +1821,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
       custom ? (id) => this.view({ id, connected: true }) : undefined,
       false,
       shows,
+      this.#viewVersions(),
     );
     this.#answer();
   }

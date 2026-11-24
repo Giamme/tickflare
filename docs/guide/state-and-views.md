@@ -64,6 +64,48 @@ protected override view(player: Player): View {
 
 When a top-level field of the view is the same object for several players, the room diffs and serialises it once per tick for all of them, not once per player. In a 20-player match with 500 units this took the cost of sending a tick from 85 ms to 10 ms.
 
+## Views that did not change
+
+By default the room builds every player's view on every change and every tick, and compares it with what that player holds, even when nothing they can see has moved. In a large world most players' views stay the same from one tick to the next. Give views a version, and the room skips those players: it does not call their `view()` or compare anything.
+
+`viewVersion(player)` returns a number or a string that changes whenever what `view(player)` would return changes. The room remembers the version of the view each player was last sent, and builds the view again only when the version differs. A grid of cells, each with a counter that goes up whenever anything in it changes, gives such a version for a view by sight:
+
+```ts
+/** One counter per cell of the map, which goes up whenever anything in the cell changes. */
+#cells = new Uint32Array(CELLS_ACROSS * CELLS_ACROSS);
+
+protected override onTick(): void {
+  for (const unit of movingUnits(this.state)) {
+    this.#cells[cellOf(unit)] += 1; // the cell it leaves
+    move(unit);
+    this.#cells[cellOf(unit)] += 1; // the cell it enters
+  }
+}
+
+protected override viewVersion(player: Player): number {
+  // The counters only go up, so their sum changes whenever any of them does.
+  let version = 0;
+  for (const cell of cellsInSight(this.state, player.id)) version += this.#cells[cell];
+  return version;
+}
+```
+
+Three things to get right:
+
+- **It is a version, not a flag.** The room compares it with the version of what the player was last sent, which can be several ticks back: after the room [catches up](./state-sync#keeping-time), or when the player could not be sent to. A flag for "changed this tick" misses changes; counters that only go up do not.
+- **Everything `view()` reads counts**: what the player can see, and anything else it puts in, such as a score or the phase of the match. If the version stays the same when the view changes, the player is not sent the change until the version moves again.
+- **It only saves work when most views stay the same.** Where everything a player can see moves on every tick, every version changes too, and the room builds every view as before. Counting the versions is a little extra work then, too small for us to measure.
+
+A player who has just connected, or whom the room knows nothing about, is sent their whole view whatever the version says. Without `viewVersion`, or when it returns `undefined`, every view is built.
+
+Measured with Wrangler's local runtime: a room ticking 10 times a second, with 1,000 players who each see the units near them out of 1,000, a grid of cells as wide as a player's sight, and the CPU time of the room's thread for each tick:
+
+| Units that move on each tick | Without versions | With versions |
+| --- | --- | --- |
+| All of them | 94 ms | 94 ms |
+| One in a hundred | 36 ms | 27 ms |
+| None | 17 ms | 4.5 ms |
+
 ## What the client receives
 
 Clients get the view, never the state. `room.state` on the client holds the latest view, and the `state` event fires on each change:

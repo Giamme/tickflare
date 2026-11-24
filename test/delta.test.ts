@@ -366,3 +366,131 @@ describe("DeltaSender and array patches", () => {
     expect(bytes(clients.binary2.frames)).toBeLessThan(bytes(clients.binary1.frames) * 0.75);
   });
 });
+
+describe("DeltaSender with view versions", () => {
+  it("skips a socket whose view has the version it holds, without building the view", () => {
+    const sender = new DeltaSender();
+    const a = new Mirror("a");
+    const b = new Mirror("b");
+    const sockets = [a, b].map((player) => ({ ws: player.ws, id: player.id }));
+    const zones: Record<string, { n: number; v: number }> = { a: { n: 0, v: 0 }, b: { n: 0, v: 0 } };
+    const built: string[] = [];
+    const send = (seq: number) =>
+      sender.send(
+        sockets,
+        seq,
+        seq,
+        undefined,
+        (id) => {
+          built.push(id);
+          return { mine: { ...zones[id] } };
+        },
+        false,
+        undefined,
+        (id) => zones[id]!.v,
+      );
+
+    send(1);
+    expect(built).toEqual(["a", "b"]);
+    send(2);
+    expect(built).toEqual(["a", "b"]);
+
+    zones.a = { n: 1, v: 1 };
+    send(3);
+    expect(built).toEqual(["a", "b", "a"]);
+    expect(a.state).toEqual({ mine: { n: 1, v: 1 } });
+    expect(b.frames).toHaveLength(1);
+
+    // A socket that was skipped still gets a patch from what it holds, named by the seq it holds.
+    zones.b = { n: 2, v: 1 };
+    sender.send(sockets, 4, 4, undefined, (id) => ({ mine: { ...zones[id] } }), true, undefined, (id) => zones[id]!.v);
+    expect(b.state).toEqual({ mine: { n: 2, v: 1 } });
+    expect(JSON.parse(b.frames[1]!)).toMatchObject({ t: "patch", seq: 4, from: 1 });
+  });
+
+  it("keeps the version a socket had when sending to it or building its view fails", () => {
+    const sender = new DeltaSender();
+    const a = new Mirror("a");
+    let failing = false;
+    const ws = {
+      send: (frame: string) => {
+        if (failing) throw new Error("closing");
+        a.ws.send(frame);
+      },
+    } as unknown as WebSocket;
+    const sockets = [{ ws, id: "a" }];
+    let v = 0;
+    let throwing = false;
+    const send = (seq: number) =>
+      sender.send(
+        sockets,
+        seq,
+        seq,
+        undefined,
+        () => {
+          if (throwing) throw new Error("view kaboom");
+          return { v };
+        },
+        false,
+        undefined,
+        () => v,
+      );
+    const quiet = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      send(1);
+      v = 1;
+      failing = true;
+      send(2);
+      failing = false;
+      // The version did not reach the socket: it is built and sent again, though the version is the same.
+      send(3);
+      expect(a.state).toEqual({ v: 1 });
+
+      v = 2;
+      throwing = true;
+      send(4);
+      throwing = false;
+      send(5);
+      expect(a.state).toEqual({ v: 2 });
+    } finally {
+      quiet.mockRestore();
+    }
+  });
+
+  it("builds every view again after a reset, and none for a socket remembered with its version", () => {
+    const sender = new DeltaSender();
+    const a = new Mirror("a");
+    const sockets = [{ ws: a.ws, id: "a" }];
+    let built = 0;
+    const send = (seq: number) =>
+      sender.send(
+        sockets,
+        seq,
+        seq,
+        undefined,
+        () => {
+          built += 1;
+          return { v: 7 };
+        },
+        false,
+        undefined,
+        () => 7,
+      );
+
+    a.state = { v: 7 };
+    sender.remember(a.ws, { v: 7 }, 0, 7);
+    send(1);
+    expect(built).toBe(0);
+
+    sender.reset();
+    send(2);
+    expect(built).toBe(1);
+    send(3);
+    expect(built).toBe(1);
+
+    // Remembered without a version: the next send builds it.
+    sender.remember(a.ws, { v: 7 }, 3);
+    send(4);
+    expect(built).toBe(2);
+  });
+});

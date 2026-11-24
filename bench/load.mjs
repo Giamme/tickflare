@@ -33,9 +33,9 @@ async function profileRoom(kind, room, label, ms) {
   const started = Date.now();
   let response;
   let body;
-  // Cloudflare can answer that it has seen no executions yet, or could not start: try again, with
-  // what is left of the time.
-  for (let attempt = 0; ; attempt++) {
+  // Cloudflare can answer that it has seen no executions yet, or could not start, for a while after
+  // a Worker is deployed: keep trying every two seconds, with what is left of the time.
+  for (;;) {
     const left = ms - (Date.now() - started);
     response = await fetch(
       `https://api.cloudflare.com/client/v4/accounts/${account}/workers/workers/${worker}/versions/latest-deployed/profile`,
@@ -46,8 +46,8 @@ async function profileRoom(kind, room, label, ms) {
       },
     );
     body = Buffer.from(await response.arrayBuffer());
-    if (response.ok || attempt === 3 || ![404, 429, 503].includes(response.status) || left < 3000) break;
-    await sleep(1000);
+    if (response.ok || ![404, 429, 503].includes(response.status) || left < 5000) break;
+    await sleep(2000);
   }
   if (!response.ok) return { error: `${response.status}: ${body.toString("utf8").slice(0, 300)}` };
   mkdirSync("profiles", { recursive: true });
@@ -163,10 +163,11 @@ async function watch(ws, ms, binary) {
 }
 
 /**
- * A room asked for `rate` ticks a second, with everything in it moving on every tick. `deflate`
- * false opens the sockets without compression, and `binary` asks for binary patches.
+ * A room asked for `rate` ticks a second, with everything in it moving on every tick, or the share
+ * `moving` of its units. `versioned` gives its views versions. `deflate` false opens the sockets
+ * without compression, and `binary` asks for binary patches.
  */
-async function tickRate({ units, rate, sight, players, cps = 0, deflate = true, binary = false, profile: kind = PROFILE, hint }) {
+async function tickRate({ units, rate, sight, players, cps = 0, moving, versioned = false, deflate = true, binary = false, profile: kind = PROFILE, hint }) {
   const room = freshRoom();
   const opening = performance.now();
   const sockets = await openMany("/rooms", room, players, { deflate, binary, hint });
@@ -187,7 +188,7 @@ async function tickRate({ units, rate, sight, players, cps = 0, deflate = true, 
     const settled = Math.max(0, (performance.now() - waiting) / 1000 - 1);
     const joinKB = (sockets[0].wire - wireBefore) / 1024;
 
-    command(sockets[0], { type: "setup", units, rate, sight });
+    command(sockets[0], { type: "setup", units, rate, sight, moving, versioned });
     await sleep(2500);
     const timer =
       cps > 0
@@ -196,7 +197,7 @@ async function tickRate({ units, rate, sight, players, cps = 0, deflate = true, 
             for (let n = 0; n < cps / 10; n++) command(sockets[(nextId + n) % sockets.length], { type: "move" });
           }, 100)
         : null;
-    const label = `${room}-${players}p-${units}u-sight${sight}${binary ? "-binary" : deflate ? "" : "-plain"}${hint ? `-${hint}` : ""}`;
+    const label = `${room}-${players}p-${units}u-sight${sight}${moving === undefined ? "" : `-moving${moving}`}${versioned ? "-versioned" : ""}${binary ? "-binary" : deflate ? "" : "-plain"}${hint ? `-${hint}` : ""}`;
     const profiling = kind
       ? profileRoom(kind, room, label, Math.max(1000, MEASURE_MS - 1000)).catch((error) => ({ error: String(error?.message ?? error) }))
       : undefined;
@@ -219,6 +220,8 @@ async function tickRate({ units, rate, sight, players, cps = 0, deflate = true, 
       sight,
       players,
       cps,
+      moving: moving ?? 1,
+      versioned,
       binary,
       hint,
       profile,

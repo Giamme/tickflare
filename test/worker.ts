@@ -709,6 +709,61 @@ export class FlakyLobby extends TestMatchmaker {
   }
 }
 
+export interface ZoneState {
+  /** One zone per player: what they see, and its version. */
+  zones: Record<string, { n: number; v: number }>;
+}
+
+export type ZoneCommand =
+  /** Changes a zone and its version. */
+  | { type: "poke"; zone: string }
+  /** Changes a zone without its version: not something a game should do, there to show what is skipped. */
+  | { type: "sneak"; zone: string };
+
+/** A ticking room whose views have versions: each player sees their own zone. */
+export class ZoneRoom extends Room<ZoneState, ZoneCommand> {
+  protected override tickRate = 50;
+  /** How many times each player's view was built. */
+  #built = new Map<string, number>();
+
+  protected initialState(): ZoneState {
+    return { zones: {} };
+  }
+
+  protected parseCommand(raw: unknown): ZoneCommand {
+    return raw as ZoneCommand;
+  }
+
+  protected override onJoin(player: Player): void {
+    this.state.zones[player.id] = { n: 0, v: 0 };
+  }
+
+  protected onCommand(_player: Player, command: ZoneCommand): void {
+    const zone = this.state.zones[command.zone];
+    if (!zone) reject("no_zone");
+    zone.n += 1;
+    if (command.type === "poke") zone.v += 1;
+  }
+
+  protected override view(player: Player): unknown {
+    this.#built.set(player.id, (this.#built.get(player.id) ?? 0) + 1);
+    return { mine: this.state.zones[player.id] ?? null };
+  }
+
+  protected override viewVersion(player: Player): unknown {
+    return this.state.zones[player.id]?.v;
+  }
+
+  protected override onHttp(): Response {
+    return Response.json({ built: Object.fromEntries(this.#built), tick: this.tick });
+  }
+}
+
+/** The same in event mode: a change is sent as it is made. */
+export class EventZoneRoom extends ZoneRoom {
+  protected override tickRate = 0;
+}
+
 export default {
   async fetch(request, env): Promise<Response> {
     const accounts = testAccounts(env);
@@ -720,6 +775,8 @@ export default {
       (await routeToRoom(request, { rooms: env.NAMES, prefix: "/greet", authenticate: whoIs })) ??
       (await routeToRoom(request, { rooms: env.ROOMS, authenticate: whoIs })) ??
       (await routeToRoom(request, { rooms: env.TICKS, prefix: "/ticks", authenticate: whoIs })) ??
+      (await routeToRoom(request, { rooms: env.ZONES, prefix: "/zones", authenticate: whoIs })) ??
+      (await routeToRoom(request, { rooms: env.EVENTZONES, prefix: "/eventzones", authenticate: whoIs })) ??
       (await routeToRoom(request, { rooms: env.QUIET, prefix: "/quiet", authenticate: whoIs })) ??
       (await routeToRoom(request, { rooms: env.TURNS, prefix: "/turns", authenticate: whoIs })) ??
       (await routeToRoom(request, { rooms: env.ASKED, prefix: "/asked", authenticate: whoIs })) ??

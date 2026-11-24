@@ -51,6 +51,11 @@ export class DeltaSender {
   #baselines = new Map<WebSocket, unknown>();
   /** The `seq` of what each socket was last sent: what its client says its view is of. */
   #seqs = new Map<WebSocket, number>();
+  /**
+   * With a custom view that has versions: the version of the view each socket was last
+   * brought up to. A socket whose view has the same version now is skipped, view and all.
+   */
+  #versions = new Map<WebSocket, unknown>();
   /** The `seq` of the last send. */
   #sentSeq = -1;
   /** Without a custom view: the snapshot every socket held after the last send, and the `seq` it is of. */
@@ -67,16 +72,22 @@ export class DeltaSender {
   #shared: SharedEncodings = { values: new Map(), changes: new Map() };
   #framed = new Map<Uint8Array, Map<string, Uint8Array>>();
 
-  /** Record exactly what a socket has just been sent in full, as a copy the room cannot touch. */
-  remember(ws: WebSocket, snapshot: unknown, seq: number): void {
+  /**
+   * Record exactly what a socket has just been sent in full, as a copy the room cannot touch,
+   * and the version of the view it is, if the room gives views versions.
+   */
+  remember(ws: WebSocket, snapshot: unknown, seq: number, version?: unknown): void {
     this.#baselines.set(ws, snapshot);
     this.#seqs.set(ws, seq);
+    if (version === undefined) this.#versions.delete(ws);
+    else this.#versions.set(ws, version);
   }
 
   /** Forget what the sockets hold: the next send gives each its whole view. */
   reset(): void {
     this.#baselines.clear();
     this.#seqs.clear();
+    this.#versions.clear();
     this.#common = undefined;
   }
 
@@ -107,6 +118,9 @@ export class DeltaSender {
    *               holds another can tell. For changes sent outside the simulation.
    * @param shows  for the sockets whose commands this state is the first to show: the id of
    *               the latest of them, which their frame then carries as `c`
+   * @param versionOf the version of what one player sees, when the room gives views versions:
+   *               a socket whose view has the version it was last brought up to is skipped,
+   *               without calling `viewOf` for it. Undefined from it means "build the view".
    */
   send(
     sockets: SeatedSocket[],
@@ -116,11 +130,13 @@ export class DeltaSender {
     viewOf: ((playerId: string) => unknown) | undefined,
     named = false,
     shows?: Map<WebSocket, number>,
+    versionOf?: (playerId: string) => unknown,
   ): void {
     if (!viewOf && seq === this.#sentSeq && sockets.every(({ ws }) => this.#baselines.has(ws))) return;
     const head = `"seq":${seq},"tick":${tick}`;
     const baselines = new Map<WebSocket, unknown>();
     const seqs = new Map<WebSocket, number>();
+    const versions = new Map<WebSocket, unknown>();
     this.#keys.renew();
     /** Sends a socket its update, and records what it then holds. */
     const deliver = (ws: WebSocket, update: Update, binary = false, arrays = false): void => {
@@ -147,7 +163,7 @@ export class DeltaSender {
     };
 
     try {
-      if (viewOf) this.#sendViews(sockets, viewOf, deliver);
+      if (viewOf) this.#sendViews(sockets, viewOf, deliver, versionOf, versions);
       else this.#sendState(sockets, state, deliver);
     } finally {
       this.#shared.values.clear();
@@ -155,17 +171,19 @@ export class DeltaSender {
       this.#framed.clear();
     }
 
-    // A socket that could not be sent to, or whose view() threw, keeps what it had and gets the
-    // difference next time.
+    // A socket that could not be sent to, or whose view() threw, or whose view has the version it
+    // already holds, keeps what it had and gets the difference next time.
     for (const { ws } of sockets) {
       if (baselines.has(ws) || !this.#baselines.has(ws)) continue;
       baselines.set(ws, this.#baselines.get(ws));
       const held = this.#seqs.get(ws);
       if (held !== undefined) seqs.set(ws, held);
+      if (!versions.has(ws) && this.#versions.has(ws)) versions.set(ws, this.#versions.get(ws));
     }
     const common = viewOf ? undefined : this.#latest;
     this.#baselines = baselines;
     this.#seqs = seqs;
+    this.#versions = versions;
     this.#sentSeq = seq;
     this.#common = common === undefined ? undefined : { seq, snapshot: common };
     this.#latest = undefined;
@@ -243,12 +261,29 @@ export class DeltaSender {
     sockets: SeatedSocket[],
     viewOf: (playerId: string) => unknown,
     deliver: Deliver,
+    versionOf: ((playerId: string) => unknown) | undefined,
+    versions: Map<WebSocket, unknown>,
   ): void {
     // Every view first, then the diffs: a field shared between views is final by the time it is diffed.
-    const views: (SeatedSocket & { live: unknown })[] = [];
+    const views: (SeatedSocket & { live: unknown; version: unknown })[] = [];
     for (const socket of sockets) {
+      let version: unknown;
+      if (versionOf) {
+        try {
+          version = versionOf(socket.id);
+        } catch (err) {
+          // Not knowing the version only costs the work it would have saved.
+          console.error(`[tickflare] viewVersion() failed for ${socket.id}:`, err);
+          version = undefined;
+        }
+        // Same version as the view this socket holds: nothing in it changed, and nothing is built.
+        if (version !== undefined && this.#baselines.has(socket.ws) && Object.is(this.#versions.get(socket.ws), version)) {
+          versions.set(socket.ws, version);
+          continue;
+        }
+      }
       try {
-        views.push({ ...socket, live: viewOf(socket.id) });
+        views.push({ ...socket, live: viewOf(socket.id), version });
       } catch (err) {
         // A view() that threw must not starve the other players.
         console.error(`[tickflare] could not send the state to ${socket.id}:`, err);
@@ -256,7 +291,7 @@ export class DeltaSender {
     }
 
     const fields = new FieldCache();
-    for (const { ws, id, binary, arrays, live } of views) {
+    for (const { ws, id, binary, arrays, live, version } of views) {
       try {
         const base = this.#baselines.get(ws);
         deliver(
@@ -267,6 +302,8 @@ export class DeltaSender {
           binary,
           arrays,
         );
+        // Only once it holds the view: a socket that could not be sent to keeps the version it had.
+        if (version !== undefined) versions.set(ws, version);
       } catch (err) {
         console.error(`[tickflare] could not send the state to ${id}:`, err);
       }

@@ -26,7 +26,17 @@ interface State {
   moves: number;
 }
 type Command =
-  | { type: "setup"; units: number; rate: number; sight: number; walkers?: "int" | "dec1" | "float" }
+  | {
+      type: "setup";
+      units: number;
+      rate: number;
+      sight: number;
+      walkers?: "int" | "dec1" | "float";
+      /** The share of `units` that move on every tick, from 0 to 1; the rest stand still. All of them by default. */
+      moving?: number;
+      /** Whether views have versions, from a grid of cells `sight` wide: see `viewVersion`. */
+      versioned?: boolean;
+    }
   | { type: "move" }
   | { type: "noop" }
   /** Makes the room restart itself a moment after this command, as Cloudflare might. */
@@ -47,6 +57,10 @@ export class Bench extends Room<State, Command, Env> {
   protected override tickRate = 10;
   protected override maxCommandsPerSecond = 1_000_000;
   #sight = 0;
+  /** How many of `units`, from the first, move on every tick. */
+  #moving = 0;
+  /** With versioned views: a counter for each cell of the grid, which goes up whenever a unit in it moves. */
+  #cells: Uint32Array | undefined;
   #round: (n: number) => number = (n) => n;
   /** How many times this room has been started: once, unless Cloudflare took it out of memory. */
   #starts: number;
@@ -159,6 +173,9 @@ export class Bench extends Room<State, Command, Env> {
         return;
       }
       this.state.units = Array.from({ length: command.units }, (_, i) => ({ x: (i * 37) % 1000, y: (i * 91) % 1000, hp: 100 }));
+      this.#moving = Math.round(command.units * Math.min(1, Math.max(0, command.moving ?? 1)));
+      const across = Math.ceil(1000 / Math.max(1, command.sight));
+      this.#cells = command.versioned && command.sight > 0 ? new Uint32Array(across * across) : undefined;
     } else if (command.type === "restart") {
       this.#log("asked to restart");
       // After the command is answered: what is lost then is what a restart loses.
@@ -197,10 +214,46 @@ export class Bench extends Room<State, Command, Env> {
       thing.y = this.#round(Math.min(1000, Math.max(0, thing.y + thing.vy)));
       if (Math.random() < 0.01) thing.hp = Math.max(0, thing.hp - 5);
     }
-    for (const unit of this.state.units) {
+    const units = this.state.units;
+    const cells = this.#cells;
+    for (let i = 0; i < this.#moving; i++) {
+      const unit = units[i]!;
+      if (cells) cells[this.#cellOf(unit.x, unit.y)]! += 1;
       unit.x = (unit.x + 3) % 1000;
       unit.y = (unit.y + 1) % 1000;
+      if (cells) cells[this.#cellOf(unit.x, unit.y)]! += 1;
     }
+  }
+
+  /** The cell of the grid a point is in, with versioned views: cells are `sight` wide. */
+  #cellOf(x: number, y: number): number {
+    const across = Math.ceil(1000 / this.#sight);
+    return Math.floor(y / this.#sight) * across + Math.floor(x / this.#sight);
+  }
+
+  /** Where player `id` looks from, by sight. */
+  #centre(id: string): { cx: number; cy: number } {
+    const n = Number(id.slice(1)) || 0;
+    return { cx: (n * 173) % 1000, cy: (n * 61) % 1000 };
+  }
+
+  /**
+   * With versioned views: the counters of every cell the player's sight touches, summed, and
+   * the moves. They only go up, so the sum changes whenever any of them does.
+   */
+  protected override viewVersion(player: Player): unknown {
+    const cells = this.#cells;
+    if (!cells) return undefined;
+    const { cx, cy } = this.#centre(player.id);
+    const sight = this.#sight;
+    const across = Math.ceil(1000 / sight);
+    const x0 = Math.max(0, Math.floor((cx - sight) / sight));
+    const x1 = Math.min(across - 1, Math.floor((cx + sight) / sight));
+    const y0 = Math.max(0, Math.floor((cy - sight) / sight));
+    const y1 = Math.min(across - 1, Math.floor((cy + sight) / sight));
+    let sum = this.state.moves;
+    for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) sum += cells[y * across + x]!;
+    return sum;
   }
 
   protected override view(player: Player): unknown {
@@ -212,9 +265,7 @@ export class Bench extends Room<State, Command, Env> {
     }
     if (this.#sight === 0) return { units: this.state.units, moves: this.state.moves };
     // Each player sees what is within `sight` of a point of their own.
-    const n = Number(player.id.slice(1)) || 0;
-    const cx = (n * 173) % 1000;
-    const cy = (n * 61) % 1000;
+    const { cx, cy } = this.#centre(player.id);
     const sight = this.#sight;
     return {
       units: this.state.units.filter((unit) => Math.abs(unit.x - cx) < sight && Math.abs(unit.y - cy) < sight),

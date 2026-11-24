@@ -29,6 +29,8 @@ declare namespace Cloudflare {
     REGIONAL: DurableObjectNamespace<import("./worker").RegionalMatchmaker>;
     FLAKY: DurableObjectNamespace<import("./worker").FlakyLobby>;
     NAMES: DurableObjectNamespace<import("./worker").NameRoom>;
+    ZONES: DurableObjectNamespace<import("./worker").ZoneRoom>;
+    EVENTZONES: DurableObjectNamespace<import("./worker").EventZoneRoom>;
     MATCHES: Queue<import("../src/protocol.js").MatchResult>;
     DB: D1Database;
     REPLAYS: R2Bucket;
