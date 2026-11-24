@@ -22,8 +22,13 @@ name: Release
 # allow GitHub Actions to create pull requests. Without it the branch is still pushed, and the
 # run's summary links to where the pull request can be opened by hand.
 #
-# npm accepts the publish through trusted publishing, set up on npmjs.com for this repository and
-# this file, or the repository secret NPM_TOKEN.
+# npm accepts the publish through trusted publishing (OIDC, no token, provenance attached): set up
+# once on npmjs.com, package tickflare > Settings > Trusted publishing > GitHub Actions, owner
+# Giamme, repository tickflare, workflow release.yml. Without it, npm falls back to the repository
+# secret NPM_TOKEN, if that is set and still valid.
+#
+# The release pull request gets the "CI passed" check that main requires from this workflow, as a
+# commit status on the release commit, once the tests above have passed on what it releases.
 on:
   push:
     branches: [main]
@@ -34,6 +39,7 @@ permissions:
   pull-requests: write # the release pull request
   id-token: write # provenance, and trusted publishing
   actions: write # starting the docs deploy for the release
+  statuses: write # the "CI passed" check on the release commit
 
 concurrency:
   group: release
@@ -128,8 +134,10 @@ jobs:
             echo "tickflare@$VERSION is on npm already."
             exit 0
           fi
-          # npm 11.5 and later publish through trusted publishing when it is set up.
-          npm install -g npm@latest
+          # npm 11.5.1 and later publish through trusted publishing when it is set up. Pinned to 11,
+          # which runs on Node 22, rather than whatever npm is newest.
+          npm install -g npm@^11.5.1
+          npm --version
           npm publish
 
       - name: Release on GitHub
@@ -159,10 +167,15 @@ jobs:
           COMMIT: ${{ steps.cut.outputs.commit }}
         run: |
           git push --force origin "$COMMIT:refs/heads/release"
+          # What this workflow pushes starts no workflow, so CI never reports on the release commit.
+          # The tests ran above, on what it releases; say so in the check main requires.
+          gh api "repos/$GITHUB_REPOSITORY/statuses/$COMMIT" -f state=success -f context="CI passed" \
+            -f description="Tested by the Release workflow before it pushed this commit" \
+            -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" > /dev/null
           {
             echo "Merging this publishes **tickflare $VERSION** to npm, tags it and makes its GitHub release."
             echo
-            echo "It is cut again from main on every push there, so it holds everything unreleased; edits made to this branch by hand are replaced. CI does not run on it: the release workflow ran the tests on this commit before pushing it."
+            echo "It is cut again from main on every push there, so it holds everything unreleased; edits made to this branch by hand are replaced. CI does not run on it: the release workflow ran the tests on this commit before pushing it, and marked it \`CI passed\`."
             echo
             echo "## What is in it"
             echo
