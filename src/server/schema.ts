@@ -9,22 +9,51 @@ import { reject } from "./room.js";
 export interface StandardSchemaV1<Input = unknown, Output = Input> {
   /** What the specification asks a schema to carry. */
   readonly "~standard": {
+    /** The version of the specification the schema implements. */
     readonly version: 1;
+    /** The library the schema comes from, such as `zod`. */
     readonly vendor: string;
+    /** Checks a value. A schema with asynchronous checks returns a promise, which `parseWith` does not take. */
     readonly validate: (value: unknown) => StandardSchemaResult<Output> | Promise<StandardSchemaResult<Output>>;
-    readonly types?: { readonly input: Input; readonly output: Output } | undefined;
+    /** Never there at run time: it carries the types a schema takes and gives, for TypeScript to infer from. */
+    readonly types?:
+      | {
+          /** What the schema takes. */
+          readonly input: Input;
+          /** What it gives back. */
+          readonly output: Output;
+        }
+      | undefined;
   };
 }
 
 /** What a Standard Schema makes of a value: the value as it should be, or what is wrong with it. */
 export type StandardSchemaResult<Output> =
-  | { readonly value: Output; readonly issues?: undefined }
-  | { readonly issues: ReadonlyArray<StandardSchemaIssue> };
+  | {
+      /** The value as the schema gives it back: checked, and changed where the schema changes things. */
+      readonly value: Output;
+      /** Absent when the value fits. */
+      readonly issues?: undefined;
+    }
+  | {
+      /** What is wrong with the value, the first thing first. */
+      readonly issues: ReadonlyArray<StandardSchemaIssue>;
+    };
 
 /** One thing a Standard Schema found wrong, and where. */
 export interface StandardSchemaIssue {
+  /** What is wrong, in the library's words. */
   readonly message: string;
-  readonly path?: ReadonlyArray<PropertyKey | { readonly key: PropertyKey }> | undefined;
+  /** Where in the value: the keys that lead there, each as it is or as `{ key }`. */
+  readonly path?:
+    | ReadonlyArray<
+        | PropertyKey
+        | {
+            /** One key on the way. */
+            readonly key: PropertyKey;
+          }
+      >
+    | undefined;
 }
 
 /** As much of a reason as the room remembers for a client that comes back: see `WelcomeFrame.refused`. */
