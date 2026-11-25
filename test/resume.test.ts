@@ -322,6 +322,29 @@ describe("a room and a client that names itself", () => {
     expect(await total(plain)).toBe(5);
   });
 
+  it("ignores what an earlier client of the same player sent as it went", async () => {
+    const room = freshRoom();
+    const first = await named(room, "p1", "abc");
+    await first.next("welcome");
+    send(first, 1, { type: "add", n: 5 });
+    await first.next("state");
+    await first.next("ack");
+    // The page sends more, the first command among it once again, and is gone, and the page that
+    // is loaded in its place connects before the room has read it all. The connection the room
+    // then finds is closing already and cannot be marked as replaced: it is known for an old one
+    // by the client it was opened by.
+    send(first, 2, { type: "add", n: 5 });
+    send(first, 3, { type: "half" });
+    send(first, 1, { type: "add", n: 5 });
+    first.ws.close(1000, "gone");
+    const second = await named(room, "p1", "xyz");
+    const welcome = await second.next("welcome");
+    await sleep(50);
+    send(second, 1, { type: "add", n: 1 });
+    // What the room had read of it when the new page connected stands, and nothing is added.
+    expect((await second.next("state")).state.total).toBe(welcome.state.total + 1);
+  });
+
   it("is told nothing in a lockstep room, which keeps its own record of what was sent", async () => {
     const room = freshRoom();
     const first = await follow<unknown>("/turns", room, "p1&v=5&client=abc");

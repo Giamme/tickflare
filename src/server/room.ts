@@ -1176,11 +1176,17 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     if (!playerId || !this.#roster.includes(playerId)) return;
     // What the room notes on the socket of a client that named itself decides what its commands
     // count for: see `#handledFor`.
-    const note = this.#socketInfo(ws).client === undefined ? null : (ws.deserializeAttachment() as SocketNote | null);
+    const client = this.#socketInfo(ws).client;
+    const note = client === undefined ? null : (ws.deserializeAttachment() as SocketNote | null);
     // A newer connection took over. If it is the same client's, it sends again whatever was not
     // handled when it was welcomed, and what still arrives here would be handled twice. If it is
     // another's, this one has been told to stop.
     if (note?.replaced) return;
+    // The same, where the mark is missing: a connection that was closing already when the newer
+    // one came is not among the room's sockets any more, and what it sent before it closed can
+    // still arrive. The room keeps count for the client that connected last, so a socket of
+    // another client is an older one. Its commands would be applied as they come, repeats too.
+    if (client !== undefined && (this.#handled.get(playerId)?.client ?? client) !== client) return;
 
     // Every frame counts against the limit, including the ones refused below.
     const allowed = this.#limiter.spend(playerId, this.maxCommandsPerSecond);
