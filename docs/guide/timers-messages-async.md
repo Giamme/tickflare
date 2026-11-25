@@ -113,4 +113,4 @@ protected override onHttp(request: Request, player: Player): Response {
 
 ## Saving while ticking
 
-Outside a simulation every change is written to storage at once. While a room is [ticking](./state-sync), the state is written every `saveIntervalMs` instead. If a hook also writes to the room's own SQLite database (`this.ctx.storage.sql`), call `this.saveNow()` in it, so the state is written in the same transaction and the two can't come apart.
+Outside a simulation every change is written to storage at once. While a room is [ticking](./state-sync), the state is written every `saveIntervalMs` instead. If a hook also writes to the room's own SQLite database (`this.ctx.storage.sql`), call `this.saveNow()` in it, so the state is written in the same transaction and the two can't come apart. That matters twice over in `onCommand`: the room also saves [which commands it has handled](./client#when-the-connection-drops) with the state, and a command your table has but the save does not would be sent again after a restart and written twice.

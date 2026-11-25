@@ -19,6 +19,7 @@ import {
   type ClientMessage,
   type Player,
   type ServerMessage,
+  type WelcomeFrame,
 } from "../protocol.js";
 
 export { CloseCode, type MatchFound, type Player } from "../protocol.js";
@@ -141,6 +142,25 @@ export interface RoomClientOptions<View> {
    * for dead and replaced.
    */
   pingIntervalMs?: number;
+  /**
+   * How long a command may wait for a connection, in milliseconds. Defaults
+   * to 10 seconds.
+   *
+   * A command sent while the client is connecting, the first time or again,
+   * is held and sent as soon as the room answers. A command that was on its
+   * way when the connection dropped is kept too: when the client is back,
+   * the room says which of them it handled, the client sends the others
+   * again, and none is applied twice. Either way the promise `send` returned
+   * settles as if nothing had happened.
+   *
+   * A command that has waited this long is given up: its promise rejects
+   * with `not_connected` if it was never sent, and `disconnected` if it was.
+   * Keep it short in a game where a late command is worse than a lost one.
+   *
+   * 0 keeps nothing: `send` rejects at once while there is no connection,
+   * and whatever is in flight when one drops rejects with `disconnected`.
+   */
+  keepCommandsMs?: number;
 }
 
 /** A command on its way: sent, and not yet shown by the room's state. */
@@ -151,9 +171,14 @@ export interface SentCommand<Command = unknown> {
   command: Command;
 }
 
-/** A command or leave the room refused, or one that was in flight when the connection dropped. */
+/** A command or leave the room refused, or one the client gave up on for want of a connection. */
 export class CommandRejected extends Error {
-  /** What the room passed to `reject()`, or `not_connected` or `disconnected`. */
+  /**
+   * What the room passed to `reject()`. Or `not_connected`: the command never
+   * left this client, and was not applied. Or `disconnected`: it was sent,
+   * the connection dropped, and the client could not learn what became of
+   * it. It may or may not have been applied.
+   */
   readonly reason: string;
 
   constructor(reason: string) {
@@ -164,11 +189,37 @@ export class CommandRejected extends Error {
 }
 
 const MAX_BACKOFF_MS = 5_000;
+/** How long a command waits for a connection unless `keepCommandsMs` says otherwise. */
+const KEEP_COMMANDS_MS = 10_000;
+
+/** A command or leave that the room has not answered yet. */
+interface Pending<Command> {
+  resolve(): void;
+  reject(error: Error): void;
+  /** The frame, as it is sent, and sent again if it has to be. */
+  frame: ClientMessage<Command>;
+  /** It has been sent, on this connection or an earlier one. */
+  sent: boolean;
+  /** Set while it waits for a connection: gives it up when `keepCommandsMs` has passed. */
+  timer?: ReturnType<typeof setTimeout>;
+}
+
+/**
+ * A name for one client, for as long as it lives. The room tells one
+ * client's commands from another's by it, so only the same player's other
+ * clients must not share it: a few random characters are plenty.
+ */
+function clientName(): string {
+  let name = "";
+  while (name.length < 12) name += Math.random().toString(36).slice(2);
+  return name.slice(0, 12);
+}
 
 /**
  * A connection to one room. Holds the latest state the server sent and
  * reconnects on its own; after a reconnect the server sends the current state
- * again, so there is nothing to replay.
+ * again, so there is nothing to replay. Commands that were on their way when
+ * the connection dropped are settled then too: see `keepCommandsMs`.
  */
 export class RoomClient<View = unknown, Command = unknown> {
   #state: View | undefined;
@@ -183,8 +234,13 @@ export class RoomClient<View = unknown, Command = unknown> {
   #url: string;
   readonly #options: RoomClientOptions<View>;
   #socket: WebSocket | undefined;
+  /** The name this client goes by: see `clientName`. */
+  readonly #name = clientName();
   #nextId = 1;
-  #pending = new Map<number, { resolve(): void; reject(error: Error): void }>();
+  /** By id, which is also the order they were sent in: ids only go up, and none is put back. */
+  #pending = new Map<number, Pending<Command>>();
+  /** The room speaks version 5, by its last welcome: after a drop it can say which commands it handled. */
+  #resumes = false;
   /** Commands sent that `#state` does not show yet, oldest first. Replaced, never changed, so that it can be compared by reference. */
   #unconfirmed: readonly SentCommand<Command>[] = [];
   #attempt = 0;
@@ -310,7 +366,12 @@ export class RoomClient<View = unknown, Command = unknown> {
    * Send a command. Resolves once the room applied it, by which time `state`
    * already reflects it: at once in event mode, and with the next tick in a
    * room that is ticking. Rejects with `CommandRejected` if the room refused
-   * it or the connection dropped first.
+   * it.
+   *
+   * A connection that drops on the way does not lose the command, or apply
+   * it twice: the client learns what became of it when it is back, and sends
+   * it again if it never arrived. Without a connection the command waits for
+   * one. Both for at most `keepCommandsMs`, after which it rejects.
    */
   send(command: Command): Promise<void> {
     return this.#request((id) => {
@@ -337,20 +398,49 @@ export class RoomClient<View = unknown, Command = unknown> {
       socket.close(1000, "client_closed");
     } else {
       // Between reconnect attempts there is no socket left to report the close.
+      this.#forget();
       this.#setStatus("closed", { code: 1000, reason: "client_closed" });
     }
   }
 
+  /** How long a command may wait for a connection. 0: not at all. */
+  #keepMs(): number {
+    const keep = this.#options.keepCommandsMs ?? KEEP_COMMANDS_MS;
+    return keep > 0 ? keep : 0;
+  }
+
   #request(frame: (id: number) => ClientMessage<Command>): Promise<void> {
     const socket = this.#socket;
-    if (!socket || this.#status !== "open") {
+    const open = socket !== undefined && this.#status === "open";
+    const keep = this.#keepMs();
+    // Without a connection it waits for one, if the client is still trying and may keep it.
+    if (!open && (this.#status === "closed" || keep === 0)) {
       return Promise.reject(new CommandRejected("not_connected"));
     }
     const id = this.#nextId++;
+    const message = frame(id);
     return new Promise<void>((resolve, reject) => {
-      this.#pending.set(id, { resolve, reject });
-      socket.send(JSON.stringify(frame(id)));
+      const pending: Pending<Command> = { resolve, reject, frame: message, sent: open };
+      this.#pending.set(id, pending);
+      if (open) socket.send(JSON.stringify(message));
+      else this.#waitFor(id, pending, keep);
     });
+  }
+
+  /** Has `pending` wait for a connection, for `keep` milliseconds at most. */
+  #waitFor(id: number, pending: Pending<Command>, keep: number): void {
+    // `setTimeout` takes no delay longer than this, some 24 days: a wait without end is one of those.
+    pending.timer = setTimeout(() => this.#giveUp(id, pending), Math.min(keep, 2 ** 31 - 1));
+  }
+
+  /** `pending` has waited for a connection as long as it may. */
+  #giveUp(id: number, pending: Pending<Command>): void {
+    if (this.#pending.get(id) !== pending || pending.timer === undefined) return;
+    this.#pending.delete(id);
+    if (this.#unconfirmed.some((sent) => sent.id === id)) {
+      this.#unconfirmed = this.#unconfirmed.filter((sent) => sent.id !== id);
+    }
+    pending.reject(new CommandRejected(pending.sent ? "disconnected" : "not_connected"));
   }
 
   #open(): void {
@@ -377,6 +467,8 @@ export class RoomClient<View = unknown, Command = unknown> {
     // The version of the protocol this client speaks: the room answers with the one it will use.
     asked.searchParams.set("v", String(PROTOCOL_VERSION));
     if (binary) asked.searchParams.set("patches", BINARY_PATCHES);
+    // Who is asking, so that the room can say which of this client's commands it has handled.
+    if (this.#keepMs() > 0) asked.searchParams.set("client", this.#name);
     url = asked.toString();
     const socket = new WebSocket(url);
     if (binary) socket.binaryType = "arraybuffer";
@@ -421,15 +513,17 @@ export class RoomClient<View = unknown, Command = unknown> {
     });
   }
 
-  /** The current connection is over: settle what was in flight, then follow, retry or stop. */
+  /** The current connection is over: keep or settle what was in flight, then follow, retry or stop. */
   #closed(code: number, reason: string): void {
     this.#socket = undefined;
     this.#stopPing();
     this.#pingsAt = [];
     this.#clock.reset();
-    this.#forget();
 
     if (code === CloseCode.Moved && reason && !this.#stopped) {
+      // What was sent to the room this player has left, or was waiting to be, stays behind.
+      this.#forget();
+      this.#resumes = false;
       // Handed over to another room: same URL, with that room's id as the last path segment.
       const next = new URL(this.#url);
       next.pathname = next.pathname.replace(/[^/]+\/?$/, reason);
@@ -441,22 +535,90 @@ export class RoomClient<View = unknown, Command = unknown> {
 
     const retry = !this.#stopped && this.#options.reconnect !== false && !isFatalCloseCode(code);
     if (!retry) {
+      this.#forget();
       this.#stopped = true;
       this.#setStatus("closed", { code, reason });
       return;
     }
+    this.#keep();
     this.#setStatus("connecting", { code, reason });
     const backoff = Math.min(MAX_BACKOFF_MS, 250 * 2 ** this.#attempt++);
     this.#retryTimer = setTimeout(() => this.#open(), backoff / 2 + Math.random() * (backoff / 2));
   }
 
-  /** What was in flight is lost: the connection is, or the room started again from its last save. */
+  /** Gives up on everything: what was sent and not answered, and what was waiting to be sent. */
   #forget(): void {
     for (const pending of this.#pending.values()) {
-      pending.reject(new CommandRejected("disconnected"));
+      if (pending.timer !== undefined) clearTimeout(pending.timer);
+      pending.reject(new CommandRejected(pending.sent ? "disconnected" : "not_connected"));
     }
     this.#pending.clear();
     if (this.#unconfirmed.length > 0) this.#unconfirmed = [];
+  }
+
+  /**
+   * The connection dropped, and the client is about to try for another. What
+   * was on its way waits for it, if the room is one that can say what became
+   * of it: see `#resume`. If not, it is given up now.
+   */
+  #keep(): void {
+    const keep = this.#keepMs();
+    const lost = new Set<number>();
+    for (const [id, pending] of this.#pending) {
+      // Waiting already, from before this attempt: its time runs from when it began to.
+      if (pending.timer !== undefined) continue;
+      if (keep > 0 && this.#resumes) {
+        this.#waitFor(id, pending, keep);
+      } else {
+        this.#pending.delete(id);
+        lost.add(id);
+        pending.reject(new CommandRejected("disconnected"));
+      }
+    }
+    if (this.#unconfirmed.some((sent) => lost.has(sent.id))) {
+      this.#unconfirmed = this.#unconfirmed.filter((sent) => !lost.has(sent.id));
+    }
+  }
+
+  /**
+   * A welcome has arrived: the room is there, and has said what it knows of
+   * the commands that were on their way when the last connection dropped.
+   *
+   * Those it handled are settled, by what this returns, once `state` has
+   * been set: the state in the welcome already shows them. Those it did not
+   * are sent again, and those that waited to be sent are sent, all in the
+   * order they were first sent in and before anything else can be: the room
+   * takes a command with a lower number than the last for one it has seen.
+   *
+   * Without `c` the room knows nothing of what this client sent before: it
+   * is older than version 5, the seat is newly taken, or it came back from
+   * its last save on a connection that stayed open. What was sent is then
+   * given up, as `disconnected`.
+   */
+  #resume(welcome: WelcomeFrame<View>): (() => void)[] {
+    this.#resumes = welcome.v >= 5;
+    const socket = this.#socket;
+    const handled = this.#resumes ? welcome.c : undefined;
+    const refused = new Map(welcome.refused ?? []);
+    const settle: (() => void)[] = [];
+    const answered = new Set<number>();
+    for (const [id, pending] of this.#pending) {
+      if (pending.timer !== undefined) clearTimeout(pending.timer);
+      pending.timer = undefined;
+      if (!pending.sent || (handled !== undefined && id > handled)) {
+        pending.sent = true;
+        socket?.send(JSON.stringify(pending.frame));
+        continue;
+      }
+      this.#pending.delete(id);
+      answered.add(id);
+      const reason = handled === undefined ? "disconnected" : refused.get(id);
+      settle.push(reason === undefined ? pending.resolve : () => pending.reject(new CommandRejected(reason)));
+    }
+    if (this.#unconfirmed.some((sent) => answered.has(sent.id))) {
+      this.#unconfirmed = this.#unconfirmed.filter((sent) => !answered.has(sent.id));
+    }
+    return settle;
   }
 
   /** The state about to be set shows this player's commands up to `id`: they are no longer unconfirmed. */
@@ -477,8 +639,8 @@ export class RoomClient<View = unknown, Command = unknown> {
   #handle(message: ServerMessage<View>): void {
     switch (message.t) {
       case "welcome": {
-        // On a connection that was open already: the room came back from its last save.
-        this.#forget();
+        // Before anything is told to anyone, who might send a command on hearing it.
+        const settle = this.#resume(message);
         this.#attempt = 0;
         this.#you = message.you;
         this.#players = message.players;
@@ -491,6 +653,7 @@ export class RoomClient<View = unknown, Command = unknown> {
         this.#setStatus("open");
         this.#emit("presence", this.#players);
         this.#setState(message.state, message.seq);
+        for (const settled of settle) settled();
         break;
       }
       case "state":

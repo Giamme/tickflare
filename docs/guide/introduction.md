@@ -51,7 +51,7 @@ Around the room kernel there are the services a game usually needs, built on Clo
 - **Matchmaking** with queues that reserve a room for each match and place it near its players ([Matchmaking](./matchmaking)).
 - **Match results** sent through a Queue into D1, with replays in R2 ([Match results and replays](./match-results)).
 - **Worlds across rooms**, for worlds too big for one object ([Worlds across rooms](./worlds)).
-- **A client** for browsers and Node that reconnects on its own and keeps the latest state ([Connecting from the client](./client)).
+- **A client** for browsers and Node that reconnects on its own and keeps the latest state. A command that was on its way when the connection dropped is neither lost nor applied twice ([Connecting from the client](./client)).
 
 ## Status
 

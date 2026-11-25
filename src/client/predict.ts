@@ -64,6 +64,8 @@ export class Predictor<View = unknown, Command = unknown> {
   readonly #room: RoomClient<View, Command>;
   readonly #options: PredictorOptions<View, Command>;
   readonly #stop: () => void;
+  /** How often the connection's status has changed: a command that waited through a change says nothing of the lead. */
+  #statusChanges = 0;
   /** The tick each command of this predictor's was sent at, by the room's reckoning, by command id. */
   #sentAt = new Map<number, number>();
   /** For the latest frames: when each arrived, less the time its tick stands for. The least is the room's clock. */
@@ -80,10 +82,17 @@ export class Predictor<View = unknown, Command = unknown> {
   constructor(room: RoomClient<View, Command>, options: PredictorOptions<View, Command>) {
     this.#room = room;
     this.#options = options;
-    this.#stop = room.on("state", () => {
+    const stopState = room.on("state", () => {
       this.#hear();
       this.#changed();
     });
+    const stopStatus = room.on("status", () => {
+      this.#statusChanges += 1;
+    });
+    this.#stop = () => {
+      stopState();
+      stopStatus();
+    };
     if (room.state !== undefined) this.#hear();
   }
 
@@ -153,15 +162,19 @@ export class Predictor<View = unknown, Command = unknown> {
     const room = this.#room;
     const before = room.unconfirmed;
     const sent = room.send(command);
-    // Not sent at all when there is no connection: then there is nothing to predict.
+    // Refused at once when there is no connection and none is being waited for: then there is nothing to predict.
     const id = room.unconfirmed === before ? undefined : room.unconfirmed[room.unconfirmed.length - 1]!.id;
     const at = Math.max(room.tick, this.#roomTick());
     if (id !== undefined) this.#sentAt.set(id, at);
+    const statusChanges = this.#statusChanges;
+    // A command that is sent without a connection, or loses it on the way, takes as long as the connection does.
+    const direct = () => room.status === "open" && statusChanges === this.#statusChanges;
+    const sentDirect = direct();
     const settle = (applied: boolean) => {
       if (id === undefined) return;
       this.#sentAt.delete(id);
       // The room's tick is now the one that first showed the command.
-      if (applied && this.#options.tick && room.tickRate > 0) this.#learn(room.tick - at);
+      if (applied && sentDirect && direct() && this.#options.tick && room.tickRate > 0) this.#learn(room.tick - at);
       this.#changed();
     };
     sent.then(

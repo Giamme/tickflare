@@ -50,6 +50,12 @@ class FakeSocket {
   }
 }
 
+/** A URL the client asked for, without the name it gave itself, which is random. */
+const asked = (url: string): string => {
+  expect(url).toMatch(/&client=[a-z0-9]{12}$/);
+  return url.replace(/&client=[a-z0-9]+$/, "");
+};
+
 describe("RoomClient", () => {
   beforeEach(() => {
     FakeSocket.all = [];
@@ -238,7 +244,7 @@ describe("RoomClient", () => {
     FakeSocket.all[0]!.drop(4004, "new");
 
     expect(moved).toEqual(["new"]);
-    expect(FakeSocket.all[1]!.url).toBe("wss://tickflare.test/rooms/new?token=t&v=4");
+    expect(asked(FakeSocket.all[1]!.url)).toBe("wss://tickflare.test/rooms/new?token=t&v=5");
     client.close();
   });
 
@@ -264,11 +270,13 @@ describe("RoomClient", () => {
       FakeSocket.all[1]!.drop(1006);
       await vi.advanceTimersByTimeAsync(500);
 
-      expect(urls()).toEqual([
-        "wss://tickflare.test/rooms/r?token=t1&v=4",
-        "wss://tickflare.test/rooms/r?token=t2&v=4",
-        "wss://tickflare.test/rooms/r?token=t3&v=4",
+      expect(urls().map(asked)).toEqual([
+        "wss://tickflare.test/rooms/r?token=t1&v=5",
+        "wss://tickflare.test/rooms/r?token=t2&v=5",
+        "wss://tickflare.test/rooms/r?token=t3&v=5",
       ]);
+      // The client goes by the same name on every attempt.
+      expect(new Set(urls().map((url) => new URL(url).searchParams.get("client"))).size).toBe(1);
       expect(askedFor).toEqual(["r", "r", "r"]);
       client.close();
     });
@@ -281,9 +289,9 @@ describe("RoomClient", () => {
       FakeSocket.all[0]!.drop(4004, "new");
       await vi.advanceTimersByTimeAsync(0);
 
-      expect(urls()).toEqual([
-        "wss://tickflare.test/rooms/old?token=t1&lang=it&v=4",
-        "wss://tickflare.test/rooms/new?token=t2&lang=it&v=4",
+      expect(urls().map(asked)).toEqual([
+        "wss://tickflare.test/rooms/old?token=t1&lang=it&v=5",
+        "wss://tickflare.test/rooms/new?token=t2&lang=it&v=5",
       ]);
       expect(askedFor).toEqual(["old", "new"]);
       client.close();
@@ -300,7 +308,7 @@ describe("RoomClient", () => {
       expect(seen).toEqual(["connecting:1006:token_failed"]);
 
       await vi.advanceTimersByTimeAsync(250);
-      expect(urls()).toEqual(["wss://tickflare.test/rooms/r?token=t2&v=4"]);
+      expect(urls().map(asked)).toEqual(["wss://tickflare.test/rooms/r?token=t2&v=5"]);
       warn.mockRestore();
       client.close();
     });

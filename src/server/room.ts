@@ -72,7 +72,55 @@ const V2_TAG = "\u0001v=2";
 const V3_TAG = "\u0001v=3";
 /** Marks the socket of a client that speaks version 4: it is told the room's clock. */
 const V4_TAG = "\u0001v=4";
+/** Marks the socket of a client that speaks version 5: it can be told which of its commands were handled. */
+const V5_TAG = "\u0001v=5";
+/** Starts the tag that holds the name a client of version 5 gave itself. */
+const CLIENT_TAG = "\u0001c=";
+/** What a client may name itself: short, and nothing that needs escaping anywhere. */
+const CLIENT_NAME = /^[\w-]{1,64}$/;
+/** How many of a client's latest refused commands the room remembers the reasons of. */
+const REFUSALS_KEPT = 8;
+/** How much of each of those reasons it remembers, in characters. */
+const REASON_KEPT = 120;
+/**
+ * The most that is written to the room's row of which commands were handled,
+ * in characters: about fifteen hundred clients. The row holds the state and
+ * the seats too, and Cloudflare allows it 2 MB. Past this the clients that
+ * connected longest ago are left out, and are told nothing when they come
+ * back after the room has slept.
+ */
+const HANDLED_CHARS = 100_000;
 const isMark = (tag: string) => tag.charCodeAt(0) === 1;
+
+/**
+ * What the room remembers of the commands of one client, by the player it
+ * plays for. A client that names itself numbers its commands upwards for
+ * as long as it lives, so one number says how far the room has got with
+ * them, and a command that is sent again after a lost connection is known
+ * for what it is.
+ */
+interface Handled {
+  /** The name the client gave itself: another client of the same player starts over. */
+  client: string;
+  /** The `id` of the latest command or leave of its that was handled, applied or refused. 0 for none. */
+  last: number;
+  /** The latest of them that were refused, oldest first, each with its reason. */
+  refused: [id: number, reason: string][];
+  /** This record as it goes into the room's row, until it changes. */
+  json?: string;
+}
+
+/**
+ * What the room notes on a socket itself, where it outlasts this instance.
+ * `replaced`: a newer connection of the same player took over. `silent`: it
+ * was closed for its silence. `untracked`: the room came back from an older
+ * save under it, see `#load`.
+ */
+interface SocketNote {
+  replaced?: boolean;
+  silent?: boolean;
+  untracked?: boolean;
+}
 
 /** What a socket's tags say: whose it is, and what its client asked for. */
 interface SocketInfo {
@@ -85,6 +133,10 @@ interface SocketInfo {
   presence: boolean;
   /** Version 4: told the room's clock. */
   clock: boolean;
+  /** Version 5: can be told which of its commands were handled. */
+  resumes: boolean;
+  /** The name its client gave itself, if it gave one. */
+  client: string | undefined;
 }
 /**
  * In a room with more than `PRESENCE_CROWD` connections, the least time
@@ -185,6 +237,21 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
    * `rate_limited` and never reach `parseCommand`. `Infinity` turns it off.
    */
   protected maxCommandsPerSecond = 30;
+
+  /**
+   * Whether the room remembers which commands of each client it has handled,
+   * so that a client whose connection dropped can be told when it is back,
+   * send again the ones that never arrived, and have none applied twice.
+   * `RoomClient` does this by itself. On by default.
+   *
+   * What was handled is saved with the state, in the same row, so the two
+   * are always of the same moment. A ticking room that also records commands
+   * somewhere of its own as they arrive should call `saveNow()` in the same
+   * hook, as for anything else it writes itself, or turn this off: after a
+   * restart the room would otherwise take a command that is sent again for
+   * new, though its own record has it.
+   */
+  protected rememberCommands = true;
 
   /**
    * Where `finishMatch` announces a finished match. Set it to a Queue binding:
@@ -375,6 +442,12 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
 
   /** Holds each player to `maxCommandsPerSecond`. */
   #limiter = new RateLimiter();
+  /**
+   * Which commands of each seated player's client have been handled: see
+   * `Handled`. Saved in the room's row whenever the state is, so that what
+   * storage says was handled is what the saved state shows.
+   */
+  #handled = new Map<string, Handled>();
 
   /** Ticks run since the room was created. */
   #tick = 0;
@@ -848,6 +921,11 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     if (Number(asked.get("v")) >= 2) marks.push(V2_TAG);
     if (Number(asked.get("v")) >= 3) marks.push(V3_TAG);
     if (Number(asked.get("v")) >= 4) marks.push(V4_TAG);
+    if (Number(asked.get("v")) >= 5) {
+      marks.push(V5_TAG);
+      const client = asked.get("client");
+      if (this.rememberCommands && client !== null && CLIENT_NAME.test(client)) marks.push(CLIENT_TAG + client);
+    }
     const response = this.#connect(playerId, name, marks);
     await this.#finish();
     return response;
@@ -953,8 +1031,12 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     const server = pair[1];
     const player: Player = { id: playerId, connected: true };
     if (name !== undefined) player.name = name;
+    /** The player had their seat before this connection: what their client sent before was sent to this seat. */
+    const seated = this.#roster.includes(playerId);
+    /** The name the client gave itself, if the room remembers commands and it gave one. */
+    const named = marks.find((mark) => mark.startsWith(CLIENT_TAG))?.slice(CLIENT_TAG.length);
 
-    if (!this.#roster.includes(playerId)) {
+    if (!seated) {
       const arrival = this.#store.arrival(playerId);
       // A player handed over by another room is always let in.
       if (arrival === undefined) {
@@ -979,6 +1061,10 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
           return refuse(client, server, CloseCode.RoomFull, "room_full");
         }
       }
+      // A new seat starts over: nothing sent to an earlier one counts. Noted before the join is
+      // saved, so that the same write holds it.
+      this.#handled.delete(playerId);
+      if (named !== undefined) this.#handled.set(playerId, { client: named, last: 0, refused: [] });
       const joined = this.#apply(() => {
         this.#roster.push(playerId);
         this.#connecting = playerId;
@@ -990,6 +1076,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
         }
       });
       if (!joined.ok) {
+        this.#handled.delete(playerId);
         return refuse(client, server, CloseCode.JoinRejected, joined.reason);
       }
     } else if (!this.#isConnected(playerId)) {
@@ -1010,14 +1097,33 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     // What the client asked for is kept with the socket, where it outlasts the room's sleep.
     this.ctx.acceptWebSocket(server, [playerId, ...marks]);
     this.#heard.set(server, Date.now());
-    this.#welcome(server, player, this.#loop !== undefined);
+    let resumed: Handled | undefined;
+    if (named !== undefined && seated) {
+      const known = this.#handled.get(playerId);
+      if (known?.client === named) {
+        // The client the seat last heard from, on a new connection: it is told how far the room
+        // got with its commands.
+        resumed = known;
+      } else {
+        // Another client than the one the room remembers: a page that was loaded again, or a
+        // second device. Whether the room ever heard from it is not known, so it is told nothing,
+        // and counts from here. Written now: a client the room knows is one in storage.
+        this.#handled.set(playerId, { client: named, last: 0, refused: [] });
+        this.#saveHandled();
+      }
+    }
+    this.#welcome(server, player, this.#loop !== undefined, resumed);
     this.#broadcastPresence(server);
 
     return new Response(null, { status: 101, webSocket: client });
   }
 
-  /** Sends a socket everything from the start: who they are, the players and their whole view. */
-  #welcome(ws: WebSocket, player: Player, ticking: boolean): void {
+  /**
+   * Sends a socket everything from the start: who they are, the players and
+   * their whole view. `resumed`, on a new connection of a client that held
+   * the seat before, also tells it which of its commands were handled.
+   */
+  #welcome(ws: WebSocket, player: Player, ticking: boolean, resumed?: Handled): void {
     const welcome = JSON.stringify({
       t: "welcome",
       v: this.#versionOf(ws),
@@ -1026,6 +1132,8 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
       tick: this.#tick,
       tickRate: this.tickRate,
       ...(this.#loop !== undefined && this.#socketInfo(ws).clock ? this.#clockReading(Date.now()) : {}),
+      ...(resumed ? { c: resumed.last } : {}),
+      ...(resumed && resumed.refused.length > 0 ? { refused: resumed.refused } : {}),
       state: this.view(player),
       players: this.players,
     } satisfies ServerMessage);
@@ -1044,7 +1152,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
       this.#owed.delete(old);
       try {
         // Marked, so that its close is not taken for the player dropping.
-        old.serializeAttachment({ replaced: true });
+        this.#note(old, { replaced: true });
         old.close(CloseCode.Replaced, "replaced");
       } catch {
         // Already closed.
@@ -1056,6 +1164,13 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     const playerId = this.#playerOf(ws);
     // A socket whose seat is gone is about to be closed; ignore what it still sends.
     if (!playerId || !this.#roster.includes(playerId)) return;
+    // What the room notes on the socket of a client that named itself decides what its commands
+    // count for: see `#handledFor`.
+    const note = this.#socketInfo(ws).client === undefined ? null : (ws.deserializeAttachment() as SocketNote | null);
+    // A newer connection took over. If it is the same client's, it sends again whatever was not
+    // handled when it was welcomed, and what still arrives here would be handled twice. If it is
+    // another's, this one has been told to stop.
+    if (note?.replaced) return;
 
     // Every frame counts against the limit, including the ones refused below.
     const allowed = this.#limiter.spend(playerId, this.maxCommandsPerSecond);
@@ -1076,15 +1191,44 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     if (!frame) {
       return this.#send(ws, { t: "error", reason: allowed ? "invalid_message" : "rate_limited" });
     }
+    // While the simulation runs, what a command changed is sent with the next tick.
+    const ticking = this.#loop !== undefined;
+    /** An ack means "you have seen the result": at once, or with the tick that sends the result. */
+    const ack = () => {
+      if (!ticking || frame.t !== "cmd") return this.#send(ws, { t: "ack", id: frame.id, seq: this.#seq });
+      const owed = this.#owed.get(ws);
+      if (owed) owed.push(frame.id);
+      else this.#owed.set(ws, [frame.id]);
+    };
+
+    const handled = this.#handledFor(ws, playerId, note);
+    if (handled && frame.id <= handled.last) {
+      // Sent before, on a connection that was lost before its answer arrived, and handled
+      // then: answered as it was, and not applied again.
+      const refusal = handled.refused.find(([id]) => id === frame.id);
+      return refusal ? this.#send(ws, { t: "reject", id: frame.id, reason: refusal[1] }) : ack();
+    }
+    // From here on the command is handled, whatever becomes of it. If it changes the state, the
+    // save that holds the change says so too: they are written together.
+    if (handled) {
+      handled.last = frame.id;
+      handled.json = undefined;
+    }
+    const refuse = (reason: string) => {
+      if (handled) {
+        handled.refused.push([frame.id, reason.slice(0, REASON_KEPT)]);
+        if (handled.refused.length > REFUSALS_KEPT) handled.refused.shift();
+        handled.json = undefined;
+      }
+      this.#send(ws, { t: "reject", id: frame.id, reason });
+    };
     if (!allowed) {
       // Answered by id, so the client's pending command settles instead of hanging.
-      return this.#send(ws, { t: "reject", id: frame.id, reason: "rate_limited" });
+      return refuse("rate_limited");
     }
 
     const player: Player = { id: playerId, connected: true };
     let outcome: Outcome;
-    // While the simulation runs, what a command changed is sent with the next tick.
-    const ticking = this.#loop !== undefined;
     if (frame.t === "leave") {
       outcome = this.#apply(() => {
         this.onLeave(player);
@@ -1097,8 +1241,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
       try {
         command = this.parseCommand(frame.data);
       } catch (err) {
-        const reason = err instanceof Rejection ? err.reason : "invalid_command";
-        return this.#send(ws, { t: "reject", id: frame.id, reason });
+        return refuse(err instanceof Rejection ? err.reason : "invalid_command");
       }
       // If this changes what the player sees, the frame that says so says whose command it shows.
       this.#answering = { ws, id: frame.id };
@@ -1109,18 +1252,46 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
       }
     }
 
-    if (!outcome.ok) {
-      return this.#send(ws, { t: "reject", id: frame.id, reason: outcome.reason });
-    }
-    if (ticking && frame.t === "cmd") {
-      // An ack means "you have seen the result", and the result goes out with the tick.
-      const owed = this.#owed.get(ws);
-      if (owed) owed.push(frame.id);
-      else this.#owed.set(ws, [frame.id]);
-      return;
-    }
+    if (!outcome.ok) return refuse(outcome.reason);
     // The state frame, if any, has already gone out.
-    this.#send(ws, { t: "ack", id: frame.id, seq: this.#seq });
+    ack();
+  }
+
+  /**
+   * What the room remembers of the commands of the client on `ws`, to tell
+   * a command that is sent again from a new one. Undefined for a client
+   * that did not name itself, and for one the room has no record of: its
+   * commands are applied as they come.
+   */
+  #handledFor(ws: WebSocket, playerId: string, note: SocketNote | null): Handled | undefined {
+    const client = this.#socketInfo(ws).client;
+    if (client === undefined) return undefined;
+    const handled = this.#handled.get(playerId);
+    if (handled?.client !== client) return undefined;
+    if (note?.untracked) {
+      // The room came back from an older save under this connection. Commands the save does not
+      // hold may be followed here by later ones, so their numbers no longer say which the room
+      // has. From the first that arrives, the record is not to be trusted: it goes, and this
+      // client is told nothing when it next connects.
+      this.#handled.delete(playerId);
+      return undefined;
+    }
+    return handled;
+  }
+
+  /** Adds to what is noted on a socket itself: see `SocketNote`. */
+  #note(ws: WebSocket, note: SocketNote): void {
+    ws.serializeAttachment({ ...(ws.deserializeAttachment() as SocketNote | null), ...note });
+  }
+
+  /**
+   * Writes which commands were handled, now. Outside the simulation the
+   * state in storage is the state as it is, and the one column is all that
+   * differs. In it, the state goes along, so that the two stay of one moment.
+   */
+  #saveHandled(): void {
+    if (this.#loop === undefined && !this.#unsaved && this.#store.writeHandled(this.#handledJson())) return;
+    this.#writeRoom();
   }
 
   /** Acks the commands `ws` is still owed an answer to, or everyone's. */
@@ -1140,7 +1311,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     if (!playerId || !this.#roster.includes(playerId)) return;
     // A newer connection for the same player took over: nothing to announce, now or
     // when this close arrives after the newer connection has itself gone.
-    const mark = ws.deserializeAttachment() as { replaced?: boolean; silent?: boolean } | null;
+    const mark = ws.deserializeAttachment() as SocketNote | null;
     // Or it was closed for its silence, and the player's going was dealt with then.
     if (mark?.replaced || (mark?.silent && !silent)) return;
     if (this.#isConnected(playerId, ws)) return;
@@ -1175,6 +1346,8 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     if (this.#removed.length > 0 || this.#presenceStale) {
       this.#presenceStale = false;
       for (const { id, reason } of this.#removed.splice(0)) {
+        // A seat taken again starts over.
+        if (!this.#roster.includes(id)) this.#handled.delete(id);
         for (const ws of this.ctx.getWebSockets(id)) {
           try {
             ws.close(CloseCode.Removed, reason.slice(0, MAX_CLOSE_REASON));
@@ -1439,7 +1612,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
       try {
         // Marked: the player drops now, once. If the other end is there after all and answers
         // the close, that is not a second drop.
-        ws.serializeAttachment({ silent: true });
+        this.#note(ws, { silent: true });
         ws.close(CloseCode.Silent, "silent");
       } catch {
         // Already closed.
@@ -1475,6 +1648,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     this.#teams = meta.has("teams") ? (JSON.parse(meta.get("teams")!) as string[][]) : null;
     this.#outboxPending = this.#store.hasOutbox();
     this.#seq = room?.seq ?? 0;
+    this.#handled = readHandled(room?.handled);
     let timers = this.#store.timers();
     if (timers.some(([name]) => name === AWAKE_TIMER)) {
       // The deadline lives in memory now. Left with the timers, it would fire for ever.
@@ -1499,6 +1673,9 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
       if (sockets.length > 0 && this.#wantsTicks(true)) {
         for (const { ws, id } of sockets) {
           try {
+            // Commands this client sent since the save are gone with the old instance, and later
+            // ones may still be on their way here: see `#handledFor`.
+            if (this.#socketInfo(ws).client !== undefined) this.#note(ws, { untracked: true });
             this.#welcome(ws, { id, connected: true }, true);
           } catch (err) {
             console.error(`[tickflare] could not send the state to ${id}:`, err);
@@ -1583,7 +1760,40 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
   }
 
   #persist(seq: number, committed: Committed): void {
-    this.#store.writeRoom({ seq, state: committed.state, roster: committed.roster, tick: this.#tick });
+    this.#store.writeRoom({
+      seq,
+      state: committed.state,
+      roster: committed.roster,
+      tick: this.#tick,
+      handled: this.#handledJson(),
+    });
+  }
+
+  /**
+   * Which commands were handled, for the room's row: by player, the client's
+   * name, its latest `id` and, if any, the refusals. "" when no client named
+   * itself, as in every room whose clients are older than version 5.
+   */
+  #handledJson(): string {
+    if (this.#handled.size === 0) return "";
+    const seated = new Set(this.#roster);
+    const records: string[] = [];
+    let length = 1;
+    for (const [id, handled] of this.#handled) {
+      if (!seated.has(id)) {
+        // A seat that was given up: a seat taken again starts over.
+        this.#handled.delete(id);
+        continue;
+      }
+      const { client, last, refused } = handled;
+      handled.json ??= `${JSON.stringify(id)}:${JSON.stringify(refused.length > 0 ? [client, last, refused] : [client, last])}`;
+      records.push(handled.json);
+      length += handled.json.length + 1;
+    }
+    // See `HANDLED_CHARS`. The oldest are first.
+    let from = 0;
+    while (length > HANDLED_CHARS) length -= records[from++]!.length + 1;
+    return from >= records.length ? "" : `{${(from > 0 ? records.slice(from) : records).join(",")}}`;
   }
 
   /** Remembers the id this room is reached under, the first time it hears it. */
@@ -1788,7 +1998,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
   /** The version of the protocol spoken on this socket: the one its client asked for, or the newest this room knows. */
   #versionOf(ws: WebSocket): number {
     const info = this.#socketInfo(ws);
-    return info.clock ? 4 : info.presence ? 3 : info.arrays ? 2 : 1;
+    return info.resumes ? 5 : info.clock ? 4 : info.presence ? 3 : info.arrays ? 2 : 1;
   }
 
   /**
@@ -1938,6 +2148,8 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
         arrays: tags.includes(V2_TAG),
         presence: tags.includes(V3_TAG),
         clock: tags.includes(V4_TAG),
+        resumes: tags.includes(V5_TAG),
+        client: this.rememberCommands ? tags.find((tag) => tag.startsWith(CLIENT_TAG))?.slice(CLIENT_TAG.length) : undefined,
       };
       this.#infos.set(ws, info);
     }
@@ -1981,6 +2193,22 @@ function messageFrame(message: unknown): string {
   // `undefined` and functions vanish in JSON; a cycle or a BigInt throws on its own.
   if (frame === undefined) throw new TypeError("A message must be JSON-serializable");
   return frame;
+}
+
+/** Reads what `#handledJson` wrote. Anything it cannot read is taken for nothing handled. */
+function readHandled(json: string | undefined): Map<string, Handled> {
+  const handled = new Map<string, Handled>();
+  if (!json) return handled;
+  try {
+    const stored = JSON.parse(json) as Record<string, [string, number, [number, string][]?]>;
+    for (const [id, [client, last, refused]] of Object.entries(stored)) {
+      handled.set(id, { client, last, refused: refused ?? [] });
+    }
+  } catch (err) {
+    console.error("[tickflare] could not read which commands were handled; taking it for none:", err);
+    handled.clear();
+  }
+  return handled;
 }
 
 function isThenable(value: unknown): value is PromiseLike<unknown> {

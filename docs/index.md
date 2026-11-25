@@ -201,6 +201,30 @@ draw(predicted.state);
 <div class="tf-recipe">
 <div>
 
+### Connections that drop
+
+A command that was on its way when the connection dropped is neither lost nor applied twice. Back in the room, the client learns what became of it and sends it again if it never arrived, through a deploy too. There is nothing to write. [When the connection drops](/guide/client#when-the-connection-drops)
+
+</div>
+<div>
+
+```ts
+try {
+  // Resolves when the room has applied it, once,
+  // however many connections that took.
+  await room.send({ type: "place", cell: 4 });
+} catch (error) {
+  // The room refused it, or ten seconds went by
+  // without a connection (keepCommandsMs).
+}
+```
+
+</div>
+</div>
+
+<div class="tf-recipe">
+<div>
+
 ### Hidden information
 
 Each player receives their own view of the state. Hands, fog of war and secret roles never reach the wrong screen. [State and views](/guide/state-and-views)

@@ -2,7 +2,7 @@
 
 Rooms and clients talk over one WebSocket per player, in JSON text frames. `tickflare/client` speaks this protocol for you; this page is for writing a client in another language, and for reading frames in your browser's developer tools.
 
-The protocol is at version 4. A client says which version it speaks with `v` in the query when it connects, `?v=4`, and the room's `welcome` frame says which one it will use on that connection: the one asked for, or its own latest if that is older. A client that does not say is spoken to in version 1, so a client written for version 1 goes on working. Version 2 added [array patches](#patches). Version 3 added [presence as changes](#presence). Version 4 added [the room's clock](#the-room-s-clock).
+The protocol is at version 5. A client says which version it speaks with `v` in the query when it connects, `?v=5`, and the room's `welcome` frame says which one it will use on that connection: the one asked for, or its own latest if that is older. A client that does not say is spoken to in version 1, so a client written for version 1 goes on working. Version 2 added [array patches](#patches). Version 3 added [presence as changes](#presence). Version 4 added [the room's clock](#the-room-s-clock). Version 5 added [commands that outlive a connection](#commands-that-outlive-a-connection).
 
 Offer `permessage-deflate` when you connect, as browsers do. Cloudflare then compresses the frames, which makes patches of rounded numbers four to five times smaller on the wire; a client that does not offer it is sent them as they are. If your WebSocket library cannot do that, ask for [binary patches](#binary-patches) instead, which are a little over a third of the size of the JSON ones.
 
@@ -16,7 +16,7 @@ The room's first frame on every connection, reconnects included, is `welcome`.
 
 | Frame | Meaning |
 | --- | --- |
-| `{ "t": "cmd", "id": 1, "data": … }` | A command. `data` is what `parseCommand` receives. `id` is any number unique on this connection, echoed in the answer |
+| `{ "t": "cmd", "id": 1, "data": … }` | A command. `data` is what `parseCommand` receives. `id` is any whole number unique on this connection, echoed in the answer. A client that [names itself](#commands-that-outlive-a-connection) counts upwards from 1 |
 | `{ "t": "leave", "id": 2 }` | Give up the seat. Answered like a command; on `ack` the room closes the connection |
 | `ping` | A plain text keepalive. The runtime answers `pong` without waking the room |
 
@@ -28,7 +28,7 @@ The room does the same from its side while it is ticking: a connection that has 
 
 | Frame | Meaning |
 | --- | --- |
-| `{ "t": "welcome", "v", "you", "seq", "tick", "tickRate", "ms"?, "epoch"?, "state", "players" }` | First frame on every connection |
+| `{ "t": "welcome", "v", "you", "seq", "tick", "tickRate", "ms"?, "epoch"?, "c"?, "refused"?, "state", "players" }` | First frame on every connection |
 | `{ "t": "patch", "seq", "tick", "from"?, "c"?, "p" }` | The state changed: only the difference from what this player last received |
 | `{ "t": "state", "seq", "tick", "c"?, "state" }` | The state changed, and this is the player's whole view: the room does not know what they hold, or the view is not an object |
 | `{ "t": "presence", "players" }` or `{ "t": "presence", "set"?, "gone"? }` | Someone joined, dropped, came back or left: see [Presence](#presence) |
@@ -46,11 +46,41 @@ Fields:
 - `tick` and `tickRate` are the ticks run so far and the ticks a second; both 0 in event mode. `ms` and `epoch`, in version 4, are in a `welcome` sent while the simulation runs: see [The room's clock](#the-room-s-clock).
 - An `ack` means that the view the player holds shows the command. In event mode it comes straight after the `patch` or `state` frame the command caused. In a room that is ticking, a command's effect is sent with the next tick, and so is its `ack`, after that tick's `patch`; the `ack` then carries the `tick` the view is of, since a tick that leaves a player's view as it was sends them no patch. A `leave` is always answered at once, after any acks still owed.
 - `c`, on a `patch` or `state`, is the `id` of the latest of this player's own commands that the frame is the first to show. That command and every earlier one have been applied; their `ack` frames follow. A client that draws its own commands ahead of the room drops them at this frame, in the same step as it takes the new state, so that none is shown twice or not at all.
-- A `welcome` can arrive on a connection that is already open. The room was taken out of memory in the middle of a simulation and has resumed from its last save: take the whole view from it, and give up the commands you were waiting to hear about.
+- `c` and `refused`, on a `welcome` in version 5, say which of the client's earlier commands the room has handled: see [Commands that outlive a connection](#commands-that-outlive-a-connection).
+- A `welcome` can arrive on a connection that is already open. The room was taken out of memory in the middle of a simulation and has resumed from its last save: take the whole view from it, and give up the commands you were waiting to hear about. It never has `c`.
 - `reject` reasons are what the room passed to `reject()`, or `invalid_command`, `internal_error` or `rate_limited`.
 - `error` reasons are `invalid_json`, `invalid_message`, `message_too_large`, `binary_not_supported` or `rate_limited`.
 
 The TypeScript types for every frame are exported from `tickflare` as `ClientMessage`, `ServerMessage` and the individual frame types (`WelcomeFrame`, `PatchFrame`, …).
+
+## Commands that outlive a connection
+
+A connection can drop between a command and its answer. The client then cannot tell whether the room applied the command, and sending it again on the next connection could apply it twice. In version 5 the room keeps count, so that the client can find out and no command is applied twice.
+
+**The client names itself.** It adds `client=<name>` to the query, next to `v=5`: one to 64 letters, digits, `_` or `-`, made up at random when the client starts and kept for as long as it lives, across every connection it makes. A page that is loaded again is a new client with a new name. The name only tells one player's clients apart, so a dozen random characters are plenty.
+
+**It numbers its commands upwards.** The `id` of each `cmd` and `leave` is a whole number higher than the one before, starting at 1, and the count goes on from one connection to the next. A command that is sent again keeps its `id`.
+
+**The room says how far it got.** On a new connection to a seat the player already had, the `welcome` to a client the room knows has:
+
+- `c`: the `id` of the latest command or leave of this client's that the room has handled, applied or refused. 0 if it has handled none. The `state` in the same frame shows every one of them that was applied.
+- `refused`: the last of those that were refused, oldest first, each as `[id, reason]`, with the reason the `reject` frame gave, cut to 120 characters. The room remembers eight. It is left out when there are none.
+
+So for each command the client is still waiting to hear about: with an `id` up to `c`, it was handled, and was applied unless `refused` has it. With a higher `id`, the room has not seen it, or saw it and then [went back to a save from before it](../guide/limits#restarts-and-deploys). The client sends those again, in order and before any new command, and the room answers them like any other.
+
+**The room takes a lower number for a repeat.** A `cmd` or `leave` whose `id` is not above the latest the room has handled for this client is not applied. It is answered as it was the first time: with `reject` and the same reason if the room remembers refusing it, otherwise with `ack`. This is why the order matters: a command sent after one with a higher `id` is taken for one the room has seen.
+
+**A `welcome` without `c`** means the room knows nothing of what this client sent before, and the client gives up waiting for it. That is the case when:
+
+- the seat is new: the first time, or after the player left, was removed or timed out;
+- the room last heard from another client of the same player. It remembers one client a seat: the one that connected last;
+- the `welcome` came on a connection that was already open, or follows one on which that happened and a command was sent since;
+- the room does not remember commands: `rememberCommands` is off, as it is in a [lockstep](#lockstep) room;
+- the client did not name itself, or asked for a version below 5.
+
+Two more things a client should know. A connection that a newer one has replaced is dead to the room: what a named client still sends on it is ignored, since the client sends it again on the new one. And the room remembers what it handled in the same write as the state, so the two are always of the same moment. In event mode that is every command that changed the state. A command that changed nothing is remembered in memory, and with the next write: if the room sleeps before that and the client then sends the command again, it is handled again. It still changed nothing the first time, but a message the hook sent goes out twice.
+
+`RoomClient` does all of this. A client that does not gets what it always got: commands in flight when a connection drops are neither answered nor repeated.
 
 ## The room's clock
 

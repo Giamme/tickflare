@@ -29,7 +29,7 @@ leave() ──────────▶ seat given up ◀───────
 - with `CloseCode.RoomFull` and `room_full` when `maxPlayers` seats are taken;
 - with `CloseCode.JoinRejected` and `not_invited` when a [matchmaker](./matchmaking) reserved the room for other players.
 
-**Dropping and coming back.** When a seated player's last connection closes, `onDisconnect(player)` runs and they keep their seat. When they connect again, `onReconnect(player)` runs and they get the current state in the first frame. There is nothing to replay.
+**Dropping and coming back.** When a seated player's last connection closes, `onDisconnect(player)` runs and they keep their seat. When they connect again, `onReconnect(player)` runs and they get the current state in the first frame. There is nothing to replay. Commands that were on their way when the connection dropped are the client's to sort out with the room: it learns which were handled and [sends the others again](./client#when-the-connection-drops), and the room applies none of them twice.
 
 **Going silent.** A connection can die without the room being told: a phone out of signal, a laptop lid. While a room is ticking it closes any connection that has sent nothing for two minutes, not even the keepalive the client sends every 25 seconds, and the player is away as after any other drop. This matters for the bill as much as for the game: a room ticks, and is billed, for as long as it believes someone is connected. `silentAfterMs` changes the two minutes, and 0 turns it off.
 

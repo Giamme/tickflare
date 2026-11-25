@@ -106,7 +106,7 @@ describe("the simulation's clock", () => {
     // Someone who joins while it runs finds out from the welcome.
     now += 10;
     const p2 = await join(room, "p2");
-    expect(p2.of("welcome")[0]).toMatchObject({ v: 4, tick: 3, ms: 10, epoch: started!.epoch });
+    expect(p2.of("welcome")[0]).toMatchObject({ v: PROTOCOL_VERSION, tick: 3, ms: 10, epoch: started!.epoch });
 
     // Five seconds on, in steps the room keeps up with, it is said again.
     await advance(p1, 10, 1);

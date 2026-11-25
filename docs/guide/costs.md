@@ -126,7 +126,8 @@ Reading it for a game:
 - **A request** to a Durable Object is a connection being opened, a timer firing, or 20 messages from players. Cloudflare counts incoming WebSocket messages at 20 to a request.
 - **A GB-second** is one second awake at 1 GB. A room is billed as 128 MB, so an hour awake is 3,600 × 0.128 = 460.8 GB-s, or {{ dollars(roomHour) }}.
 - **Rows written** are the room saving. Measured with Wrangler's local runtime, a room writes:
-  - one row for an accepted move in event mode, and one more if the move sets a timer again, as a turn clock does;
+  - one row for an accepted move in event mode, and one more if the move sets a timer again, as a turn clock does. Which commands the room has handled is in that same row;
+  - one row when a player's page is loaded again while they hold a seat, for the room to remember the new client by;
   - one row for each save while ticking, every `saveIntervalMs` (five seconds by default);
   - one row for each lockstep turn that has something in it, in the recording. Empty turns write nothing;
   - one row a minute for a lockstep room's [snapshot](./lockstep#snapshots), which arrives as one request. Thirty of each in a half-hour match: too little to show in the sums below.
