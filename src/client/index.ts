@@ -44,11 +44,14 @@ export { produce } from "./draft.js";
 export { decodePatchFrame } from "../binary.js";
 export { LockstepClient, type LockstepClientOptions } from "./lockstep.js";
 export {
+  differences,
   fingerprint,
   runReplay,
   seededRandom,
   stepThrough,
   type CatchUp,
+  type Desync,
+  type DesyncDifference,
   type LockstepView,
   type TurnsMessage,
   type Replay,

@@ -11,11 +11,14 @@ export { parseWith, type StandardSchemaIssue, type StandardSchemaResult, type St
 export { plain } from "./tracked.js";
 export { LockstepRoom, type LockstepCommand, type LockstepState } from "./lockstep.js";
 export {
+  differences,
   fingerprint,
   runReplay,
   seededRandom,
   stepThrough,
   type CatchUp,
+  type Desync,
+  type DesyncDifference,
   type LockstepView,
   type TurnsMessage,
   type Replay,

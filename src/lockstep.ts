@@ -23,10 +23,7 @@ export interface LockstepView<Input = unknown> {
   /** What happened in the latest turn, in the order every client must apply it. */
   entries: TurnEntry<Input>[];
   /** Set once two players reported different hashes for the same turn. */
-  desync: {
-    /** The first turn two players' hashes differed on. */
-    turn: number;
-  } | null;
+  desync: Desync | null;
   /**
    * Set to `"players"` by a room whose `turnClock` is `"players"`: the room
    * sleeps between turns, and closes them when a player's client asks.
@@ -38,6 +35,72 @@ export interface LockstepView<Input = unknown> {
    * turn is a multiple of this.
    */
   snapshotEvery?: number;
+}
+
+/** Two players' simulations were found to differ: when, whose, and, once the room knows, where. */
+export interface Desync {
+  /** The first turn two players' hashes differed on. */
+  turn: number;
+  /**
+   * The two players whose hashes differed. With more players in the room,
+   * the others agree with one of them or have not reported that turn.
+   * Absent in a room saved before this was noted.
+   */
+  players?: [string, string];
+  /**
+   * Where the two simulations differed at that turn: see `differences`.
+   * Set once both players' clients have sent the room what they saved then,
+   * which they do by themselves when the simulation has `save`. Empty when
+   * what they saved is the same, and the difference is in something `save`
+   * leaves out. Absent until then, and for good when a client had nothing
+   * to send.
+   */
+  differs?: DesyncDifference[];
+}
+
+/** One place where two simulations differed. */
+export interface DesyncDifference {
+  /** Where, as a path into what `save` returned: `units.12.x`. Empty when the two differ as a whole. */
+  path: string;
+  /**
+   * What each of the two had there, as JSON text, in the order of
+   * `Desync.players`. `undefined` where one had nothing, and cut to a
+   * hundred characters where it is long.
+   */
+  values: [string, string];
+}
+
+/**
+ * Where two values that JSON can hold differ: the first `limit` places, 8
+ * unless said otherwise, in the order of the first one's keys. It goes down
+ * to what cannot be taken apart further, so two units that differ in one
+ * coordinate are one difference, at `units.12.x`, and not two whole units.
+ *
+ * It is what a lockstep room uses to say where two players' simulations
+ * differed. Use it yourself to compare two saved simulations, in a test
+ * that runs the same recording twice for instance.
+ */
+export function differences(a: unknown, b: unknown, limit = 8): DesyncDifference[] {
+  const found: DesyncDifference[] = [];
+  const show = (value: unknown): string => {
+    const text = value === undefined ? "undefined" : (JSON.stringify(value) ?? "undefined");
+    return text.length > 100 ? `${text.slice(0, 99)}…` : text;
+  };
+  const walk = (x: unknown, y: unknown, path: string): void => {
+    if (found.length >= limit || x === y) return;
+    if (typeof x === "object" && x !== null && typeof y === "object" && y !== null && Array.isArray(x) === Array.isArray(y)) {
+      const keys = Array.isArray(x)
+        ? Array.from({ length: Math.max(x.length, (y as unknown[]).length) }, (_, index) => String(index))
+        : [...new Set([...Object.keys(x), ...Object.keys(y)])];
+      for (const key of keys) {
+        walk((x as Record<string, unknown>)[key], (y as Record<string, unknown>)[key], path === "" ? key : `${path}.${key}`);
+      }
+      return;
+    }
+    found.push({ path, values: [show(x), show(y)] });
+  };
+  walk(a, b, "");
+  return found;
 }
 
 /**

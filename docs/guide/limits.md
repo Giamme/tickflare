@@ -218,7 +218,7 @@ A match that has to reach a result whoever is watching, a ranked one for instanc
 - **A player who is alone among absent opponents makes no snapshots.** The room goes on serving the last one everyone agreed on, and whoever returns runs the turns since.
 - **Without `save` and `load`, rejoining replays the match from the first turn**, and takes longer the longer the match has run.
 - **Every screen holds the whole game.** There is no hidden information, and a modified client can show what the game hides.
-- **A desync is noticed, not settled.** The room knows that two simulations differed and at which turn, not which one is wrong.
+- **A desync is noticed, not settled.** The room knows that two simulations differed, at which turn, whose they were and, with a simulation that can be saved, [where they differed](./lockstep#finding-a-desync). It does not know which one is wrong, and does nothing to bring them back together.
 - **Anyone the gateway lets through can read a room's recording**, seated or not.
 - **A lockstep client does not follow a handover** to another room.
 - **With the players' clock**, the game stands still while nobody is connected.
