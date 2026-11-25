@@ -133,7 +133,7 @@ The state is one JSON document. It is saved whole: a ticking room writes all of 
 
 That is deliberate. Cloudflare bills a room's storage by the row written, whatever the row holds, and a row written is most of what a move costs in a room that sleeps. One row for the whole state is the cheapest save there is; a state cut into parts that are saved separately would cost more, not less.
 
-**How large it can be.** Cloudflare limits a row to 2 MB, so a state longer than 1.5 MB is spread over rows, one for each 1.5 MB, and each save writes them all. There is no fixed ceiling after that, but the state is held in memory three times over while a room is busy: as objects, as the JSON that was last saved, and as the copy that players are patched against. A room has 128 MB. We have run states of 4 MB; expect trouble somewhere past ten, and long before that every save and every join is moving megabytes.
+**How large it can be.** Cloudflare limits a row to 2 MB, so a state longer than 1.5 MB is spread over rows, one for each 1.5 MB, and each save writes them all. There is no fixed ceiling after that, but the state is held in memory three times over while a room is busy: as objects, as the JSON that was last saved, and as the copy that players are patched against. A room has 128 MB. We have run states of 4 MB; expect trouble somewhere past ten, and long before that every save and every join is moving megabytes. A room with [`historyTicks`](./state-sync#judging-a-command-by-what-its-player-saw) holds the JSON of that many more states, which is for states counted in kilobytes: twelve ticks of 50 KB are 600 KB.
 
 **What you can do today**
 

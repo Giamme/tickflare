@@ -629,6 +629,74 @@ export class EagerRoom extends PacedRoom {
   protected override patchRate = 80;
 }
 
+export interface HistoryState {
+  /** Where the runner is: one further with every tick. */
+  x: number;
+  playing: boolean;
+  /** Each shot, with where the runner was at the tick it named and where it was when the shot arrived. */
+  shots: { tick: number; was: number | null; now: number; hit: boolean }[];
+  /** What a "span" command found the room to have: see `HistoryRoom.onCommand`. */
+  spans: { tick: number; has: boolean[]; latest: number | null }[];
+}
+export type HistoryCommand =
+  | { type: "shoot"; tick: number; x: number }
+  | { type: "span" }
+  | { type: "scribble"; tick: number }
+  | { type: "play"; on: boolean };
+
+/**
+ * Ticks fifty times a second and keeps the state of its last ten ticks.
+ * Rooms named "none-…" keep none, and those named "short-…" keep three.
+ */
+export class HistoryRoom extends Room<HistoryState, HistoryCommand> {
+  protected override tickRate = 50;
+  protected override historyTicks = 10;
+
+  protected initialState(): HistoryState {
+    return { x: 0, playing: true, shots: [], spans: [] };
+  }
+
+  protected parseCommand(raw: unknown): HistoryCommand {
+    return raw as HistoryCommand;
+  }
+
+  protected override shouldTick(): boolean {
+    return this.state.playing;
+  }
+
+  protected override onTick(): void {
+    if (this.roomId?.startsWith("none-")) this.historyTicks = 0;
+    if (this.roomId?.startsWith("short-")) this.historyTicks = 3;
+    this.state.x += 1;
+  }
+
+  protected onCommand(_player: Player, command: HistoryCommand): void {
+    switch (command.type) {
+      case "shoot": {
+        const then = this.stateAt(command.tick);
+        this.state.shots.push({ tick: command.tick, was: then?.x ?? null, now: this.state.x, hit: then?.x === command.x });
+        break;
+      }
+      case "span":
+        this.state.spans.push({
+          tick: this.tick,
+          // The tick to come, the latest, and those nine, ten, three and two before it.
+          has: [-1, 0, 9, 10, 3, 2].map((back) => this.stateAt(this.tick - back) !== undefined),
+          latest: this.stateAt(this.tick)?.x ?? null,
+        });
+        break;
+      case "scribble": {
+        const then = this.stateAt(command.tick);
+        if (then) then.x = -1;
+        break;
+      }
+      case "play":
+        this.state.playing = command.on;
+        break;
+    }
+  }
+}
+
 /** Signs the join tokens accepted under /secure. */
 export const TEST_SECRET = "test-secret-0123456789";
 
@@ -867,6 +935,7 @@ export default {
       (await routeToRoom(request, { rooms: env.PACED, prefix: "/paced", authenticate: whoIs })) ??
       (await routeToRoom(request, { rooms: env.UNEVEN, prefix: "/uneven", authenticate: whoIs })) ??
       (await routeToRoom(request, { rooms: env.EAGER, prefix: "/eager", authenticate: whoIs })) ??
+      (await routeToRoom(request, { rooms: env.HISTORY, prefix: "/history", authenticate: whoIs })) ??
       (await routeToRoom(request, { rooms: env.LEDGER, prefix: "/ledger", authenticate: whoIs })) ??
       (await routeToRoom(request, { rooms: env.TICKLEDGER, prefix: "/tickledger", authenticate: whoIs })) ??
       (await routeToRoom(request, { rooms: env.HALF, prefix: "/half", authenticate: whoIs })) ??

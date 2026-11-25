@@ -92,6 +92,7 @@ Options are fields you override:
 | `maxMessageLength` | `16384` | Longest frame accepted, in characters |
 | `tickRate` | `0` | Ticks a second. 0 is event mode |
 | `patchRate` | `0` | While ticking, patches a second, when that is to be fewer than ticks: [simulate at one rate and send at another](./state-sync#sending-less-often-than-you-simulate). 0 sends after every tick |
+| `historyTicks` | `0` | While ticking, how many ticks of the state are kept for [`stateAt(tick)`](./state-sync#judging-a-command-by-what-its-player-saw). 0 keeps none |
 | `saveIntervalMs` | `5000` | While ticking, how often the state is written |
 | `trackChanges` | `true` | Follow what each hook writes, instead of comparing the whole state after it. See [The state inside a hook](#the-state-inside-a-hook) |
 | `rememberCommands` | `true` | Remember which commands of each client were handled, so that [none is lost or applied twice](./client#when-the-connection-drops) when a connection drops. Turn it off in a ticking room that records commands in tables of its own without calling `saveNow()` |
@@ -115,6 +116,7 @@ These are available on `this` while a hook runs:
 | `players` | Everyone with a seat, in join order |
 | `roomId` | The id this room is reached under |
 | `seq`, `tick` | Changes and ticks so far |
+| `stateAt(tick)` | The state as an earlier tick left it, in a room with `historyTicks`: [judging a command by what its player saw](./state-sync#judging-a-command-by-what-its-player-saw) |
 | `setTimer(name, ms)` / `clearTimer(name)` | [Timers](./timers-messages-async#timers) that survive restarts |
 | `send(playerId, message)` / `broadcast(message)` | [Messages](./timers-messages-async#messages) outside the state |
 | `defer(task)` / `act(hook)` | [Async work](./timers-messages-async#async-work) after the hook |

@@ -32,6 +32,7 @@ declare namespace Cloudflare {
     PACED: DurableObjectNamespace<import("./worker").PacedRoom>;
     UNEVEN: DurableObjectNamespace<import("./worker").UnevenRoom>;
     EAGER: DurableObjectNamespace<import("./worker").EagerRoom>;
+    HISTORY: DurableObjectNamespace<import("./worker").HistoryRoom>;
     LEDGER: DurableObjectNamespace<import("./worker").LedgerRoom>;
     TICKLEDGER: DurableObjectNamespace<import("./worker").TickLedgerRoom>;
     /** Set from the environment in vitest.config.ts, for test/random.test.ts. */

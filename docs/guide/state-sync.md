@@ -228,6 +228,48 @@ const predicted = new Predictor(room, {
 
 `produce(state, change)` is the function underneath, should you want it yourself: it returns what `change` makes of a state without touching the state, copying only what changed.
 
+## Judging a command by what its player saw
+
+What a player sees is the past. A patch takes time to arrive, and `BufferedInterpolator` draws a little behind on purpose, so a player who shoots at a runner aims at where the runner was a tenth of a second ago. By the time the shot reaches the room, the runner has moved on, and a room that checks the shot against `this.state` tells a player who aimed well that they missed. The usual answer is lag compensation: the room keeps the state of its last few ticks and checks the shot against the tick the player was looking at.
+
+The room keeps the ticks, and looks one up with `stateAt`:
+
+```ts
+export class Arena extends Room<State, Command> {
+  protected override tickRate = 60;
+  protected override historyTicks = 12; // 200 ms at 60 ticks a second
+
+  protected onCommand(player: Player, command: Command) {
+    if (command.type === "shoot") {
+      // Where everyone was when this player pulled the trigger, or where they are now.
+      const then = this.stateAt(command.tick) ?? this.state;
+      const target = then.dots[command.target];
+      if (target && hits(then.dots[player.id], command.aim, target)) this.state.dots[command.target].hp -= 10;
+    }
+  }
+}
+```
+
+The client says which tick it was drawing:
+
+```ts
+const glide = new BufferedInterpolator(room, ["x", "y"]);
+
+canvas.onclick = (event) =>
+  room.send({ type: "shoot", target: under(event), aim: angle(event), tick: glide.drawnTick() });
+```
+
+- **`stateAt(tick)` is the state as that tick left it**, which is what the patch of that tick showed. It is the whole state, not a player's view, and a copy of your own: each call parses that tick's JSON, so call it once for a command and keep what it gave. Changes go to `this.state`, as ever.
+- **It returns `undefined` where there is nothing to look back at**: for a tick older than `historyTicks` or one that has not run, after the room restarted, and while the simulation is stopped, when players are shown every change as it is made and `this.state` is what they see. `?? this.state` covers them all.
+- **`glide.drawnTick()` has a fraction**, since what is drawn lies between two ticks, and `stateAt` takes the nearest whole tick. At 60 ticks a second that is at most 8 ms off. Where it matters, look up `Math.floor(tick)` and `Math.ceil(tick)` and blend the positions as the client did.
+- **Without `BufferedInterpolator`**, with `Interpolator` or in the Godot and Unity clients, what is drawn is on its way to the latest state: send `room.tick`.
+- **`historyTicks` is how much lag you forgive, and how far a client can reach back.** The tick comes from the client, which can name an older one than it saw to hit a runner who has since taken cover. It cannot name one older than the room keeps, so keep no more than the delay of the slowest connection you mean to treat fairly: the client's `glide.delay`, in ticks, is a fair measure, and 150 to 250 ms is common. Check that `command.tick` is a number in `parseCommand`, as with everything else a client sends.
+- **Only look back for what the player aimed at.** Their own position at that tick is where the room had them, which is not where their screen had them if their own moves are [predicted](#showing-a-player-s-own-moves-at-once). Most games take the shooter as the room has them now and rewind the targets.
+- **What it costs.** No work in a tick: the room has each tick's JSON already. Memory for `historyTicks` states, and a parse of one state for every `stateAt`. See [the limits](./limits#a-room-s-state-saved-whole).
+- **With a `patchRate`** the client draws between the ticks it was sent, in a straight line, while the room has what really happened at each tick in between. The two differ by as much as a thing turns between two patches.
+
+The other side of it is the runner's: they are hit after they had, on their own screen, reached cover. Every game that compensates for lag makes that trade, and `historyTicks` is where you set how far it goes.
+
 ## What is not there yet
 
 - Prediction is for a player's own commands. There is nothing for guessing where other players will be, and no rollback of a whole simulation.

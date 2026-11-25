@@ -310,6 +310,22 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
   protected patchRate = 0;
 
   /**
+   * How many ticks of the state a ticking room keeps to look back at with
+   * `stateAt`. 0, the default, keeps none.
+   *
+   * It is for judging a command by what its player was looking at when they
+   * sent it, which is a moment ago: a shot at a runner drawn where they were
+   * a tenth of a second back. Set it to as many ticks as the lag you mean to
+   * forgive: 12 at 60 ticks a second is 200 ms. It is also as far as a client
+   * that lies about what it saw can reach back, so no more than that.
+   *
+   * Kept in memory, as the JSON the room has of each tick anyway: it costs no
+   * work in a tick, and as many states of memory as it is long. A room that
+   * restarts, or whose simulation stops, has none until it has ticked again.
+   */
+  protected historyTicks = 0;
+
+  /**
    * While the room is ticking, the most ticks it runs back to back to catch
    * up when it wakes late. The simulation keeps to a fixed clock: tick `n`
    * is due `n / tickRate` seconds after the clock started, and a room that
@@ -408,6 +424,8 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
   /** Timer name to the time it fires, in epoch milliseconds. */
   #timers = new Map<string, number>();
   #committed: Committed = { state: "", roster: "[]", timers: "[]" };
+  /** The state after each of the last `historyTicks` ticks, by tick: see `stateAt`. In order of tick. */
+  #history = new Map<number, string>();
   /** Seats given up during this event. Their sockets are closed once the event is over. */
   #removed: { id: string; reason: string }[] = [];
   /** The timers changed, so the object's alarm has to be moved before the event ends. */
@@ -623,6 +641,28 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
   /** Number of ticks run so far. */
   protected get tick(): number {
     return this.#tick;
+  }
+
+  /**
+   * The state as it was after tick `tick`, which is what the patch of that
+   * tick showed, or undefined if the room does not have it: `historyTicks`
+   * is 0, the tick is older than that many ticks or has not run yet, or the
+   * simulation has stopped or the room restarted since. The latest it has is
+   * `stateAt(this.tick)`, the state as the last tick left it, without what
+   * commands did since. Where there is none, judge by `this.state`.
+   *
+   * A tick with a fraction, as `BufferedInterpolator.drawnTick()` gives it,
+   * is taken as the nearest whole one. Where half a tick matters, take the
+   * ticks on either side and blend what you need from them.
+   *
+   * It is the whole state, not a player's view of it, and a copy of your
+   * own, made from that tick's JSON on every call: it costs what the state
+   * weighs to parse, so call it once for a command and keep what it gave.
+   * Changing the copy changes nothing in the room.
+   */
+  protected stateAt(tick: number): State | undefined {
+    const kept = this.#history.get(Math.round(tick));
+    return kept === undefined ? undefined : (JSON.parse(kept) as State);
   }
 
   /** The id this room is reached under, once someone has connected through the gateway. */
@@ -1544,6 +1584,9 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
         this.#deliverMail();
       }
       if (this.#unsaved) this.#writeRoom();
+      // From here on the players are shown every change as it is made: no tick stands for what
+      // they see, so there is none to look back at.
+      this.#history.clear();
       this.#tellClock(Date.now());
     }
   }
@@ -1650,6 +1693,26 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
       console.error("[tickflare] onTick keeps failing; the simulation is paused until the next event");
       this.#failedTicks = 0;
       this.#stalled = true;
+    }
+    this.#remember();
+  }
+
+  /** Keeps the state the tick that just ran left, and lets go of those older than `historyTicks`. */
+  #remember(): void {
+    const keep = Math.floor(this.historyTicks) || 0;
+    if (keep <= 0) {
+      if (this.#history.size > 0) this.#history.clear();
+      return;
+    }
+    // `onEmpty` may have run after the tick, and what it wrote is not in the JSON yet.
+    this.#freshen();
+    const json = this.#committed.state;
+    const last = this.#history.get(this.#tick - 1);
+    // A tick that changed nothing keeps the string the one before it keeps, not one more like it.
+    this.#history.set(this.#tick, last === json ? last : json);
+    for (const tick of this.#history.keys()) {
+      if (tick > this.#tick - keep) break;
+      this.#history.delete(tick);
     }
   }
 

@@ -68,7 +68,7 @@ The room saves every change before anyone hears about it, rolls back what `rejec
 - **[Worlds across rooms](docs/guide/worlds.md)**: handover between rooms and seeing across borders.
 - **[A report of what each room cost](docs/guide/costs.md#checking-what-you-are-billed-for)**, from Cloudflare's own analytics, which marks rooms that stayed awake with nobody in them.
 - **[Clients for Godot and Unity](docs/guide/engines.md)**, with the browser client's interpolation and prediction, and **[a written-down protocol](docs/reference/protocol.md)** for other engines, with binary patches for those whose WebSocket is not compressed.
-- **[A client](docs/guide/client.md)** for browsers and Node that reconnects on its own, with [no command lost or applied twice](docs/guide/client.md#when-the-connection-drops) on the way, and **[prediction](docs/guide/state-sync.md#showing-a-players-own-moves-at-once)**: a player's own move shows on the click and is corrected by the room.
+- **[A client](docs/guide/client.md)** for browsers and Node that reconnects on its own, with [no command lost or applied twice](docs/guide/client.md#when-the-connection-drops) on the way, and **[prediction](docs/guide/state-sync.md#showing-a-players-own-moves-at-once)**: a player's own move shows on the click and is corrected by the room. For shots, the room can [judge a command by the tick its player was looking at](docs/guide/state-sync.md#judging-a-command-by-what-its-player-saw).
 - **[Measured on Cloudflare](docs/guide/limits.md#the-same-rooms-on-cloudflare)**: what a room holds, such as five hundred players who each see their own part of the world at ten ticks a second, with every run written down, the ones that fell short included.
 
 ## Install

@@ -180,7 +180,7 @@ export class BufferedInterpolator<Field extends string> {
     const track = this.#tracks.get(id);
     if (!track || track.length === 0) return undefined;
     const newest = track[track.length - 1]!;
-    const tick = this.#drawnTick(now);
+    const tick = this.#moment(now);
     if (tick === undefined) return { ...newest.values };
 
     if (tick >= newest.tick) {
@@ -198,6 +198,22 @@ export class BufferedInterpolator<Field extends string> {
     if (!from) return { ...to.values };
     if (to.snap) return { ...from.values };
     return this.#blend(from.values, to.values, (tick - from.tick) / (to.tick - from.tick));
+  }
+
+  /**
+   * The tick it draws at `now`, with its fraction: the moment of the room's
+   * time that `at` shows. Send it with a command that depends on what the
+   * player was looking at, a shot for one, and the room can judge the
+   * command by the state of that tick, which it keeps with `historyTicks`
+   * and reads with `stateAt(tick)`.
+   *
+   * While there is no clock to go by, and when the simulation has stopped,
+   * it is the tick of the latest state, since that is what `at` shows then.
+   * Undefined before the first `update`.
+   */
+  drawnTick(now = localNow()): number | undefined {
+    if (this.#newestTick === -Infinity) return undefined;
+    return this.#moment(now) ?? this.#newestTick;
   }
 
   /** Forget everything, e.g. after moving to another room. */
@@ -239,7 +255,7 @@ export class BufferedInterpolator<Field extends string> {
   }
 
   /** The tick drawn at `now`, with its fraction. Undefined when there is no clock to go by. */
-  #drawnTick(now: number): number | undefined {
+  #moment(now: number): number | undefined {
     if (!(this.#source.tickRate > 0)) return undefined;
     const clock = this.#clockTick(now);
     if (clock === undefined || clock === Infinity) return undefined;
