@@ -236,6 +236,16 @@ A match that has to reach a result whoever is watching, a ranked one for instanc
 
 Seeing across a border is a recipe built on `signal`, not something a room does by itself, and a room cannot act on a neighbour's units.
 
+## Spectators
+
+[Spectators](./spectators) are new, and have run only in the tests, on one machine. What to expect:
+
+- **A spectator costs what a player costs to send to**, and nothing else: one view is worked out for all of them. How many a room carries next to its players has not been measured on Cloudflare.
+- **A delay is held in memory**: every frame the spectators have not been sent yet. Past 16 million characters the room starts their view over.
+- **A room that sleeps forgets what its spectators hold.** When it wakes with spectators connected it sends them the whole view again.
+- **One view for all of them**, no view for each, and none in lockstep rooms.
+- **Not in the Godot and Unity clients.**
+
 ## Clients
 
 The full client is TypeScript, for browsers and Node. The clients for [Godot and Unity](./engines) connect, reconnect, keep the state, send commands, interpolate and predict, in event mode and state sync; their predictors and interpolators replay the same cases as the browser's. Lockstep is not in them: it needs every client to compute the same thing, which only clients of one engine could do, and only with a simulation in integer arithmetic. Neither has been used in a shipped game yet. The Unity client is tested on .NET and not inside the Unity editor, and its WebGL socket has never run.

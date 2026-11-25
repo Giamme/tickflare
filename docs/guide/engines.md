@@ -152,6 +152,8 @@ One difference from the browser: the browser's predictor never touches the room'
 
 ## What they do not have yet
 
+**Spectators.** Neither client can [watch a room without a seat](./spectators) yet.
+
 **Lockstep.** A lockstep client runs the game's simulation itself, and every client has to compute exactly the same thing. Between engines that is out of reach: GDScript, C# and JavaScript write numbers as text differently, and the room compares hashes as text. Within one engine it is possible, if the simulation keeps to integer arithmetic and away from the engine's physics, which is not deterministic across machines, and if the game hashes its own state. Neither client has it yet; a game in Godot or Unity uses event mode or state sync.
 
 **Commands that outlive a connection.** In the browser a command that was on its way when the connection dropped is [settled or sent again](./client#when-the-connection-drops) when the client is back, and one sent without a connection waits for it. These clients answer both at once, with `disconnected` and `not_connected`, as the browser client did before. They speak version 3 of the [protocol](../reference/protocol); the room goes on applying their commands as they come.

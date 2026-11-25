@@ -61,6 +61,7 @@ export {
   routeToRoom,
   NAME_HEADER,
   PLAYER_HEADER,
+  SPECTATOR_HEADER,
   type Authenticated,
   type MatchmakerRouteOptions,
   type RoomNamespace,
@@ -85,6 +86,7 @@ export {
   type PresenceFrame,
   type RejectFrame,
   type ServerMessage,
+  type SpectatingFrame,
   type StateFrame,
   type WelcomeFrame,
 } from "../protocol.js";

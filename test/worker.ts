@@ -697,6 +697,108 @@ export class HistoryRoom extends Room<HistoryState, HistoryCommand> {
   }
 }
 
+export interface WatchedState {
+  count: number;
+  /** One number per player, which `ClosedRoom` hides from everyone else. */
+  hands: Record<string, number>;
+  log: string[];
+}
+export type WatchedCommand =
+  | { type: "add"; n: number }
+  | { type: "shout"; text: string }
+  | { type: "census" }
+  | { type: "kick"; who: string };
+
+/** Event mode. Two may watch, and see what the players see. Nobody whose id starts with "banned". */
+export class WatchedRoom extends Room<WatchedState, WatchedCommand> {
+  protected override maxSpectators = 2;
+
+  protected initialState(): WatchedState {
+    return { count: 0, hands: {}, log: [] };
+  }
+
+  protected parseCommand(raw: unknown): WatchedCommand {
+    return raw as WatchedCommand;
+  }
+
+  protected override onJoin(player: Player): void {
+    this.state.hands[player.id] = 7 + Object.keys(this.state.hands).length;
+    this.state.log.push(`join:${player.id}`);
+  }
+
+  protected override onDisconnect(player: Player): void {
+    this.state.log.push(`drop:${player.id}`);
+  }
+
+  protected override onEmpty(): void {
+    this.state.log.push("empty");
+  }
+
+  protected override onSpectate(player: Player): void {
+    if (player.id.startsWith("banned")) throw reject("banned");
+    this.state.log.push(`watch:${player.id}:${player.connected ? "seated" : "unseated"}`);
+  }
+
+  protected onCommand(player: Player, command: WatchedCommand): void {
+    switch (command.type) {
+      case "add":
+        this.state.count += command.n;
+        break;
+      case "shout":
+        this.broadcast({ said: command.text, by: player.id });
+        this.send(player.id, { whispered: command.text });
+        break;
+      case "census":
+        this.state.log.push(`watching:${this.spectators}`);
+        break;
+      case "kick":
+        this.removePlayer(command.who, "kicked");
+        break;
+    }
+  }
+}
+
+/** The same, with the spectators 400 ms behind. */
+export class LateRoom extends WatchedRoom {
+  protected override spectatorDelayMs = 400;
+}
+
+/** Shows each player their own hand only, and does not say what a spectator may see. */
+export class ClosedRoom extends WatchedRoom {
+  protected override view(player: Player): unknown {
+    return { count: this.state.count, hand: this.state.hands[player.id] ?? null };
+  }
+}
+
+/** The same, and it says: a spectator sees the count and how many hands there are. */
+export class HiddenRoom extends ClosedRoom {
+  protected override spectatorView(): unknown {
+    return { count: this.state.count, hands: Object.keys(this.state.hands).length };
+  }
+}
+
+/** Ticks fifty times a second, with the spectators 300 ms behind. */
+export class LateTicks extends Room<{ n: number }, { type: "noop" }> {
+  protected override tickRate = 50;
+  protected override maxSpectators = 2;
+  protected override spectatorDelayMs = 300;
+
+  protected initialState(): { n: number } {
+    return { n: 0 };
+  }
+
+  protected parseCommand(raw: unknown): { type: "noop" } {
+    return raw as { type: "noop" };
+  }
+
+  protected override onTick(): void {
+    this.state.n += 1;
+    if (this.state.n % 10 === 0) this.broadcast({ beat: this.state.n });
+  }
+
+  protected onCommand(): void {}
+}
+
 /** Signs the join tokens accepted under /secure. */
 export const TEST_SECRET = "test-secret-0123456789";
 
@@ -936,6 +1038,11 @@ export default {
       (await routeToRoom(request, { rooms: env.UNEVEN, prefix: "/uneven", authenticate: whoIs })) ??
       (await routeToRoom(request, { rooms: env.EAGER, prefix: "/eager", authenticate: whoIs })) ??
       (await routeToRoom(request, { rooms: env.HISTORY, prefix: "/history", authenticate: whoIs })) ??
+      (await routeToRoom(request, { rooms: env.WATCHED, prefix: "/watched", authenticate: whoIs })) ??
+      (await routeToRoom(request, { rooms: env.LATE, prefix: "/late", authenticate: whoIs })) ??
+      (await routeToRoom(request, { rooms: env.CLOSED, prefix: "/closed", authenticate: whoIs })) ??
+      (await routeToRoom(request, { rooms: env.HIDDEN, prefix: "/hidden", authenticate: whoIs })) ??
+      (await routeToRoom(request, { rooms: env.LATETICKS, prefix: "/lateticks", authenticate: whoIs })) ??
       (await routeToRoom(request, { rooms: env.LEDGER, prefix: "/ledger", authenticate: whoIs })) ??
       (await routeToRoom(request, { rooms: env.TICKLEDGER, prefix: "/tickledger", authenticate: whoIs })) ??
       (await routeToRoom(request, { rooms: env.HALF, prefix: "/half", authenticate: whoIs })) ??

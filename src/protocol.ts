@@ -142,6 +142,40 @@ export interface WelcomeFrame<View = unknown> {
 }
 
 /**
+ * First frame on the connection of a spectator, who asked to watch with
+ * `spectate=1`, in place of a `welcome`. It says who they are and how the
+ * room runs, and nothing of the game: the spectators' view follows in a
+ * `state` frame, at once if other spectators have it already, and when its
+ * time has come if the room delays its spectators and this is the first to
+ * watch. After that the connection carries that view kept up to date with
+ * `state` and `patch` frames, who is here as whole `presence` lists, and
+ * what the room broadcasts as `msg` frames, each as long after the players
+ * were sent it as `delay` says.
+ *
+ * A spectator has no seat. Anything they send with an `id` is answered with
+ * a `reject` whose reason is `spectator`.
+ */
+export interface SpectatingFrame {
+  /** Frame type. */
+  t: "spectating";
+  /** The version of the protocol the room speaks on this connection. */
+  v: number;
+  /** The spectator's id. They are not among `players`. */
+  you: string;
+  /** Ticks a second; 0 in event mode. */
+  tickRate: number;
+  /** As in `WelcomeFrame`. */
+  patchRate?: number;
+  /** How far behind the room everything on this connection is, in milliseconds. 0 for not at all. */
+  delay: number;
+  /**
+   * Everyone with a seat, as the spectators have last been told. Empty for
+   * the first to watch: a `presence` frame follows with the view.
+   */
+  players: Player[];
+}
+
+/**
  * The state changed, and this is the player's whole view: sent when the room
  * does not know what the player holds, or when the view is not an object and
  * so cannot be patched.
@@ -285,6 +319,7 @@ export interface MessageFrame {
 /** Every frame a room sends, apart from the `pong` keepalive. */
 export type ServerMessage<View = unknown> =
   | WelcomeFrame<View>
+  | SpectatingFrame
   | StateFrame<View>
   | PatchFrame
   | PresenceFrame
@@ -298,9 +333,13 @@ export type ServerMessage<View = unknown> =
 export const CloseCode = {
   /** The same player opened a newer connection. */
   Replaced: 4000,
-  /** Every seat is taken. */
+  /** Every seat is taken. For a spectator, with the reason `spectators_full`: as many are watching as may. */
   RoomFull: 4001,
-  /** `onJoin` refused the player; the close reason carries why. */
+  /**
+   * `onJoin` refused the player; the close reason carries why. For a
+   * spectator it is `onSpectate` that refused, or the reason is
+   * `no_spectators`: the room takes none.
+   */
   JoinRejected: 4002,
   /** The player no longer has a seat: they left, or the room removed them. The close reason says which. */
   Removed: 4003,

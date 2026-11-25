@@ -127,6 +127,18 @@ export interface RoomClientOptions<View> {
   token?: TokenSource;
   /** The room handed this player to another room, and the client is now connecting there. */
   onMoved?(roomId: string): void;
+  /**
+   * Watch the room without taking a seat in it, if it takes spectators
+   * (`maxSpectators`). `state` is then what the room shows its spectators,
+   * kept up to date like a player's view; `players`, `onPresence` and
+   * `onMessage` work as for a player, the last for what the room broadcasts.
+   * A spectator sends nothing: `send` and `leave` reject with `spectator`.
+   *
+   * A room may keep its spectators behind its players (`spectatorDelayMs`):
+   * `delayMs` says by how much. The first to watch such a room is connected
+   * at once, and has no `state` until that long has passed.
+   */
+  spectate?: boolean;
   /** Reconnect after an unexpected close. Defaults to true. */
   reconnect?: boolean;
   /**
@@ -180,7 +192,8 @@ export class CommandRejected extends Error {
    * What the room passed to `reject()`. Or `not_connected`: the command never
    * left this client, and was not applied. Or `disconnected`: it was sent,
    * the connection dropped, and the client could not learn what became of
-   * it. It may or may not have been applied.
+   * it. It may or may not have been applied. Or `spectator`: this client
+   * watches the room, and has no seat to send from.
    */
   readonly reason: string;
 
@@ -231,6 +244,7 @@ export class RoomClient<View = unknown, Command = unknown> {
   #tickRate = 0;
   #patchRate = 0;
   #you: string | undefined;
+  #delayMs = 0;
   #players: Player[] = [];
   #status: ConnectionStatus = "connecting";
   #listeners = new Map<keyof RoomClientEvents<View>, Set<(...args: never[]) => void>>();
@@ -316,6 +330,20 @@ export class RoomClient<View = unknown, Command = unknown> {
    */
   get rtt(): number | undefined {
     return this.#clock.rtt;
+  }
+
+  /** Whether this client watches the room without a seat: it was made with `spectate`. */
+  get spectating(): boolean {
+    return this.#options.spectate === true;
+  }
+
+  /**
+   * For a spectator: how far behind the room everything this client is sent
+   * is, in milliseconds. 0 when the room does not delay its spectators, and
+   * for a player.
+   */
+  get delayMs(): number {
+    return this.#delayMs;
   }
 
   /** This player's id, as the server knows it. Set once connected. */
@@ -423,6 +451,7 @@ export class RoomClient<View = unknown, Command = unknown> {
   }
 
   #request(frame: (id: number) => ClientMessage<Command>): Promise<void> {
+    if (this.spectating) return Promise.reject(new CommandRejected("spectator"));
     const socket = this.#socket;
     const open = socket !== undefined && this.#status === "open";
     const keep = this.#keepMs();
@@ -480,8 +509,9 @@ export class RoomClient<View = unknown, Command = unknown> {
     // The version of the protocol this client speaks: the room answers with the one it will use.
     asked.searchParams.set("v", String(PROTOCOL_VERSION));
     if (binary) asked.searchParams.set("patches", BINARY_PATCHES);
+    if (this.spectating) asked.searchParams.set("spectate", "1");
     // Who is asking, so that the room can say which of this client's commands it has handled.
-    if (this.#keepMs() > 0) asked.searchParams.set("client", this.#name);
+    else if (this.#keepMs() > 0) asked.searchParams.set("client", this.#name);
     url = asked.toString();
     const socket = new WebSocket(url);
     if (binary) socket.binaryType = "arraybuffer";
@@ -673,6 +703,19 @@ export class RoomClient<View = unknown, Command = unknown> {
         for (const settled of settle) settled();
         break;
       }
+      case "spectating":
+        // In, to watch. The view follows: at once, or when a room that delays it lets it out.
+        this.#attempt = 0;
+        this.#you = message.you;
+        this.#players = message.players;
+        this.#tickRate = message.tickRate;
+        this.#patchRate = message.patchRate ?? message.tickRate;
+        this.#delayMs = message.delay;
+        this.#clock.reset();
+        this.#startPing();
+        this.#setStatus("open");
+        this.#emit("presence", this.#players);
+        break;
       case "state":
         if (message.tick !== undefined) this.#tick = message.tick;
         this.#shown(message.c);

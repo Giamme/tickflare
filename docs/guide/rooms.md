@@ -46,6 +46,8 @@ Three hooks are required. The rest have defaults.
 | `onTick(dt)` | `tickRate` times a second, in [state sync](./state-sync) | `dt` is always `1 / tickRate` seconds |
 | `shouldTick()` | After every event and every tick | Return false to pause the simulation |
 | `view(player)` | Before the state is sent to a player | What that player may see. Defaults to everything |
+| `onSpectate(player)` | Someone asks to [watch](./spectators) a room with `maxSpectators` | `reject(reason)` turns them away |
+| `spectatorView()` | Before the state is sent to those who watch | What a spectator may see. Defaults to everything, in a room without a `view()` of its own |
 | `onHttp(request, player)` | An HTTP request to `/rooms/<id>/...` | For reading, e.g. a scoreboard. Defaults to 404 |
 | `onArrive(player, carry)` | Another room [handed a player over](./worlds) | Defaults to `onJoin` |
 | `onSignal(fromRoomId, data)` | Another room sent this one a [signal](./worlds#seeing-across-a-border) | |
@@ -88,6 +90,8 @@ Options are fields you override:
 | --- | --- | --- |
 | `maxPlayers` | `Infinity` | Distinct players who may hold a seat at once |
 | `seatTimeoutMs` | `Infinity` | How long a disconnected player keeps their seat |
+| `maxSpectators` | `0` | Connections that may [watch without a seat](./spectators). 0 lets nobody |
+| `spectatorDelayMs` | `0` | How far behind the players the spectators are kept |
 | `maxCommandsPerSecond` | `30` | Frames one player may send a second, and in one burst |
 | `maxMessageLength` | `16384` | Longest frame accepted, in characters |
 | `tickRate` | `0` | Ticks a second. 0 is event mode |
@@ -114,6 +118,7 @@ These are available on `this` while a hook runs:
 | --- | --- |
 | `state` | The authoritative state. Change it in place |
 | `players` | Everyone with a seat, in join order |
+| `spectators` | How many [spectators](./spectators) are connected |
 | `roomId` | The id this room is reached under |
 | `seq`, `tick` | Changes and ticks so far |
 | `stateAt(tick)` | The state as an earlier tick left it, in a room with `historyTicks`: [judging a command by what its player saw](./state-sync#judging-a-command-by-what-its-player-saw) |

@@ -49,6 +49,7 @@ How messages behave:
 - A message to a player who isn't connected is dropped. Nothing is sent again on reconnect, unlike the state: send what a returning player needs from `onReconnect`.
 - Everything a hook sent is dropped if that hook is refused.
 - A player the same hook removes still hears the messages before their connection closes, so a "you were kicked because..." arrives.
+- `broadcast` also reaches [spectators](./spectators), as late as the room keeps them. `send` is for one player, and no spectator hears it.
 
 ## Async work
 

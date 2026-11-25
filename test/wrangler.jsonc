@@ -34,7 +34,12 @@
       { "name": "PACED", "class_name": "PacedRoom" },
       { "name": "UNEVEN", "class_name": "UnevenRoom" },
       { "name": "EAGER", "class_name": "EagerRoom" },
-      { "name": "HISTORY", "class_name": "HistoryRoom" }
+      { "name": "HISTORY", "class_name": "HistoryRoom" },
+      { "name": "WATCHED", "class_name": "WatchedRoom" },
+      { "name": "LATE", "class_name": "LateRoom" },
+      { "name": "CLOSED", "class_name": "ClosedRoom" },
+      { "name": "HIDDEN", "class_name": "HiddenRoom" },
+      { "name": "LATETICKS", "class_name": "LateTicks" }
     ]
   },
   "migrations": [
@@ -48,7 +53,8 @@
     { "tag": "v8", "new_sqlite_classes": ["PartyMatchmaker", "TeamMatchmaker"] },
     { "tag": "v9", "new_sqlite_classes": ["LedgerRoom", "TickLedgerRoom"] },
     { "tag": "v10", "new_sqlite_classes": ["PacedRoom", "UnevenRoom", "EagerRoom"] },
-    { "tag": "v11", "new_sqlite_classes": ["HistoryRoom"] }
+    { "tag": "v11", "new_sqlite_classes": ["HistoryRoom"] },
+    { "tag": "v12", "new_sqlite_classes": ["WatchedRoom", "LateRoom", "ClosedRoom", "HiddenRoom", "LateTicks"] }
   ],
   "queues": {
     "producers": [{ "binding": "MATCHES", "queue": "tickflare-test-matches" }],

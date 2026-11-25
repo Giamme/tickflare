@@ -62,6 +62,7 @@ The room saves every change before anyone hears about it, rolls back what `rejec
 - **Patches, not snapshots**: a player is sent what changed in their own [view](docs/guide/state-and-views.md) of the state, after a move as after a tick, and a room can [simulate more often than it sends](docs/guide/state-sync.md#sending-less-often-than-you-simulate).
 - **[Lockstep snapshots](docs/guide/lockstep.md#snapshots)**: a player who joins or reloads late starts from a simulation the other players' clients saved and agreed on, not from the first turn.
 - **[Rooms that end](docs/guide/rooms.md#when-a-room-is-over)**: a hook for when the last player is gone, rooms that delete themselves with their storage, and matches that [play on](docs/guide/state-sync.md#playing-on-with-nobody-connected) with nobody connected.
+- **[Spectators](docs/guide/spectators.md)**: connections that watch without a seat, with a view of their own, kept as many seconds behind the players as the room says.
 - **[Identity](docs/guide/identity.md)** decided once, at the gateway, with signed join tokens.
 - **[Accounts](docs/guide/accounts.md)** on D1: guests, sign-up, sessions, password recovery, player data, stats and leaderboards.
 - **[Matchmaking](docs/guide/matchmaking.md)** by skill and region, with parties and teams, which reserves a room near its players, and **[match results](docs/guide/match-results.md)** through a Queue into D1, with replays in R2.

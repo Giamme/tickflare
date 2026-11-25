@@ -2,7 +2,7 @@
 
 Rooms and clients talk over one WebSocket per player, in JSON text frames. `tickflare/client` speaks this protocol for you; this page is for writing a client in another language, and for reading frames in your browser's developer tools.
 
-The protocol is at version 5. A client says which version it speaks with `v` in the query when it connects, `?v=5`, and the room's `welcome` frame says which one it will use on that connection: the one asked for, or its own latest if that is older. A client that does not say is spoken to in version 1, so a client written for version 1 goes on working. Version 2 added [array patches](#patches). Version 3 added [presence as changes](#presence). Version 4 added [the room's clock](#the-room-s-clock). Version 5 added [commands that outlive a connection](#commands-that-outlive-a-connection).
+The protocol is at version 5. A client says which version it speaks with `v` in the query when it connects, `?v=5`, and the room's `welcome` frame says which one it will use on that connection: the one asked for, or its own latest if that is older. A client that does not say is spoken to in version 1, so a client written for version 1 goes on working. Version 2 added [array patches](#patches). Version 3 added [presence as changes](#presence). Version 4 added [the room's clock](#the-room-s-clock). Version 5 added [commands that outlive a connection](#commands-that-outlive-a-connection) and [spectators](#spectators).
 
 Offer `permessage-deflate` when you connect, as browsers do. Cloudflare then compresses the frames, which makes patches of rounded numbers four to five times smaller on the wire; a client that does not offer it is sent them as they are. If your WebSocket library cannot do that, ask for [binary patches](#binary-patches) instead, which are a little over a third of the size of the JSON ones.
 
@@ -10,7 +10,7 @@ Offer `permessage-deflate` when you connect, as browsers do. Cloudflare then com
 
 Open a WebSocket to `/rooms/<roomId>` on your Worker, with whatever your gateway's `authenticate` expects, usually a join token: `wss://my-game.example/rooms/lobby?token=<token>`. If the gateway turns the request away, the upgrade fails with its HTTP status (401, 400). If the room turns the player away, the socket opens and is closed at once with one of the [close codes](#close-codes).
 
-The room's first frame on every connection, reconnects included, is `welcome`.
+The room's first frame on every connection, reconnects included, is `welcome`. A connection that asked to [watch](#spectators) gets `spectating` in its place.
 
 ## Client to room
 
@@ -29,6 +29,7 @@ The room does the same from its side while it is ticking: a connection that has 
 | Frame | Meaning |
 | --- | --- |
 | `{ "t": "welcome", "v", "you", "seq", "tick", "tickRate", "patchRate"?, "ms"?, "epoch"?, "c"?, "from"?, "refused"?, "state", "players" }` | First frame on every connection |
+| `{ "t": "spectating", "v", "you", "tickRate", "patchRate"?, "delay", "players" }` | First frame on the connection of a [spectator](#spectators) |
 | `{ "t": "patch", "seq", "tick", "from"?, "c"?, "p" }` | The state changed: only the difference from what this player last received |
 | `{ "t": "state", "seq", "tick", "c"?, "state" }` | The state changed, and this is the player's whole view: the room does not know what they hold, or the view is not an object |
 | `{ "t": "presence", "players" }` or `{ "t": "presence", "set"?, "gone"? }` | Someone joined, dropped, came back or left: see [Presence](#presence) |
@@ -49,7 +50,7 @@ Fields:
 - `patchRate`, on a `welcome`, is how many times a second the room sends a `patch` while it ticks, when that is fewer than `tickRate`: such a room runs several ticks between two patches, and a patch then carries the latest of them in `tick`. It is left out by a room that sends after every tick, and it is sent whatever version the client asked for. A client needs it only to time its smoothing.
 - `c`, `from` and `refused`, on a `welcome` in version 5, say which of the client's earlier commands the room has handled: see [Commands that outlive a connection](#commands-that-outlive-a-connection).
 - A `welcome` can arrive on a connection that is already open. The room was taken out of memory in the middle of a simulation and has resumed from its last save: take the whole view from it, and give up the commands you were waiting to hear about. It never has `c`.
-- `reject` reasons are what the room passed to `reject()`, or `invalid_command`, `internal_error` or `rate_limited`.
+- `reject` reasons are what the room passed to `reject()`, or `invalid_command`, `internal_error` or `rate_limited`. A [spectator](#spectators) gets `spectator`.
 - `error` reasons are `invalid_json`, `invalid_message`, `message_too_large`, `binary_not_supported` or `rate_limited`.
 
 The TypeScript types for every frame are exported from `tickflare` as `ClientMessage`, `ServerMessage` and the individual frame types (`WelcomeFrame`, `PatchFrame`, …).
@@ -85,6 +86,36 @@ So for each command the client is still waiting to hear about: with an `id` abov
 Two more things a client should know. A connection that a newer one has replaced is dead to the room: what a named client still sends on it is ignored, since the client sends it again on the new one. And the room remembers what it handled in the same write as the state, so the two are always of the same moment. In event mode that is every command that changed the state. A command that changed nothing is remembered in memory, and with the next write: if the room sleeps before that and the client then sends the command again, it is handled again. It still changed nothing the first time, but a message the hook sent goes out twice.
 
 `RoomClient` does all of this. A client that does not gets what it always got: commands in flight when a connection drops are neither answered nor repeated.
+
+## Spectators
+
+A client asks to watch a room without a seat in it by adding `spectate=1` to the query when it connects: `wss://my-game.example/rooms/lobby?token=<token>&v=5&spectate=1`. The gateway authenticates it like any other connection. A room that takes spectators answers with `spectating` where a player gets `welcome`:
+
+```json
+{ "t": "spectating", "v": 5, "you": "s1", "tickRate": 20, "delay": 5000, "players": [] }
+```
+
+- `you` is the spectator's id. They are not among `players`, and never will be.
+- `delay` is how far behind its players the room keeps its spectators, in milliseconds; 0 for not at all. Everything else on the connection is that old.
+- `tickRate` and `patchRate` are as in `welcome`. There is no `ms` and no `epoch`, and no `clock` frame follows: a spectator is not told the room's clock.
+- `players` is everyone with a seat, as the spectators were last told.
+
+The view follows in a `state` frame: straight away when other spectators are watching already, and otherwise once it is `delay` old, with `players` empty until a `presence` frame comes with it. After that the connection carries:
+
+| Frame | Meaning |
+| --- | --- |
+| `{ "t": "state", "seq", "tick", "state" }` | The spectators' whole view. The first, and again whenever the room has restarted or slept: it does not remember what its spectators hold |
+| `{ "t": "patch", "seq", "tick", "p" }` | What changed in it, with [array patches](#patches). Never with `from` or `c` |
+| `{ "t": "presence", "players" }` | Who has a seat: always the whole list |
+| `{ "t": "msg", "d" }` | What the room sent everyone with `broadcast` |
+
+All spectators of a room are sent the same frames, each `delay` after the players were sent what it stands for, in the same order. Patches are JSON, also for a client that asked for binary.
+
+A spectator sends `ping` like any client, and nothing else: a `cmd` or a `leave` is answered with `{ "t": "reject", "id", "reason": "spectator" }`. To stop watching, close the connection. A second connection of the same spectator replaces the first, which is closed with 4000.
+
+`routeToRoom` hands such a request to the room under the header `x-tickflare-spectator`, where a player's id travels in `x-tickflare-player`. A room that runs Tickflare from before there were spectators, as a busy room can for some minutes after a deploy, then answers 401 and seats nobody. A gateway of your own should do the same.
+
+A room that takes no spectators, or a lockstep room, closes the connection with 4002 and `no_spectators`; one where as many are watching as may, with 4001 and `spectators_full`; and one whose `onSpectate` refused, with 4002 and the reason it gave.
 
 ## The room's clock
 
@@ -207,8 +238,8 @@ If a frame does not read as this format, or uses a key number you have no name f
 | Code | Meaning | Reconnect? |
 | --- | --- | --- |
 | 4000 | Replaced: the same player opened a newer connection | no |
-| 4001 | Room full | no |
-| 4002 | Join refused by `onJoin`, or `not_invited` to a reserved room. The reason says why | no |
+| 4001 | Room full. For a [spectator](#spectators), `spectators_full` | no |
+| 4002 | Join refused by `onJoin`, or `not_invited` to a reserved room. The reason says why. For a spectator, refused by `onSpectate`, or `no_spectators` | no |
 | 4003 | The seat is gone: `left`, `away`, or the reason given to `removePlayer` | no |
 | 4004 | Moved to another room, whose id is the close reason | yes, to that room |
 | 4100 | Silent: a ticking room heard nothing on the connection for two minutes and took it for dead | yes |
