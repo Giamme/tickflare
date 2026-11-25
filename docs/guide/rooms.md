@@ -35,7 +35,7 @@ Three hooks are required. The rest have defaults.
 | Hook | Called when | Notes |
 | --- | --- | --- |
 | `initialState()` | The room is used for the first time | Required |
-| `parseCommand(raw)` | A command arrives | Required. Turn untrusted input into a `Command`; throwing refuses it |
+| `parseCommand(raw)` | A command arrives | Required. Turn untrusted input into a `Command`, by hand or [with a schema](#checking-commands-with-a-schema); throwing refuses it |
 | `onCommand(player, command)` | After `parseCommand` | Required. Change `this.state`; call `reject(reason)` to refuse |
 | `onJoin(player)` | A player takes a seat for the first time | `reject(reason)` turns them away |
 | `onDisconnect(player)` | A seated player's last connection closes | They keep their seat |
@@ -51,6 +51,34 @@ Three hooks are required. The rest have defaults.
 | `onSignal(fromRoomId, data)` | Another room sent this one a [signal](./worlds#seeing-across-a-border) | |
 
 Every hook receives a `Player`: `{ id, connected, name? }`. [Players and seats](./players) explains the seat lifecycle in detail.
+
+### Checking commands with a schema
+
+Everything a client sends is untrusted, and `parseCommand` is where it is checked. If you already describe your data with Zod, Valibot, ArkType or another library that implements [Standard Schema](https://standardschema.dev), hand the schema to `parseWith` and let it do the checking:
+
+```ts
+import { Room, parseWith } from "tickflare";
+import { z } from "zod";
+
+const Command = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("move"), x: z.number(), y: z.number() }),
+  z.object({ type: z.literal("say"), text: z.string().max(200) }),
+]);
+type Command = z.infer<typeof Command>;
+
+export class Game extends Room<State, Command> {
+  protected parseCommand(raw: unknown) {
+    return parseWith(Command, raw);
+  }
+}
+```
+
+The same with Valibot: `v.variant("type", [v.object({ … }), …])` for the schema and `v.InferOutput<typeof Command>` for the type.
+
+- **The room gets what the schema gives back**, not what was sent: unknown keys stripped, defaults filled in, strings trimmed, whatever the schema does.
+- **What does not fit is refused** as by `reject()`, with the first thing the schema found wrong and where: `invalid_command: Invalid input: expected number, received string (at x)`. The text is the library's, cut to 120 characters, and the client gets it as the reason. To send a reason of your own, catch what `parseWith` throws and call `reject()` with it.
+- **The checks have to be synchronous.** A schema with an asynchronous check cannot be used in a hook: `parseWith` logs why and the command is refused with `invalid_command`.
+- **Tickflare depends on none of these libraries.** It reads the interface they share, so the one you use is the only one installed. In a [lockstep](./lockstep) room, `parseInput` takes a schema the same way.
 
 ## Options
 

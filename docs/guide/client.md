@@ -57,7 +57,7 @@ try {
 
 `send()` resolves once the room has applied the command and `room.state` shows the result: at once in event mode, with the next tick in a room that is ticking. Until then the command is in `room.unconfirmed`, and [`Predictor`](./state-sync#showing-a-player-s-own-moves-at-once) can show its effect before the room does. It rejects with a `CommandRejected` whose `reason` is what the room passed to `reject()`, or:
 
-- `invalid_command`: `parseCommand` threw something other than `reject()`;
+- `invalid_command`: `parseCommand` threw something other than `reject()`. From a room that [checks commands with a schema](./rooms#checking-commands-with-a-schema) it is followed by what was wrong: `invalid_command: Expected number (at x)`;
 - `internal_error`: a hook threw;
 - `rate_limited`: the player sent too much;
 - `not_connected`: the command never left the client. There was no connection, and none came in time. It was not applied;

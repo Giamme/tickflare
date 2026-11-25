@@ -7,6 +7,7 @@
  * @module tickflare
  */
 export { Room, Rejection, reject, type ActOutcome } from "./room.js";
+export { parseWith, type StandardSchemaIssue, type StandardSchemaResult, type StandardSchemaV1 } from "./schema.js";
 export { plain } from "./tracked.js";
 export { LockstepRoom, type LockstepCommand, type LockstepState } from "./lockstep.js";
 export {

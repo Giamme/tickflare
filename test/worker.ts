@@ -4,6 +4,7 @@ import {
   LockstepRoom,
   Matchmaker,
   Room,
+  parseWith,
   recentMatches,
   recordMatches,
   reject,
@@ -14,6 +15,7 @@ import {
   type Authenticated,
   type PasswordReset,
   type Player,
+  type StandardSchemaV1,
 } from "../src/server/index.js";
 
 export interface TestState {
@@ -557,6 +559,25 @@ export interface PacedState {
 
 export type PacedCommand = { type: "add"; n: number } | { type: "stop" } | { type: "kick"; who: string };
 
+/** A schema written by hand to the Standard Schema specification, as a library's would be. */
+const pacedCommand: StandardSchemaV1<unknown, PacedCommand> = {
+  "~standard": {
+    version: 1,
+    vendor: "tickflare-test",
+    validate(value) {
+      const input = value as { type?: unknown; n?: unknown; who?: unknown } | null;
+      if (input?.type === "stop") return { value: { type: "stop" } };
+      if (input?.type === "kick") {
+        return typeof input.who === "string" ? { value: { type: "kick", who: input.who } } : { issues: [{ message: "Expected a player", path: ["who"] }] };
+      }
+      if (input?.type !== "add") return { issues: [{ message: "Unknown command", path: ["type"] }] };
+      // What the schema gives back is what the room gets: a number sent as text is made one.
+      const n = typeof input.n === "string" ? Number(input.n) : input.n;
+      return typeof n === "number" && Number.isFinite(n) ? { value: { type: "add", n } } : { issues: [{ message: "Expected a number", path: ["n"] }] };
+    },
+  },
+};
+
 /** Ticks fifty times a second and sends ten times: every fifth tick. */
 export class PacedRoom extends Room<PacedState, PacedCommand> {
   protected override tickRate = 50;
@@ -567,7 +588,7 @@ export class PacedRoom extends Room<PacedState, PacedCommand> {
   }
 
   protected parseCommand(raw: unknown): PacedCommand {
-    return raw as PacedCommand;
+    return parseWith(pacedCommand, raw);
   }
 
   protected override shouldTick(): boolean {

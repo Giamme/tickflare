@@ -26,6 +26,8 @@ export class Skirmish extends LockstepRoom<Order> {
 }
 ```
 
+`parseInput` can also hand the checking to a schema, as [`parseCommand` can](./rooms#checking-commands-with-a-schema): `return parseWith(Order, raw)`.
+
 That is the whole server side. `LockstepRoom` is a `Room`, so the gateway, seats, `seatTimeoutMs`, `maxPlayers`, matchmaking and match results work as for any other room. Two more options:
 
 - `maxInputsPerTurn` (default 32): inputs one player may send within a single turn. More are refused.
