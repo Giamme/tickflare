@@ -6,6 +6,8 @@ export interface TickSource {
   readonly tick: number;
   /** Ticks a second; 0 in event mode. */
   readonly tickRate: number;
+  /** Patches a second, when the room sends less often than it ticks: `RoomClient.patchRate`. */
+  readonly patchRate?: number;
   /** The tick the room is on at `now`, by estimate, as `RoomClient.serverTick` gives it. */
   serverTick?(now?: number): number | undefined;
 }
@@ -14,14 +16,18 @@ export interface TickSource {
 export interface BufferedInterpolatorOptions<Field extends string> {
   /**
    * How far behind the newest state it expects to have, in ticks, before the
-   * margin for jitter is added. 2 by default: a patch can be a tick late, or
-   * cover two ticks, without anything having to be guessed.
+   * margin for jitter is added. By default one tick more than there are
+   * between two patches, so that there are always two to draw between: 2
+   * for a room that sends after every tick, where a patch can then be a tick
+   * late or cover two ticks without anything having to be guessed, and 4
+   * for one that ticks 60 times a second and sends 20 times.
    */
   delayTicks?: number;
   /**
    * For how many ticks a thing keeps moving at its last speed when no newer
-   * state has arrived for it, before it stops where it got to. 3 by default;
-   * 0 stops it at its last known place.
+   * state has arrived for it, before it stops where it got to. By default
+   * two ticks more than there are between two patches, which is 3 for a
+   * room that sends after every tick; 0 stops it at its last known place.
    */
   maxExtrapolationTicks?: number;
   /**
@@ -56,7 +62,9 @@ const MAX_SNAPSHOTS = 64;
  * is on (`RoomClient.serverTick()`), blending the states on either side.
  * Motion then keeps the pace of the room, whatever the network does to the
  * patches, at the cost of the delay: two ticks and a margin for the jitter
- * it measures, which it keeps adjusting.
+ * it measures, which it keeps adjusting. Against a room that sends less
+ * often than it ticks (`patchRate`), the two ticks become one more than
+ * there are between two patches.
  *
  * When the newest state is older than the moment it draws, it carries each
  * thing on at its last speed for up to `maxExtrapolationTicks`, then holds
@@ -75,8 +83,8 @@ export class BufferedInterpolator<Field extends string> {
   readonly #source: TickSource;
   readonly #fields: readonly Field[];
   readonly #angles: ReadonlySet<Field>;
-  readonly #delayTicks: number;
-  readonly #maxExtrapolation: number;
+  readonly #delayTicks: number | undefined;
+  readonly #maxExtrapolation: number | undefined;
   readonly #snapDistance: number;
   #tracks = new Map<string, Snapshot<Field>[]>();
   /** Times the patches as they arrive, for a room that does not say where its clock is. */
@@ -97,14 +105,20 @@ export class BufferedInterpolator<Field extends string> {
     this.#source = source;
     this.#fields = fields;
     this.#angles = new Set(options.angles ?? []);
-    this.#delayTicks = Math.max(0, options.delayTicks ?? 2);
-    this.#maxExtrapolation = Math.max(0, options.maxExtrapolationTicks ?? 3);
+    this.#delayTicks = options.delayTicks === undefined ? undefined : Math.max(0, options.delayTicks);
+    this.#maxExtrapolation = options.maxExtrapolationTicks === undefined ? undefined : Math.max(0, options.maxExtrapolationTicks);
     this.#snapDistance = options.snapDistance ?? Infinity;
   }
 
   /** The delay it draws at right now, in ticks behind the room's clock: see the class. */
   get delay(): number {
-    return (this.#lateness ?? 0) + this.#delayTicks + 2 * this.#jitter;
+    return (this.#lateness ?? 0) + (this.#delayTicks ?? 1 + this.#ticksAPatch()) + 2 * this.#jitter;
+  }
+
+  /** How many ticks there are between two patches: 1, unless the room sends less often than it ticks. */
+  #ticksAPatch(): number {
+    const { tickRate, patchRate } = this.#source;
+    return patchRate !== undefined && patchRate > 0 && patchRate < tickRate ? Math.ceil(tickRate / patchRate) : 1;
   }
 
   /**
@@ -171,7 +185,7 @@ export class BufferedInterpolator<Field extends string> {
 
     if (tick >= newest.tick) {
       const before = track[track.length - 2];
-      const ahead = Math.min(tick - newest.tick, this.#maxExtrapolation);
+      const ahead = Math.min(tick - newest.tick, this.#maxExtrapolation ?? 2 + this.#ticksAPatch());
       if (!before || newest.snap || ahead <= 0) return { ...newest.values };
       // Carried on at the speed it last had, for as long as that is allowed.
       return this.#blend(before.values, newest.values, 1 + ahead / (newest.tick - before.tick));

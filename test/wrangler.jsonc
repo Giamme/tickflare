@@ -30,7 +30,10 @@
       { "name": "PARTIES", "class_name": "PartyMatchmaker" },
       { "name": "TEAMS", "class_name": "TeamMatchmaker" },
       { "name": "LEDGER", "class_name": "LedgerRoom" },
-      { "name": "TICKLEDGER", "class_name": "TickLedgerRoom" }
+      { "name": "TICKLEDGER", "class_name": "TickLedgerRoom" },
+      { "name": "PACED", "class_name": "PacedRoom" },
+      { "name": "UNEVEN", "class_name": "UnevenRoom" },
+      { "name": "EAGER", "class_name": "EagerRoom" }
     ]
   },
   "migrations": [
@@ -42,7 +45,8 @@
     { "tag": "v6", "new_sqlite_classes": ["RankedMatchmaker", "WideningMatchmaker", "RankedTrios", "RegionalMatchmaker"] },
     { "tag": "v7", "new_sqlite_classes": ["QuietRoom"] },
     { "tag": "v8", "new_sqlite_classes": ["PartyMatchmaker", "TeamMatchmaker"] },
-    { "tag": "v9", "new_sqlite_classes": ["LedgerRoom", "TickLedgerRoom"] }
+    { "tag": "v9", "new_sqlite_classes": ["LedgerRoom", "TickLedgerRoom"] },
+    { "tag": "v10", "new_sqlite_classes": ["PacedRoom", "UnevenRoom", "EagerRoom"] }
   ],
   "queues": {
     "producers": [{ "binding": "MATCHES", "queue": "tickflare-test-matches" }],

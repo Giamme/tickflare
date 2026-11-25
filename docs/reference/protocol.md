@@ -28,7 +28,7 @@ The room does the same from its side while it is ticking: a connection that has 
 
 | Frame | Meaning |
 | --- | --- |
-| `{ "t": "welcome", "v", "you", "seq", "tick", "tickRate", "ms"?, "epoch"?, "c"?, "from"?, "refused"?, "state", "players" }` | First frame on every connection |
+| `{ "t": "welcome", "v", "you", "seq", "tick", "tickRate", "patchRate"?, "ms"?, "epoch"?, "c"?, "from"?, "refused"?, "state", "players" }` | First frame on every connection |
 | `{ "t": "patch", "seq", "tick", "from"?, "c"?, "p" }` | The state changed: only the difference from what this player last received |
 | `{ "t": "state", "seq", "tick", "c"?, "state" }` | The state changed, and this is the player's whole view: the room does not know what they hold, or the view is not an object |
 | `{ "t": "presence", "players" }` or `{ "t": "presence", "set"?, "gone"? }` | Someone joined, dropped, came back or left: see [Presence](#presence) |
@@ -46,6 +46,7 @@ Fields:
 - `tick` and `tickRate` are the ticks run so far and the ticks a second; both 0 in event mode. `ms` and `epoch`, in version 4, are in a `welcome` sent while the simulation runs: see [The room's clock](#the-room-s-clock).
 - An `ack` means that the view the player holds shows the command. In event mode it comes straight after the `patch` or `state` frame the command caused. In a room that is ticking, a command's effect is sent with the next tick, and so is its `ack`, after that tick's `patch`; the `ack` then carries the `tick` the view is of, since a tick that leaves a player's view as it was sends them no patch. A `leave` is always answered at once, after any acks still owed.
 - `c`, on a `patch` or `state`, is the `id` of the latest of this player's own commands that the frame is the first to show. That command and every earlier one have been applied; their `ack` frames follow. A client that draws its own commands ahead of the room drops them at this frame, in the same step as it takes the new state, so that none is shown twice or not at all.
+- `patchRate`, on a `welcome`, is how many times a second the room sends a `patch` while it ticks, when that is fewer than `tickRate`: such a room runs several ticks between two patches, and a patch then carries the latest of them in `tick`. It is left out by a room that sends after every tick, and it is sent whatever version the client asked for. A client needs it only to time its smoothing.
 - `c`, `from` and `refused`, on a `welcome` in version 5, say which of the client's earlier commands the room has handled: see [Commands that outlive a connection](#commands-that-outlive-a-connection).
 - A `welcome` can arrive on a connection that is already open. The room was taken out of memory in the middle of a simulation and has resumed from its last save: take the whole view from it, and give up the commands you were waiting to hear about. It never has `c`.
 - `reject` reasons are what the room passed to `reject()`, or `invalid_command`, `internal_error` or `rate_limited`.

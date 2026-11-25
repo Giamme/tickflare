@@ -91,6 +91,13 @@ export interface WelcomeFrame<View = unknown> {
   tick: number;
   /** Ticks a second; 0 in event mode. */
   tickRate: number;
+  /**
+   * How many times a second the room sends what changed while it ticks, when
+   * that is less often than it ticks: see `Room.patchRate`. Absent from a
+   * room that sends after every tick. Sent whatever version the client asked
+   * for: one that does not know it loses nothing but the hint.
+   */
+  patchRate?: number;
   /** Version 4, while the simulation runs: as in `ClockFrame`. Absent while it does not. */
   ms?: number;
   /** Version 4, while the simulation runs: as in `ClockFrame`. */

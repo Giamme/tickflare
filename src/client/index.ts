@@ -226,6 +226,7 @@ export class RoomClient<View = unknown, Command = unknown> {
   #seq = 0;
   #tick = 0;
   #tickRate = 0;
+  #patchRate = 0;
   #you: string | undefined;
   #players: Player[] = [];
   #status: ConnectionStatus = "connecting";
@@ -278,6 +279,15 @@ export class RoomClient<View = unknown, Command = unknown> {
   /** The room's simulation rate in ticks per second; 0 in event mode. */
   get tickRate(): number {
     return this.#tickRate;
+  }
+
+  /**
+   * How many times a second the room sends what changed while it ticks: its
+   * `patchRate` if it has one, and otherwise `tickRate`. 0 in event mode.
+   * It is what to set the duration of an `Interpolator` from.
+   */
+  get patchRate(): number {
+    return this.#patchRate;
   }
 
   /**
@@ -649,6 +659,7 @@ export class RoomClient<View = unknown, Command = unknown> {
         this.#players = message.players;
         this.#tick = message.tick;
         this.#tickRate = message.tickRate;
+        this.#patchRate = message.patchRate ?? message.tickRate;
         this.#clock.reset();
         if (message.ms !== undefined) this.#clock.reading(message.tick, message.tickRate, message.ms, message.epoch);
         this.#startPing();

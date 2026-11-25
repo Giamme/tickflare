@@ -104,24 +104,44 @@ The room tells clients its clock, in `welcome` and in a [`clock` frame](/referen
 const behind = room.serverTick()! - room.tick; // how many ticks the room is ahead of the latest patch
 ```
 
+### Sending less often than you simulate
+
+A tick does two things: it moves the game, and it sends each player what changed. They do not have to happen equally often. Fast things want a fine step, or a bullet passes through a wall between two ticks; what a player sees does not need more than 10 to 30 updates a second once the client [smooths](#smoothing-on-the-client) them. Set `patchRate` below `tickRate` and the room simulates at one rate and sends at the other:
+
+```ts
+export class Arena extends Room<State, Command> {
+  protected override tickRate = 60;  // onTick runs 60 times a second
+  protected override patchRate = 20; // a patch after every third tick
+}
+```
+
+Each patch takes a player's view from the last one they were sent to now, so nothing that happened in between is lost; they only see it later, and never the ticks in between. What is saved is what a patch costs: running `view()` for every connected player, comparing each result with what that player holds, and the bytes. The more players a room has, the more of a tick that is. The tick itself costs what it did, and how much a room gains has not been [measured on Cloudflare](./limits#how-much-one-room-can-do) yet.
+
+- **A command is acknowledged with the patch that shows it**, as always, so `room.send()` resolves up to a patch later than it would. A [`Predictor`](#showing-a-player-s-own-moves-at-once) draws the player's own moves at once either way.
+- **Messages sent from `onTick`** with `send()` and `broadcast()` wait for that patch too, so that a message still arrives after the state it is about. Messages sent from other hooks go out at once, as before.
+- **Nothing waits when the simulation stops**, or in a tick that removes a player: whatever is due goes out then.
+- **A rate that does not divide `tickRate`** works: at 50 ticks and 20 patches a second, patches come two and three ticks apart in turn.
+- **The client knows.** `room.patchRate` is the rate patches come at, which is `tickRate` for a room without a `patchRate`. `BufferedInterpolator` reads it and waits one patch longer; an `Interpolator` should glide for `1000 / room.patchRate` milliseconds.
+- **A [lockstep](./lockstep) room ignores it:** every turn has to reach every player.
+
 ## Keeping ticks cheap
 
 - **Key collections that come and go by id.** Patches go into objects key by key, and into arrays element by element. But an array whose elements shift, because one was taken out before the end, is sent whole.
 - **Round positions.** One decimal is usually enough, and a third of the bytes on the wire: [what a moving unit costs](./limits#bandwidth).
 - **Share the public part of views.** With many players, return the same object for the part of the view everyone sees. It is then diffed and serialised once per tick instead of once per player. See [State and views](./state-and-views#views-that-share-a-public-part).
-- **Pick the lowest rate that feels right.** 10 to 20 ticks a second with client-side interpolation looks smooth for most games. Each tick costs CPU on the server and bandwidth for everyone.
+- **Pick the lowest rate that feels right.** 10 to 20 ticks a second with client-side interpolation looks smooth for most games. Each tick costs CPU on the server and bandwidth for everyone. A game that needs a finer step than that can keep it and [send less often](#sending-less-often-than-you-simulate).
 
 A room has a single thread. A room that is late now and then [catches up](#keeping-time); one whose ticks take longer than `1 / tickRate` seconds every time cannot, and runs slow.
 
 ## Smoothing on the client
 
-Ticks arrive 10 to 30 times a second; a screen draws 60 or more. `Interpolator` glides each moving thing from where it is drawn to its latest position over one tick, so motion looks continuous:
+Patches arrive 10 to 30 times a second; a screen draws 60 or more. `Interpolator` glides each moving thing from where it is drawn to its latest position over the time between two patches, so motion looks continuous:
 
 ```ts
 import { Interpolator, RoomClient } from "tickflare/client";
 
 const room = new RoomClient<State>(url, { token });
-const glide = new Interpolator(1000 / 20, ["x", "y"]); // one tick at 20 ticks a second
+const glide = new Interpolator(1000 / 20, ["x", "y"]); // one patch at 20 a second
 
 room.on("state", (state) => glide.update(state.dots));
 
@@ -135,7 +155,7 @@ function frame() {
 requestAnimationFrame(frame);
 ```
 
-Because it always starts from what is on screen, a late or bunched update bends the motion instead of making it jump. Use `room.tickRate` once connected to set the duration: `new Interpolator(1000 / room.tickRate, ["x", "y"])`.
+Because it always starts from what is on screen, a late or bunched update bends the motion instead of making it jump. Use `room.patchRate` once connected to set the duration: `new Interpolator(1000 / room.patchRate, ["x", "y"])`. It is the room's `tickRate`, unless the room [sends less often than it ticks](#sending-less-often-than-you-simulate).
 
 ### Drawing at the room's pace
 
@@ -152,8 +172,8 @@ room.on("state", (state) => glide.update(state.dots));
 const { x, y } = glide.at(id) ?? room.state!.dots[id]!;
 ```
 
-- **The delay** is two ticks behind the newest state it should have by now (`delayTicks`), plus a margin of twice the jitter it measures, which it keeps adjusting. `glide.delay` says what it is at, in ticks behind the room's clock, the network's own delay included. What it draws never goes back in time: when the delay grows, it waits for the clock.
-- **When updates stop**, each thing carries on at its last speed for up to `maxExtrapolationTicks` (3), then stays where it got to.
+- **The delay** is two ticks behind the newest state it should have by now (`delayTicks`), plus a margin of twice the jitter it measures, which it keeps adjusting. Against a room with a `patchRate` the two ticks become one more than there are between two patches, so that there are always two states to draw between: four ticks at 60 ticks and 20 patches a second, which is 67 ms. `glide.delay` says what it is at, in ticks behind the room's clock, the network's own delay included. What it draws never goes back in time: when the delay grows, it waits for the clock.
+- **When updates stop**, each thing carries on at its last speed for up to `maxExtrapolationTicks`, then stays where it got to. That is 3 ticks by default, and two more than there are between two patches against a room with a `patchRate`.
 - **Jumps.** A respawn or a handover should not slide across the map. Call `glide.snap(id)` after the `update` that brought the jump, or set `snapDistance` and any change farther than that between two states in a row is one. Either way it is drawn when its tick comes.
 - **Angles.** Name the fields that are angles in radians, `{ angles: ["heading"] }`, and they turn the short way round through ±π.
 - **When the simulation stops**, it shows the latest state. Against a room older than 0.2, which does not say where its clock is, it times the patches as they arrive instead.

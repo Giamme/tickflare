@@ -63,6 +63,7 @@ Options are fields you override:
 | `maxCommandsPerSecond` | `30` | Frames one player may send a second, and in one burst |
 | `maxMessageLength` | `16384` | Longest frame accepted, in characters |
 | `tickRate` | `0` | Ticks a second. 0 is event mode |
+| `patchRate` | `0` | While ticking, patches a second, when that is to be fewer than ticks: [simulate at one rate and send at another](./state-sync#sending-less-often-than-you-simulate). 0 sends after every tick |
 | `saveIntervalMs` | `5000` | While ticking, how often the state is written |
 | `trackChanges` | `true` | Follow what each hook writes, instead of comparing the whole state after it. See [The state inside a hook](#the-state-inside-a-hook) |
 | `rememberCommands` | `true` | Remember which commands of each client were handled, so that [none is lost or applied twice](./client#when-the-connection-drops) when a connection drops. Turn it off in a ticking room that records commands in tables of its own without calling `saveNow()` |

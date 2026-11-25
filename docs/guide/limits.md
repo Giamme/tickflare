@@ -79,14 +79,14 @@ Each row is from runs of a few minutes, with every player on one machine in a da
 Two things in Tickflare's design set these numbers:
 
 - **The whole state is turned into JSON whenever it is saved or sent whole, and once or twice a tick.** In event mode that is every command that changes something: the state is written in full each time, and compared with what the players hold to send them the difference. While ticking it is the tick itself, which is compared whole so that `onTick` can run on plain objects, and the save every few seconds. What a command, a join or a timer costs in between is only what it touches: the room [follows a hook's writes](./rooms#the-state-inside-a-hook) rather than going through the state after it. A hook that changes nothing, or is refused, costs the same in a room of any size.
-- **`view()` runs for every connected player on every tick**, and each result is compared with what that player was sent last.
+- **`view()` runs for every connected player on every tick**, and each result is compared with what that player was sent last. With a [`patchRate`](./state-sync#sending-less-often-than-you-simulate) it is every patch instead of every tick.
 
 **What you can do today**
 
 - Send each player what they can see. A `view()` that filters by sight is the single biggest saving, in time and in bandwidth.
 - Keep what never changes out of the state: a map, unit definitions. Send it once as a message, or let the page load it.
 - In event mode, keep a large state out of rooms that take many commands: each one that changes anything writes all of it. Tick instead, even slowly, and the state is written every few seconds.
-- Tick slower and let screens interpolate. Ten ticks a second is enough for most of what Tickflare aims at.
+- Tick slower and let screens interpolate. Ten ticks a second is enough for most of what Tickflare aims at. Where the simulation needs a finer step than the players need updates, keep the step and [send less often](./state-sync#sending-less-often-than-you-simulate).
 - Past a few hundred players, split the world [across rooms](./worlds).
 - For many units and few players, use [lockstep](./lockstep): the room never touches the simulation.
 
@@ -107,6 +107,7 @@ Frames are JSON, and what is sent after a change is a patch: it names what chang
 So a hundred units moving ten times a second is about 6 KB a second to every player who sees them, and a thousand about 60 KB a second. Cloudflare does not charge for it, but a player on a phone pays for it and a poor connection will not carry it.
 
 - **Round what you send.** A position with all its decimals costs three times one rounded to a tenth, on the wire as in JSON. `Math.round(x * 10) / 10`, in the simulation or in `view()`.
+- **Send less often than you simulate.** The figures above are per patch, and a room sends one after every tick unless it has a [`patchRate`](./state-sync#sending-less-often-than-you-simulate). At 60 ticks and 20 patches a second a unit that keeps moving is in 20 patches a second, not 60.
 - **A client of your own has to offer compression** (`permessage-deflate`), or it is sent the JSON as it is, unless it asks for binary patches. To see whether a connection has it, look for `Sec-WebSocket-Extensions` among the response headers of the WebSocket in your browser's developer tools.
 - **Compression costs the room nothing we could measure.** Rooms ticked as fast with it as without, up to 1.2 MB of JSON a second to each of twenty players.
 

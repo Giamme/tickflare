@@ -285,6 +285,31 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
   protected tickRate = 0;
 
   /**
+   * How many times a second a ticking room sends what changed, when that is
+   * to be less often than it simulates. 0, the default, sends after every
+   * tick, and so does any rate that is not below `tickRate`.
+   *
+   * With `tickRate = 60` and `patchRate = 20` the room moves things sixty
+   * times a second and sends every third tick, in one patch that takes each
+   * player's view from the last one sent to now. What a patch costs, the
+   * comparison of every player's view and the bytes, is then paid a third
+   * as often; a tick costs what it did. With a rate that does not divide
+   * `tickRate` the gaps between patches differ by a tick, and average out.
+   *
+   * What waits for the patch: the `ack` of a command, since it says that
+   * the view shows the command, and messages sent with `send()` and
+   * `broadcast()` from `onTick`, so that they still arrive after the patch
+   * that shows their tick. Whatever is waiting goes out at once when the
+   * simulation stops, and in a tick that removes a player. A lockstep room
+   * sends every turn, whatever this says.
+   *
+   * `RoomClient.patchRate` tells the client, and `BufferedInterpolator`
+   * keeps as much more of a delay as it takes to always have two patches to
+   * draw between.
+   */
+  protected patchRate = 0;
+
+  /**
    * While the room is ticking, the most ticks it runs back to back to catch
    * up when it wakes late. The simulation keeps to a fixed clock: tick `n`
    * is due `n / tickRate` seconds after the clock started, and a room that
@@ -400,6 +425,8 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
   #signals: Signal[] = [];
   /** Messages for players, as frames, waiting for the end of the event. `to` null is everyone. */
   #mail: { to: string | null; frame: string }[] = [];
+  /** Messages sent from ticks that no patch has followed yet: see `patchRate`. */
+  #heldMail: { to: string | null; frame: string }[] = [];
   /** While ticking: the commands each socket has had applied and not yet been told about. */
   #owed = new Map<WebSocket, number[]>();
   /** The command being handled, and who sent it. */
@@ -1141,6 +1168,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
       tick: this.#tick,
       tickRate: this.tickRate,
       ...(this.#loop !== undefined && this.#socketInfo(ws).clock ? this.#clockReading(Date.now()) : {}),
+      ...(this.#patchRate() > 0 ? { patchRate: this.#patchRate() } : {}),
       ...(resumed ? { c: resumed.last } : {}),
       ...(resumed && resumed.from > 0 ? { from: resumed.from } : {}),
       ...(resumed && resumed.refused.length > 0 ? { refused: resumed.refused } : {}),
@@ -1509,8 +1537,12 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     } else if (!wanted && this.#loop !== undefined) {
       clearTimeout(this.#loop);
       this.#loop = undefined;
-      // Send what changed since the last tick, or it would never go out.
+      // Send what changed since the last patch, or it would never go out.
       this.#broadcastTick();
+      if (this.#heldMail.length > 0) {
+        this.#mail.unshift(...this.#heldMail.splice(0));
+        this.#deliverMail();
+      }
       if (this.#unsaved) this.#writeRoom();
       this.#tellClock(Date.now());
     }
@@ -1546,6 +1578,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     }
     const until = Math.min(due, this.#tick + cap);
     const eachTick = patchesEachTick.has(this);
+    const before = this.#tick;
     let ran = 0;
     let halted = false;
     while (this.#tick < until) {
@@ -1576,9 +1609,36 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
       this.#ticksSinceSave = 0;
       if (this.#unsaved) this.#writeRoom();
     }
-    this.#broadcastTick();
+    if (this.#patchDue(before) || this.#removed.length > 0) {
+      // Before what these ticks sent, which `#finish` delivers: messages follow the patch.
+      if (this.#heldMail.length > 0) this.#mail.unshift(...this.#heldMail.splice(0));
+      this.#broadcastTick();
+    } else if (this.#mail.length > 0) {
+      // No patch for these ticks yet. What they sent waits for it, so that a message never
+      // arrives before the state it is about. A player who is being removed has to hear why
+      // before the connection closes, which is why such a tick sends.
+      this.#heldMail.push(...this.#mail.splice(0));
+    }
     if (moved || now - this.#clockToldAt >= CLOCK_EVERY_MS) this.#tellClock(now);
     this.#finish(false).catch((err) => console.error("[tickflare] tick cleanup failed:", err));
+  }
+
+  /** `patchRate` where it holds anything back, and 0 where the room sends after every tick. */
+  #patchRate(): number {
+    const rate = this.patchRate;
+    return rate > 0 && rate < this.tickRate && !patchesEachTick.has(this) ? rate : 0;
+  }
+
+  /**
+   * Whether a patch is due now that the ticks after `before` have run. With
+   * a `patchRate`, patches fall due that many times a second by the count of
+   * ticks, so a room that catches up sends no more often than one that
+   * keeps time.
+   */
+  #patchDue(before: number): boolean {
+    const rate = this.#patchRate();
+    if (rate === 0) return true;
+    return Math.floor((this.#tick * rate) / this.tickRate) > Math.floor((before * rate) / this.tickRate);
   }
 
   #runTick(): void {

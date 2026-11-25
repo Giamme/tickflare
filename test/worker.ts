@@ -400,6 +400,8 @@ export class AskedSnapRoom extends SnapRoom {
 /** A lockstep room at 50 turns a second. */
 export class TurnRoom extends LockstepRoom<TurnInput> {
   protected override tickRate = 50;
+  // Ignored: a lockstep room sends every turn. Every lockstep test would fail if it were not.
+  protected override patchRate = 5;
   protected override maxInputsPerTurn = 3;
   protected override seatTimeoutMs = 400;
   protected override matchQueue = this.env.MATCHES;
@@ -542,6 +544,68 @@ export class TickLedgerRoom extends LedgerRoom {
   protected override onTick(): void {
     this.state.ticks += 1;
   }
+}
+
+export interface PacedState {
+  ticks: number;
+  /** What each player's commands added up to. */
+  sums: Record<string, number>;
+  /** Asked to stop: it does at the next tick that sends a message. */
+  stopping: boolean;
+  over: boolean;
+}
+
+export type PacedCommand = { type: "add"; n: number } | { type: "stop" } | { type: "kick"; who: string };
+
+/** Ticks fifty times a second and sends ten times: every fifth tick. */
+export class PacedRoom extends Room<PacedState, PacedCommand> {
+  protected override tickRate = 50;
+  protected override patchRate = 10;
+
+  protected initialState(): PacedState {
+    return { ticks: 0, sums: {}, stopping: false, over: false };
+  }
+
+  protected parseCommand(raw: unknown): PacedCommand {
+    return raw as PacedCommand;
+  }
+
+  protected override shouldTick(): boolean {
+    return !this.state.over;
+  }
+
+  protected override onTick(): void {
+    this.state.ticks += 1;
+    // A message from a tick that is followed by no patch of its own. A room that was asked to
+    // stop does so in such a tick, with the message still waiting for a patch.
+    if (this.state.ticks % 5 === 2) {
+      this.broadcast({ beat: this.state.ticks });
+      if (this.state.stopping) this.state.over = true;
+    }
+    for (const player of this.players) {
+      if (this.state.sums[player.id] === -1) {
+        this.send(player.id, { bye: this.state.ticks });
+        this.removePlayer(player.id, "kicked");
+      }
+    }
+  }
+
+  protected onCommand(player: Player, command: PacedCommand): void {
+    if (command.type === "add") this.state.sums[player.id] = (this.state.sums[player.id] ?? 0) + command.n;
+    else if (command.type === "stop") this.state.stopping = true;
+    // Removed by the next tick, whichever that is.
+    else this.state.sums[command.who] = -1;
+  }
+}
+
+/** A rate that does not divide the tick rate: the gaps between patches are two ticks and three. */
+export class UnevenRoom extends PacedRoom {
+  protected override patchRate = 20;
+}
+
+/** Asks for more patches than there are ticks, which is one a tick. */
+export class EagerRoom extends PacedRoom {
+  protected override patchRate = 80;
 }
 
 /** Signs the join tokens accepted under /secure. */
@@ -779,6 +843,9 @@ export default {
       (await routeToMatchmaker(request, { matchmakers: env.PATIENT, prefix: "/patient", authenticate: whoIs })) ??
       (await routeToRoom(request, { rooms: env.EDGE, prefix: "/edge", authenticate: whoIs })) ??
       (await routeToRoom(request, { rooms: env.LAZY, prefix: "/lazy", authenticate: whoIs })) ??
+      (await routeToRoom(request, { rooms: env.PACED, prefix: "/paced", authenticate: whoIs })) ??
+      (await routeToRoom(request, { rooms: env.UNEVEN, prefix: "/uneven", authenticate: whoIs })) ??
+      (await routeToRoom(request, { rooms: env.EAGER, prefix: "/eager", authenticate: whoIs })) ??
       (await routeToRoom(request, { rooms: env.LEDGER, prefix: "/ledger", authenticate: whoIs })) ??
       (await routeToRoom(request, { rooms: env.TICKLEDGER, prefix: "/tickledger", authenticate: whoIs })) ??
       (await routeToRoom(request, { rooms: env.HALF, prefix: "/half", authenticate: whoIs })) ??

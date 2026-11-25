@@ -1,13 +1,14 @@
 /**
- * Smooths values that arrive once per tick, for drawing between ticks.
+ * Smooths values that arrive once per patch, for drawing between patches.
  *
  * State sync delivers positions 10 to 30 times a second; a screen draws 60
  * or more. Each time a new value arrives for an id, the interpolator glides
- * to it from wherever that id was being drawn, over `durationMs` (one tick
- * is the usual choice). Because it always starts from what is on screen, a
- * late or bunched update bends the motion instead of making it jump.
+ * to it from wherever that id was being drawn, over `durationMs` (the time
+ * between two patches is the usual choice). Because it always starts from
+ * what is on screen, a late or bunched update bends the motion instead of
+ * making it jump.
  *
- *     const glide = new Interpolator(1000 / client.tickRate, ["x", "y"]);
+ *     const glide = new Interpolator(1000 / client.patchRate, ["x", "y"]);
  *     onState: (state) => glide.update(state.units),
  *     // in the render loop:
  *     const { x, y } = glide.at(id) ?? state.units[id];

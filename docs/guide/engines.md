@@ -101,7 +101,7 @@ A **WebGL** build has no `ClientWebSocket`, which is what the client talks throu
 
 Both clients have the browser client's [`Interpolator`](./state-sync#smoothing-on-the-client) and [`Predictor`](./state-sync#showing-a-player-s-own-moves-at-once), and behave as they do: the three are checked against the same cases. They do not have `BufferedInterpolator` yet, nor the room's clock it draws by: they speak version 3 of the protocol.
 
-`TickflareInterpolator` glides each moving thing from where it is drawn to its latest position, over one tick:
+`TickflareInterpolator` glides each moving thing from where it is drawn to its latest position, over one tick. Against a room that [sends less often than it ticks](./state-sync#sending-less-often-than-you-simulate), give it the time between two patches instead, `1000.0 / 20` for a `patchRate` of 20: these two clients do not read the rate from the room yet.
 
 ```gdscript
 var glide := TickflareInterpolator.new(1000.0 / room.tick_rate, ["x", "y"])
