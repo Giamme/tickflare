@@ -25,7 +25,7 @@ The Godot and Unity clients have tests of their own in `clients/`, which CI runs
 
 ## What a pull request needs
 
-- **Tests.** A fix comes with a test that fails without it. Tests run in workerd through `@cloudflare/vitest-plugin`, against real Durable Objects; `test/worker.ts` has the rooms they use.
+- **Tests.** A fix comes with a test that fails without it. Tests run in workerd through `@cloudflare/vitest-plugin`, against real Durable Objects; `test/worker.ts` has the rooms they use. `test/random.test.ts` drops connections and restarts rooms in an order drawn from a seed, and checks that no command is lost or applied twice. After a change to how rooms and clients reconnect, search further than the six seeds CI runs: `RANDOM_RUNS=200 npx vitest run test/random.test.ts` takes about five minutes. A run that fails prints its seed, and `RANDOM_SEEDS=72` runs that one again.
 - **Docs, in the same pull request.** A change that a user can see changes the guide page that describes it, and, if it applies, the [limits](docs/guide/limits.md) and [costs](docs/guide/costs.md) pages, the [protocol](docs/reference/protocol.md), the README and the home page (`docs/index.md`). Every export needs a doc comment: the docs build fails without one, and on dead links.
 - **A changelog fragment** for each change a user can see: a small Markdown file in [`.changelog/unreleased/`](.changelog/README.md), in the same commit as the change. Don't edit `CHANGELOG.md`; fragments are compiled into it when the version is released. Make one with `python3 .changelog/changelogger.py new --type fixed --text "Rooms saved by an older version load."`, or write the file yourself:
 

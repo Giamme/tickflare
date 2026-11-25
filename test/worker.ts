@@ -497,6 +497,53 @@ export class QuietRoom extends TickRoom {
   }
 }
 
+export interface LedgerState {
+  /** How many times each command was applied, by the key it came with. Anything but 1 is a fault. */
+  seen: Record<string, number>;
+  /** The keys in the order they were applied. */
+  order: string[];
+  /** Goes up by one a tick, in the ticking kind. */
+  ticks: number;
+}
+
+export type LedgerCommand = { type: "mark" | "refuse"; key: string };
+
+/**
+ * A room that writes down every command it applies, for the tests that drop
+ * connections and restart rooms at random: a command that was lost shows as
+ * a key that is missing, and one applied twice as a count of two.
+ */
+export class LedgerRoom extends Room<LedgerState, LedgerCommand> {
+  protected override maxCommandsPerSecond = Number.POSITIVE_INFINITY;
+
+  protected initialState(): LedgerState {
+    return { seen: {}, order: [], ticks: 0 };
+  }
+
+  protected parseCommand(raw: unknown): LedgerCommand {
+    const input = raw as { type?: unknown; key?: unknown } | null;
+    if ((input?.type !== "mark" && input?.type !== "refuse") || typeof input.key !== "string") reject("bad_command");
+    return { type: input.type, key: input.key };
+  }
+
+  protected onCommand(_player: Player, command: LedgerCommand): void {
+    this.state.seen[command.key] = (this.state.seen[command.key] ?? 0) + 1;
+    this.state.order.push(command.key);
+    // Refused after it has written: none of it may stay.
+    if (command.type === "refuse") reject("no");
+  }
+}
+
+/** LedgerRoom with a simulation: 50 ticks a second, saved every 150 ms, so that a restart goes back a little. */
+export class TickLedgerRoom extends LedgerRoom {
+  protected override tickRate = 50;
+  protected override saveIntervalMs = 150;
+
+  protected override onTick(): void {
+    this.state.ticks += 1;
+  }
+}
+
 /** Signs the join tokens accepted under /secure. */
 export const TEST_SECRET = "test-secret-0123456789";
 
@@ -732,6 +779,8 @@ export default {
       (await routeToMatchmaker(request, { matchmakers: env.PATIENT, prefix: "/patient", authenticate: whoIs })) ??
       (await routeToRoom(request, { rooms: env.EDGE, prefix: "/edge", authenticate: whoIs })) ??
       (await routeToRoom(request, { rooms: env.LAZY, prefix: "/lazy", authenticate: whoIs })) ??
+      (await routeToRoom(request, { rooms: env.LEDGER, prefix: "/ledger", authenticate: whoIs })) ??
+      (await routeToRoom(request, { rooms: env.TICKLEDGER, prefix: "/tickledger", authenticate: whoIs })) ??
       (await routeToRoom(request, { rooms: env.HALF, prefix: "/half", authenticate: whoIs })) ??
       (await routeToMatchmaker(request, { matchmakers: env.RANKED, prefix: "/ranked", authenticate: whoIs })) ??
       (await routeToMatchmaker(request, { matchmakers: env.PARTIES, prefix: "/parties", authenticate: whoIsInParty })) ??

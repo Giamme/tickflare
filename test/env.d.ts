@@ -29,6 +29,12 @@ declare namespace Cloudflare {
     REGIONAL: DurableObjectNamespace<import("./worker").RegionalMatchmaker>;
     FLAKY: DurableObjectNamespace<import("./worker").FlakyLobby>;
     NAMES: DurableObjectNamespace<import("./worker").NameRoom>;
+    LEDGER: DurableObjectNamespace<import("./worker").LedgerRoom>;
+    TICKLEDGER: DurableObjectNamespace<import("./worker").TickLedgerRoom>;
+    /** Set from the environment in vitest.config.ts, for test/random.test.ts. */
+    RANDOM_RUNS: string;
+    RANDOM_SEEDS: string;
+    RANDOM_TRACE: string;
     MATCHES: Queue<import("../src/protocol.js").MatchResult>;
     DB: D1Database;
     REPLAYS: R2Bucket;
