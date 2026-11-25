@@ -593,12 +593,15 @@ export class RoomClient<View = unknown, Command = unknown> {
    * Without `c` the room knows nothing of what this client sent before: it
    * is older than version 5, the seat is newly taken, or it came back from
    * its last save on a connection that stayed open. What was sent is then
-   * given up, as `disconnected`.
+   * given up, as `disconnected`. So is a command up to `from`, of which the
+   * room cannot say what became.
    */
   #resume(welcome: WelcomeFrame<View>): (() => void)[] {
     this.#resumes = welcome.v >= 5;
     const socket = this.#socket;
     const handled = this.#resumes ? welcome.c : undefined;
+    /** Up to this one the room cannot say what became of a command: see `WelcomeFrame.from`. */
+    const from = welcome.from ?? 0;
     const refused = new Map(welcome.refused ?? []);
     const settle: (() => void)[] = [];
     const answered = new Set<number>();
@@ -612,7 +615,7 @@ export class RoomClient<View = unknown, Command = unknown> {
       }
       this.#pending.delete(id);
       answered.add(id);
-      const reason = handled === undefined ? "disconnected" : refused.get(id);
+      const reason = handled === undefined || id <= from ? "disconnected" : refused.get(id);
       settle.push(reason === undefined ? pending.resolve : () => pending.reject(new CommandRejected(reason)));
     }
     if (this.#unconfirmed.some((sent) => answered.has(sent.id))) {

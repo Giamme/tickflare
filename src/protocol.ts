@@ -25,8 +25,8 @@ import type { Patch } from "./patch.js";
  *
  * Version 5 adds commands that outlive a connection: a client that names
  * itself with `client` in the query is told in `welcome` which of its
- * commands the room has handled (`c` and `refused`), so that it can send
- * the others again, and the room applies none of them twice.
+ * commands the room has handled (`c`, `from` and `refused`), so that it can
+ * send the others again, and the room applies none of them twice.
  */
 export const PROTOCOL_VERSION = 5;
 
@@ -57,9 +57,9 @@ export interface CommandFrame<Command = unknown> {
   /**
    * Chosen by the client and echoed in the answer. Unique per connection; a
    * client that names itself (`client` in the query, version 5) numbers its
-   * commands and leaves upwards from 1 for as long as it lives, across connections,
-   * and the room takes one whose `id` is not above the latest it has handled
-   * for a command it has seen before.
+   * commands and leaves 1, 2, 3 and so on for as long as it lives, across
+   * connections, and the room takes one whose `id` is not above the latest it
+   * has handled for a command it has seen before.
    */
   id: number;
   /** The command, as the room's `parseCommand` will receive it. */
@@ -112,10 +112,20 @@ export interface WelcomeFrame<View = unknown> {
    */
   c?: number;
   /**
+   * With `c`, when the room cannot say what became of the client's earliest
+   * commands: it can say of those after this `id`, up to `c`, and not of
+   * those up to it. A command the client is still waiting to hear about, and
+   * whose `id` is not above this, is given up as one whose outcome is not
+   * known. Absent when the room can say of every command up to `c`, which is
+   * nearly always: see the protocol reference for when it cannot.
+   */
+  from?: number;
+  /**
    * With `c`: the latest of those commands that were refused, oldest first,
    * each with the reason its `reject` frame gave, cut to 120 characters.
-   * Every other command up to `c` was applied. The room remembers the last
-   * eight refusals of a client, and leaves this out when there are none.
+   * Every other command after `from` and up to `c` was applied. The room
+   * remembers the last eight refusals of a client, and leaves this out when
+   * there are none.
    */
   refused?: [id: number, reason: string][];
   /** This player's whole view. */

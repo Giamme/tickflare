@@ -104,6 +104,15 @@ interface Handled {
   client: string;
   /** The `id` of the latest command or leave of its that was handled, applied or refused. 0 for none. */
   last: number;
+  /**
+   * The room can say what became of the commands after this one, up to
+   * `last`, and not of those up to it. 0 while it can say of every one. It
+   * moves when a command arrives that is not the next: the ones between were
+   * given up by the client, or were handled here without a write (refused,
+   * or applied and changing nothing) before the room slept, and are gone
+   * from what it remembers. And when a refusal is forgotten for a newer one.
+   */
+  from: number;
   /** The latest of them that were refused, oldest first, each with its reason. */
   refused: [id: number, reason: string][];
   /** This record as it goes into the room's row, until it changes. */
@@ -1064,7 +1073,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
       // A new seat starts over: nothing sent to an earlier one counts. Noted before the join is
       // saved, so that the same write holds it.
       this.#handled.delete(playerId);
-      if (named !== undefined) this.#handled.set(playerId, { client: named, last: 0, refused: [] });
+      if (named !== undefined) this.#handled.set(playerId, { client: named, last: 0, from: 0, refused: [] });
       const joined = this.#apply(() => {
         this.#roster.push(playerId);
         this.#connecting = playerId;
@@ -1108,7 +1117,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
         // Another client than the one the room remembers: a page that was loaded again, or a
         // second device. Whether the room ever heard from it is not known, so it is told nothing,
         // and counts from here. Written now: a client the room knows is one in storage.
-        this.#handled.set(playerId, { client: named, last: 0, refused: [] });
+        this.#handled.set(playerId, { client: named, last: 0, from: 0, refused: [] });
         this.#saveHandled();
       }
     }
@@ -1133,6 +1142,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
       tickRate: this.tickRate,
       ...(this.#loop !== undefined && this.#socketInfo(ws).clock ? this.#clockReading(Date.now()) : {}),
       ...(resumed ? { c: resumed.last } : {}),
+      ...(resumed && resumed.from > 0 ? { from: resumed.from } : {}),
       ...(resumed && resumed.refused.length > 0 ? { refused: resumed.refused } : {}),
       state: this.view(player),
       players: this.players,
@@ -1211,13 +1221,19 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     // From here on the command is handled, whatever becomes of it. If it changes the state, the
     // save that holds the change says so too: they are written together.
     if (handled) {
+      // Not the one after the last: of those between, the room cannot say what became. The client
+      // gave them up, or they were handled without a write before the room slept: a refusal, or a
+      // command that changed nothing. Taking them for applied, as the count alone would have it,
+      // could tell a client that a command it was refused went through.
+      if (frame.id > handled.last + 1) handled.from = frame.id - 1;
       handled.last = frame.id;
       handled.json = undefined;
     }
     const refuse = (reason: string) => {
       if (handled) {
         handled.refused.push([frame.id, reason.slice(0, REASON_KEPT)]);
-        if (handled.refused.length > REFUSALS_KEPT) handled.refused.shift();
+        // A refusal the room forgets is one it can no longer tell from a command it applied.
+        if (handled.refused.length > REFUSALS_KEPT) handled.from = Math.max(handled.from, handled.refused.shift()![0]);
         handled.json = undefined;
       }
       this.#send(ws, { t: "reject", id: frame.id, reason });
@@ -1785,15 +1801,15 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
         this.#handled.delete(id);
         continue;
       }
-      const { client, last, refused } = handled;
-      handled.json ??= `${JSON.stringify(id)}:${JSON.stringify(refused.length > 0 ? [client, last, refused] : [client, last])}`;
+      const { client, last, from, refused } = handled;
+      handled.json ??= `${JSON.stringify(id)}:${JSON.stringify(from > 0 ? [client, last, refused, from] : refused.length > 0 ? [client, last, refused] : [client, last])}`;
       records.push(handled.json);
       length += handled.json.length + 1;
     }
     // See `HANDLED_CHARS`. The oldest are first.
-    let from = 0;
-    while (length > HANDLED_CHARS) length -= records[from++]!.length + 1;
-    return from >= records.length ? "" : `{${(from > 0 ? records.slice(from) : records).join(",")}}`;
+    let skip = 0;
+    while (length > HANDLED_CHARS) length -= records[skip++]!.length + 1;
+    return skip >= records.length ? "" : `{${(skip > 0 ? records.slice(skip) : records).join(",")}}`;
   }
 
   /** Remembers the id this room is reached under, the first time it hears it. */
@@ -2200,9 +2216,9 @@ function readHandled(json: string | undefined): Map<string, Handled> {
   const handled = new Map<string, Handled>();
   if (!json) return handled;
   try {
-    const stored = JSON.parse(json) as Record<string, [string, number, [number, string][]?]>;
-    for (const [id, [client, last, refused]] of Object.entries(stored)) {
-      handled.set(id, { client, last, refused: refused ?? [] });
+    const stored = JSON.parse(json) as Record<string, [string, number, [number, string][]?, number?]>;
+    for (const [id, [client, last, refused, from]] of Object.entries(stored)) {
+      handled.set(id, { client, last, from: from ?? 0, refused: refused ?? [] });
     }
   } catch (err) {
     console.error("[tickflare] could not read which commands were handled; taking it for none:", err);

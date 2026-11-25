@@ -8,6 +8,8 @@ export class WorkerSocket {
   binaryType = "blob";
   /** How many binary messages the room has sent. */
   binaryMessages = 0;
+  /** Set to lose what the room sends on its way to the client. */
+  deaf = false;
   #ws: WebSocket | undefined;
   #listeners = new Map<string, ((event: unknown) => void)[]>();
 
@@ -23,6 +25,7 @@ export class WorkerSocket {
         if (this.readyState >= 2) return ws.close(1000, "gone");
         this.#ws = ws;
         ws.addEventListener("message", (event) => {
+          if (this.deaf) return;
           if (typeof event.data !== "string") this.binaryMessages += 1;
           // A client that did not ask for array buffers would be handed a blob, which it does not read.
           const data = typeof event.data === "string" || this.binaryType === "arraybuffer" ? event.data : new Blob([event.data as ArrayBuffer]);

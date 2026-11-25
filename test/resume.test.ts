@@ -98,6 +98,8 @@ describe("a room and a client that names itself", () => {
     const welcome = await back.next("welcome");
     expect(welcome.c).toBe(10);
     expect(welcome.refused!.map(([id]) => id)).toEqual([3, 4, 5, 6, 7, 8, 9, 10]);
+    // The two it forgot it can no longer tell from commands it applied, and it says so.
+    expect(welcome.from).toBe(2);
   });
 
   it("tells another client of the same player nothing, and then the first one nothing either", async () => {
@@ -203,6 +205,55 @@ describe("a room and a client that names itself", () => {
     expect(await back.next("ack")).toMatchObject({ id: 3 });
     send(back, 4, { type: "add", n: 1 });
     expect((await back.next("state")).state.total).toBe(7);
+  });
+
+  it("does not take a command it refused, and forgot in its sleep, for one it applied", async () => {
+    const room = freshRoom();
+    const first = await named(room, "p1", "abc");
+    await first.next("welcome");
+    send(first, 1, { type: "add", n: 5 });
+    await first.next("state");
+    await first.next("ack");
+    send(first, 2, { type: "half" });
+    await first.next("reject");
+    // The refusal cost no write, so the room that wakes up has handled one command, and the
+    // next it is sent is the third.
+    await evictDurableObject(rooms(room));
+    send(first, 3, { type: "add", n: 1 });
+    await first.next("state");
+    await first.next("ack");
+    expect(JSON.parse(await stored(rooms(room)))).toEqual({ p1: ["abc", 3, [], 2] });
+
+    const back = await named(room, "p1", "abc");
+    const welcome = await back.next("welcome");
+    // It can say what became of the third, and not of the second.
+    expect(welcome).toMatchObject({ c: 3, from: 2 });
+    expect("refused" in welcome).toBe(false);
+    expect(welcome.state.total).toBe(6);
+  });
+
+  it("says from where it can tell when it is sent a command that is not the next", async () => {
+    const room = freshRoom();
+    const first = await named(room, "p1", "abc");
+    await first.next("welcome");
+    send(first, 1, { type: "add", n: 5 });
+    await first.next("state");
+    await first.next("ack");
+    // It says nothing of it while every command followed the last.
+    const second = await named(room, "p1", "abc");
+    const before = await second.next("welcome");
+    expect(before.c).toBe(1);
+    expect("from" in before).toBe(false);
+
+    // The client gave up its second and third, which never left it.
+    send(second, 4, { type: "add", n: 1 });
+    await second.next("state");
+    await second.next("ack");
+    send(second, 5, { type: "add", n: 1 });
+    await second.next("state");
+    await second.next("ack");
+    const back = await named(room, "p1", "abc");
+    expect(await back.next("welcome")).toMatchObject({ c: 5, from: 3 });
   });
 
   it("forgets the clients of seats that were given up", async () => {
@@ -460,6 +511,25 @@ describe("RoomClient and a room, over a connection that drops", () => {
     WorkerSocket.all[0]!.drop();
     await expect(refused).rejects.toMatchObject({ reason: "changed_my_mind" });
     expect(client.state!.total).toBe(0);
+    client.close();
+  });
+
+  it("gives up a command the room refused and forgot in its sleep, and does not take it for applied", async () => {
+    const room = freshRoom();
+    const client = await open(room);
+    const socket = WorkerSocket.all[0]!;
+    // Nothing the room sends arrives any more, and it sleeps before it has anything to write.
+    socket.deaf = true;
+    const refused = client.send({ type: "half" });
+    await sleep(50);
+    await evictDurableObject(rooms(room));
+    // What the client sends still arrives: the room that woke up counts past the command it forgot.
+    const applied = client.send({ type: "add", n: 5 });
+    await vi.waitFor(async () => expect(await stored(rooms(room))).toContain(",2,"));
+    socket.drop();
+    await expect(refused).rejects.toMatchObject({ reason: "disconnected" });
+    await applied;
+    expect(client.state!.total).toBe(5);
     client.close();
   });
 

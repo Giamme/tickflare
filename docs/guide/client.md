@@ -80,6 +80,8 @@ The room does its half by remembering, for each seat, how far it got with the co
 - the room is a [lockstep](./lockstep) room, or has `rememberCommands` off;
 - the client is the [Godot or Unity](./engines) one, which do not do this yet.
 
+And one where it cannot say of a single command, which then rejects with `disconnected` while the others settle: the room refused it, its answer was lost on the way, and the room slept before it wrote anything again. A refusal changes nothing in the state, so it costs no write, and the room that wakes up has forgotten it. It does know that it has, and says so rather than count the command as applied.
+
 One thing can still happen twice. A command that changed nothing in the state costs no write, so if the room sleeps before its answer arrives and the client then sends it again, the room handles it again. The state is none the worse, but a message the hook sent with `send()` or `broadcast()` goes out a second time.
 
 ### Leaving and closing

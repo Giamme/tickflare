@@ -28,7 +28,7 @@ The room does the same from its side while it is ticking: a connection that has 
 
 | Frame | Meaning |
 | --- | --- |
-| `{ "t": "welcome", "v", "you", "seq", "tick", "tickRate", "ms"?, "epoch"?, "c"?, "refused"?, "state", "players" }` | First frame on every connection |
+| `{ "t": "welcome", "v", "you", "seq", "tick", "tickRate", "ms"?, "epoch"?, "c"?, "from"?, "refused"?, "state", "players" }` | First frame on every connection |
 | `{ "t": "patch", "seq", "tick", "from"?, "c"?, "p" }` | The state changed: only the difference from what this player last received |
 | `{ "t": "state", "seq", "tick", "c"?, "state" }` | The state changed, and this is the player's whole view: the room does not know what they hold, or the view is not an object |
 | `{ "t": "presence", "players" }` or `{ "t": "presence", "set"?, "gone"? }` | Someone joined, dropped, came back or left: see [Presence](#presence) |
@@ -46,7 +46,7 @@ Fields:
 - `tick` and `tickRate` are the ticks run so far and the ticks a second; both 0 in event mode. `ms` and `epoch`, in version 4, are in a `welcome` sent while the simulation runs: see [The room's clock](#the-room-s-clock).
 - An `ack` means that the view the player holds shows the command. In event mode it comes straight after the `patch` or `state` frame the command caused. In a room that is ticking, a command's effect is sent with the next tick, and so is its `ack`, after that tick's `patch`; the `ack` then carries the `tick` the view is of, since a tick that leaves a player's view as it was sends them no patch. A `leave` is always answered at once, after any acks still owed.
 - `c`, on a `patch` or `state`, is the `id` of the latest of this player's own commands that the frame is the first to show. That command and every earlier one have been applied; their `ack` frames follow. A client that draws its own commands ahead of the room drops them at this frame, in the same step as it takes the new state, so that none is shown twice or not at all.
-- `c` and `refused`, on a `welcome` in version 5, say which of the client's earlier commands the room has handled: see [Commands that outlive a connection](#commands-that-outlive-a-connection).
+- `c`, `from` and `refused`, on a `welcome` in version 5, say which of the client's earlier commands the room has handled: see [Commands that outlive a connection](#commands-that-outlive-a-connection).
 - A `welcome` can arrive on a connection that is already open. The room was taken out of memory in the middle of a simulation and has resumed from its last save: take the whole view from it, and give up the commands you were waiting to hear about. It never has `c`.
 - `reject` reasons are what the room passed to `reject()`, or `invalid_command`, `internal_error` or `rate_limited`.
 - `error` reasons are `invalid_json`, `invalid_message`, `message_too_large`, `binary_not_supported` or `rate_limited`.
@@ -59,14 +59,17 @@ A connection can drop between a command and its answer. The client then cannot t
 
 **The client names itself.** It adds `client=<name>` to the query, next to `v=5`: one to 64 letters, digits, `_` or `-`, made up at random when the client starts and kept for as long as it lives, across every connection it makes. A page that is loaded again is a new client with a new name. The name only tells one player's clients apart, so a dozen random characters are plenty.
 
-**It numbers its commands upwards.** The `id` of each `cmd` and `leave` is a whole number higher than the one before, starting at 1, and the count goes on from one connection to the next. A command that is sent again keeps its `id`.
+**It numbers its commands.** The `id` of each `cmd` and `leave` is the one before plus one, starting at 1, and the count goes on from one connection to the next. A command that is sent again keeps its `id`. A command the client gave up before it was ever sent may leave a hole in the count.
 
 **The room says how far it got.** On a new connection to a seat the player already had, the `welcome` to a client the room knows has:
 
 - `c`: the `id` of the latest command or leave of this client's that the room has handled, applied or refused. 0 if it has handled none. The `state` in the same frame shows every one of them that was applied.
 - `refused`: the last of those that were refused, oldest first, each as `[id, reason]`, with the reason the `reject` frame gave, cut to 120 characters. The room remembers eight. It is left out when there are none.
+- `from`: the room can say what became of the commands after this `id`, and not of those up to it. It is left out when the room can say of every one, which is nearly always.
 
-So for each command the client is still waiting to hear about: with an `id` up to `c`, it was handled, and was applied unless `refused` has it. With a higher `id`, the room has not seen it, or saw it and then [went back to a save from before it](../guide/limits#restarts-and-deploys). The client sends those again, in order and before any new command, and the room answers them like any other.
+So for each command the client is still waiting to hear about: with an `id` above `from` and up to `c`, it was handled, and was applied unless `refused` has it. With an `id` up to `from`, the room cannot say, and the client gives it up as one whose outcome is not known. With an `id` above `c`, the room has not seen it, or saw it and then [went back to a save from before it](../guide/limits#restarts-and-deploys). The client sends those again, in order and before any new command, and the room answers them like any other.
+
+`from` moves in two cases. The room is sent a command whose `id` is not the one after the last it handled: `from` is then the `id` before that command's. The client gave up the ones between, or the room handled them without a write, as it does a command it refuses or one that changes nothing, and slept before the next write. And the room forgets a refusal to remember a ninth: `from` is then at least that refusal's `id`. Without it, a client still waiting on a command the room had refused and forgotten would be told it was applied.
 
 **The room takes a lower number for a repeat.** A `cmd` or `leave` whose `id` is not above the latest the room has handled for this client is not applied. It is answered as it was the first time: with `reject` and the same reason if the room remembers refusing it, otherwise with `ack`. This is why the order matters: a command sent after one with a higher `id` is taken for one the room has seen.
 
