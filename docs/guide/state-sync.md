@@ -84,7 +84,7 @@ Some matches have to reach their end whoever is watching: a ranked match should 
 <<< @/snippets/onward/ranked.ts{32-44}
 
 - **Give it an end.** The room is awake, and [billed](./costs), for every second it ticks, and nobody is there to notice one that never stops. End the match when it has a winner, cap how long it may run unattended, and delete the room when it is done.
-- **It survives deploys and crashes.** While it ticks, alone or not, the room keeps an alarm thirty seconds ahead of itself. That keeps Cloudflare from taking it out of memory, and after a restart it is what starts the simulation again, from the last save.
+- **It survives deploys and crashes.** While it ticks, alone or not, the room keeps an alarm thirty seconds ahead of itself. That keeps Cloudflare from taking it out of memory, and after a restart it is what starts the simulation again, from the last save. A deploy restarts it only if it is [still ticking when Cloudflare's delay runs out](./limits#when-a-deploy-reaches-a-room).
 - **Coming back is an ordinary join.** A player who connects again gets the state as it is now.
 
 It is checked like `shouldTick()`, so it can depend on the state: `return this.state.ranked` plays ranked matches to the end and lets the others stand still.

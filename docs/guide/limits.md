@@ -11,6 +11,7 @@ Every limit here is one of three kinds: Cloudflare's, which nobody can lift; Tic
 | A message from a player | 16 KB and 30 a second by default; both are settings | Tickflare, to protect the room |
 | Transport | WebSockets: ordered and reliable, no UDP | Cloudflare |
 | What a restart loses | Up to `saveIntervalMs` of a ticking room, five seconds by default | Tickflare |
+| When a deploy restarts a room | Only if it is still awake five minutes later; the delay is a setting. [By Cloudflare's documentation](#when-a-deploy-reaches-a-room), not yet measured | Cloudflare |
 | A room nobody is in | Stands still and stays, until your code says otherwise | Tickflare |
 | Storage | 10 GB a room, 10 GB for accounts and match history | Cloudflare |
 | Where a room runs | Where it was created; it does not move | Cloudflare |
@@ -178,16 +179,41 @@ In state sync a player's own command can be [shown on the click](./state-sync#sh
 
 ## Restarts and deploys
 
-Every deploy of your Worker restarts every room. Cloudflare gives no warning of it, to you or to Tickflare.
+A room is restarted when a deploy gives it new code while it is awake, and when Cloudflare restarts it for reasons of its own, such as an update of its runtime. Neither comes with a warning, to you or to Tickflare.
 
-- **Players are disconnected.** The client reconnects by itself and gets a fresh view. `onDisconnect` is not called for players dropped this way, though their seat timeout still starts. On Cloudflare, 39 rooms made to restart with 20 to 100 players in them lost every connection, and were ticking again for all of their players, reconnected, two seconds later (1.7 to 2.7).
+### When a deploy reaches a room
+
+Until 30 October 2026 every deploy restarted every room at once. Since then Cloudflare [defers code updates](https://developers.cloudflare.com/durable-objects/deployments/durable-objects-code-updates/) to Durable Objects, and that is the default. What follows is from Cloudflare's documentation. We have not measured rooms through a deploy since, and the figures further down are of restarts we caused ourselves.
+
+- **A room that is asleep starts on the new code at its next event**, with its players still connected. An event-mode room between moves takes a deploy without anyone noticing.
+- **A room that is awake keeps the code it has** until it goes to sleep or until `max_delay` has passed, five minutes unless you say otherwise. Then it is restarted. A room is asleep once it has heard nothing for ten seconds and has no timer running, which a ticking room never is: a deploy restarts the rooms that are still ticking when the delay runs out, and a match that ends within it is not interrupted. The same goes for a lockstep room during a match, whichever clock it runs on.
+- **You set the delay**, up to a day, in the Wrangler configuration, for all the Durable Object classes of the Worker at once:
+
+  ```jsonc
+  "durable_objects": {
+    "bindings": [{ "name": "ROOMS", "class_name": "Duel" }],
+    "code_update_strategy": { "mode": "deferred", "max_delay": 1800 } // seconds
+  }
+  ```
+
+  `"mode": "immediate"` restarts every room at once, as before. One deploy can differ from the configuration: `npx wrangler deploy --durable-objects-code-update-mode immediate` for a fix that cannot wait, or `deferred 30s`.
+- **It is best effort.** Cloudflare says a room can be restarted sooner, and restarts that are not for a deploy are not delayed at all. So everything under [what a restart does](#what-a-restart-does) still holds: it happens later, and to fewer rooms.
+- **Two versions run side by side for as long as the delay.** The Worker in front, with your gateway and whatever page it serves, has the new code at once; a busy room has it up to `max_delay` later, and its neighbours in a [world](./worlds) not at the same moment. Keep what they say to each other readable both ways across a deploy: commands and the shape of the state between client and room, what a room [signals](./worlds#seeing-across-a-border) or hands over to another. Tickflare's own parts are: a client and a room settle on the older [protocol version](../reference/protocol) of the two, and its gateway never lets a room from before there were spectators seat one.
+
+### What a restart does
+
+- **Players are disconnected.** The client reconnects by itself and gets a fresh view. `onDisconnect` is not called for players dropped this way, though their seat timeout still starts. On Cloudflare, 39 rooms that we made restart themselves with 20 to 100 players in them lost every connection, and were ticking again for all of their players, reconnected, two seconds later (1.7 to 2.7).
 - **A ticking room goes back** to its last save: up to `saveIntervalMs`, five seconds by default. An event-mode room loses nothing: it saves every move before anyone sees it.
 - **Commands on their way are neither lost nor applied twice.** The room saves which commands it has handled with the state, and tells each client when it reconnects. The client [sends the others again](./client#when-the-connection-drops), those the room went back on included, as long as it had no answer to them yet. A command the room had already answered is gone with the rest of what the save does not hold.
 - **A restart that keeps the connections** stops the match for up to 30 seconds. Cloudflare can take a room out of memory without closing its WebSockets, to move it or after a minute or two without an incoming event. The room then hears nothing until its alarm, which a running simulation keeps 30 seconds ahead and which also keeps such evictions from happening in the first place. When it fires, the room resumes from its last save and sends every player the whole view again. Commands that were on their way just then are answered with `disconnected`: on a connection that stayed open, the room cannot tell which of them its save holds.
 - **A lockstep room loses no orders.** Its turn counter goes back by up to `saveIntervalMs` of empty turns, or with the players' clock skips ahead by as much.
 - **The state is loaded as it was saved.** If a deploy changes the shape of your state, rooms already running still have the old shape. There is no migration step: read old shapes with care, or let old matches finish first.
 
-**What you can do today.** Deploy when few matches are running. Call `saveNow()` after the moments you could not bear to lose. A save is one row, so a shorter `saveIntervalMs` is cheap.
+**What you can do today.**
+
+- **Let matches finish on the code they began with.** Set `max_delay` a little above the length of your longest match, and a deploy restarts only what outlives it. The price: a fix reaches a running match when it ends, unless you deploy it with `--durable-objects-code-update-mode immediate`, and the two versions have that much longer to get along.
+- **For a deploy that must restart rooms**, pick a time when few matches are running.
+- **Call `saveNow()`** after the moments you could not bear to lose. A save is one row, so a shorter `saveIntervalMs` is cheap.
 
 ## Rooms nobody is in
 
