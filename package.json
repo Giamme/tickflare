@@ -1,6 +1,6 @@
 {
   "name": "tickflare",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Multiplayer game framework for Cloudflare Workers and Durable Objects",
   "license": "MIT",
   "homepage": "https://tickflare.gridpaper.dev",

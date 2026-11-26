@@ -1,6 +1,6 @@
 {
   "name": "dev.tickflare.client",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "displayName": "Tickflare",
   "description": "A client for Tickflare rooms: multiplayer game servers on Cloudflare Durable Objects.",
   "unity": "2021.3",
