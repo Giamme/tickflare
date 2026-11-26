@@ -73,6 +73,7 @@ class FakeRoom {
   state: State | undefined;
   tick = 0;
   unconfirmed: SentCommand<Command>[] = [];
+  readonly status = "open";
   readonly you: string;
   readonly tickRate: number;
   #next = 1;
@@ -84,7 +85,9 @@ class FakeRoom {
     this.tickRate = tickRate;
   }
 
-  on(_event: "state", listener: () => void): () => void {
+  on(event: "state" | "status", listener: () => void): () => void {
+    // The connection never changes here.
+    if (event !== "state") return () => {};
     this.#listeners.add(listener);
     return () => this.#listeners.delete(listener);
   }

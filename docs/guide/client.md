@@ -59,10 +59,30 @@ try {
 - `invalid_command`: `parseCommand` threw something other than `reject()`;
 - `internal_error`: a hook threw;
 - `rate_limited`: the player sent too much;
-- `not_connected`: the client wasn't connected when you called it;
-- `disconnected`: the connection dropped before the answer came.
+- `not_connected`: the command never left the client. There was no connection, and none came in time. It was not applied;
+- `disconnected`: the command was sent, the connection dropped, and the client could not find out what became of it. It may or may not have been applied.
 
-A command sent just before a disconnect may or may not have been applied. If that matters, make commands safe to repeat, or check the state after reconnecting.
+### When the connection drops
+
+A dropped connection does not lose a command, and does not apply one twice. You do nothing for this: the promise `send()` gave you settles as if the connection had held.
+
+- **A command on its way when the connection drops** is kept. When the client is back, the room tells it which of its commands it handled. Those settle at once: `state` already shows them, and one the room refused rejects with the room's reason. The others never arrived, so the client sends them again, in the order you sent them.
+- **A command sent while there is no connection** waits for one: while the client is reconnecting, and also before the first `welcome`, so you can call `send()` straight after `new RoomClient()`.
+- **Either kind stays in `unconfirmed`** while it waits, so a [`Predictor`](./state-sync#showing-a-player-s-own-moves-at-once) goes on showing it.
+
+A command waits for at most `keepCommandsMs`, ten seconds by default, counted from when it began to wait. Then the client gives it up, with `not_connected` if it was never sent and `disconnected` if it was, and does not send it later. Choose it for your game: a move in a card game is as good a minute late, a shot in an arena is not. With `keepCommandsMs: 0` nothing waits: `send()` rejects at once without a connection, and whatever is in flight when one drops rejects with `disconnected`.
+
+The room does its half by remembering, for each seat, how far it got with the commands of the client that holds it. It saves that in the same write as the state, so a room that [restarts](./limits#restarts-and-deploys) knows exactly which commands its state holds. There are cases where the room cannot say, and the client then gives up what it had sent, with `disconnected`, as it would without any of this:
+
+- the seat is not the one the commands were sent to: the player was away longer than `seatTimeoutMs`, or was removed;
+- the same player connected from another tab or device in between. The room remembers one client a seat;
+- the room handed the player to [another room](./worlds). Nothing is carried over, and what was waiting to be sent is given up too;
+- the room is a [lockstep](./lockstep) room, or has `rememberCommands` off;
+- the client is the [Godot or Unity](./engines) one, which do not do this yet.
+
+And one where it cannot say of a single command, which then rejects with `disconnected` while the others settle: the room refused it, its answer was lost on the way, and the room slept before it wrote anything again. A refusal changes nothing in the state, so it costs no write, and the room that wakes up has forgotten it. It does know that it has, and says so rather than count the command as applied.
+
+One thing can still happen twice. A command that changed nothing in the state costs no write, so if the room sleeps before its answer arrives and the client then sends it again, the room handles it again. The state is none the worse, but a message the hook sent with `send()` or `broadcast()` goes out a second time.
 
 ### Leaving and closing
 
@@ -71,7 +91,7 @@ A command sent just before a disconnect may or may not have been applied. If tha
 
 ### Reconnecting
 
-The client reconnects by itself when a connection drops unexpectedly: after 125 to 250 milliseconds, then backing off up to 5 seconds between attempts. Each failed attempt reports `connecting` with the close code. On reconnect the room sends the current state in its first frame, so there is nothing to replay.
+The client reconnects by itself when a connection drops unexpectedly: after 125 to 250 milliseconds, then backing off up to 5 seconds between attempts. Each failed attempt reports `connecting` with the close code. On reconnect the room sends the current state in its first frame, so there is nothing to replay, and says which commands it handled, so that [none is lost or applied twice](#when-the-connection-drops).
 
 It stops, with `closed`, after the close codes that mean trying again won't help: replaced by a newer connection, room full, refused by `onJoin`, or seat removed. See [Close codes](./players#close-codes). Pass `reconnect: false` to stop after any close.
 

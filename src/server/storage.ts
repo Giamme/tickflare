@@ -7,6 +7,13 @@ export interface StoredRoom {
   roster: string;
   /** How many times the simulation has ticked. 0 in a room that does not tick. */
   tick: number;
+  /**
+   * Which commands of each client the room had handled when this state was
+   * saved, as JSON, or "" for none: what keeps a command that is sent again
+   * after a lost connection from being applied twice. In the same row as
+   * the state, so that the two are never of different moments.
+   */
+  handled: string;
 }
 
 /** Something a committed hook promised to deliver: a finished match, or a player handed to another room. */
@@ -34,7 +41,7 @@ export interface Forward {
  * nothing behind.
  *
  * Tables:
- *   tickflare_room      one row: seq, state, seats, tick counter
+ *   tickflare_room      one row: seq, state, seats, tick counter, commands handled
  *   tickflare_parts     the rest of a state or a delivery too long for one row
  *   tickflare_timers    named timers and when they fire
  *   tickflare_meta      small values by key (room id, invited players)
@@ -103,6 +110,13 @@ export class RoomStorage {
     } catch {
       sql.exec("ALTER TABLE tickflare_room ADD COLUMN tick INTEGER NOT NULL DEFAULT 0");
     }
+    // Which commands were handled came with protocol version 5. It is a column of the room's row
+    // for the same reason: one row a save.
+    try {
+      sql.exec("SELECT handled FROM tickflare_room LIMIT 0");
+    } catch {
+      sql.exec("ALTER TABLE tickflare_room ADD COLUMN handled TEXT NOT NULL DEFAULT ''");
+    }
   }
 
   /** Creates the tables, before the first thing is written. */
@@ -114,7 +128,8 @@ export class RoomStorage {
          seq INTEGER NOT NULL,
          state TEXT NOT NULL,
          players TEXT NOT NULL,
-         tick INTEGER NOT NULL DEFAULT 0
+         tick INTEGER NOT NULL DEFAULT 0,
+         handled TEXT NOT NULL DEFAULT ''
        )`,
     );
     this.#tables();
@@ -195,11 +210,13 @@ export class RoomStorage {
   room(): StoredRoom | undefined {
     if (!this.#made) return undefined;
     const row = this.#sql
-      .exec<{ seq: number; state: string; players: string; tick: number }>(
-        "SELECT seq, state, players, tick FROM tickflare_room WHERE id = 1",
+      .exec<{ seq: number; state: string; players: string; tick: number; handled: string }>(
+        "SELECT seq, state, players, tick, handled FROM tickflare_room WHERE id = 1",
       )
       .toArray()[0];
-    return row && { seq: row.seq, state: row.state + this.#rest("state"), roster: row.players, tick: row.tick };
+    return (
+      row && { seq: row.seq, state: row.state + this.#rest("state"), roster: row.players, tick: row.tick, handled: row.handled }
+    );
   }
 
   /**
@@ -211,13 +228,23 @@ export class RoomStorage {
     this.#make();
     const [first, ...rest] = pieces(room.state);
     this.#sql.exec(
-      "INSERT OR REPLACE INTO tickflare_room (id, seq, state, players, tick) VALUES (1, ?, ?, ?, ?)",
+      "INSERT OR REPLACE INTO tickflare_room (id, seq, state, players, tick, handled) VALUES (1, ?, ?, ?, ?, ?)",
       room.seq,
       first,
       room.roster,
       room.tick,
+      room.handled,
     );
     this.#putRest("state", rest);
+  }
+
+  /**
+   * Writes which commands were handled, and nothing else of the room: one
+   * row, however long the state is. False if the room has no row yet.
+   */
+  writeHandled(handled: string): boolean {
+    if (!this.#made) return false;
+    return this.#sql.exec("UPDATE tickflare_room SET handled = ? WHERE id = 1", handled).rowsWritten > 0;
   }
 
   /** What follows the first piece of a text that was split, or "" for one that was not. */

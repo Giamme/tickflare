@@ -78,6 +78,15 @@ export abstract class LockstepRoom<Input, Env = Cloudflare.Env> extends Room<
   protected maxInputsPerTurn = 32;
 
   /**
+   * Off in a lockstep room. A turn is recorded as it closes and the room is
+   * saved less often, so after a restart the recording holds inputs that the
+   * room's own save knows nothing of: one that was sent again would be
+   * recorded twice. An input that was in flight when the connection dropped
+   * is answered with `disconnected`, as it always was.
+   */
+  protected override rememberCommands = false;
+
+  /**
    * Who keeps time.
    *
    * `"room"`: the room closes a turn every `1 / tickRate` seconds on a timer

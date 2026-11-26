@@ -116,11 +116,26 @@ describe("RoomClient.unconfirmed", () => {
     expect(room.unconfirmed.map((sent) => sent.id)).toEqual([2]);
     await expect(refused).rejects.toMatchObject({ reason: "no" });
 
+    // This room is older than version 5: it cannot say what became of the command.
     socket.drop(1006);
     expect(room.unconfirmed).toEqual([]);
     await expect(lost).rejects.toMatchObject({ reason: "disconnected" });
-    // Not sent at all: not on the list.
-    await expect(room.send({ add: 3 })).rejects.toBeInstanceOf(CommandRejected);
+    // A command sent now waits for the connection, and is on the list while it does.
+    const waiting = room.send({ add: 3 });
+    expect(room.unconfirmed.map((sent) => sent.id)).toEqual([3]);
+    room.close();
+    await expect(waiting).rejects.toMatchObject({ reason: "not_connected" });
+    expect(room.unconfirmed).toEqual([]);
+    // Closed for good: nothing waits any more.
+    await expect(room.send({ add: 4 })).rejects.toBeInstanceOf(CommandRejected);
+    expect(room.unconfirmed).toEqual([]);
+  });
+
+  it("lists nothing that was not sent when it may keep no commands", async () => {
+    const room = new RoomClient<Board, Move>("wss://tickflare.test/rooms/r", { keepCommandsMs: 0 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(new URL(FakeSocket.all[0]!.url).searchParams.has("client")).toBe(false);
+    await expect(room.send({ add: 1 })).rejects.toMatchObject({ reason: "not_connected" });
     expect(room.unconfirmed).toEqual([]);
     room.close();
   });
@@ -216,7 +231,7 @@ describe("Predictor", () => {
     expect(told).toEqual([5, 6, 1]);
   });
 
-  it("leaves out a prediction that throws, and predicts nothing while there is no connection", async () => {
+  it("leaves out a prediction that throws, and goes on predicting while the connection is away", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const { room, socket } = await welcomed(board());
     const predicted = new Predictor(room, { apply });
@@ -229,7 +244,12 @@ describe("Predictor", () => {
     socket.drop(1006);
     await vi.advanceTimersByTimeAsync(0);
     expect(predicted.state).toBe(room.state);
-    await expect(predicted.send({ add: 9 })).rejects.toMatchObject({ reason: "not_connected" });
+    // A command sent now waits for the connection, and shows in the meantime.
+    const waiting = predicted.send({ add: 9 });
+    expect(predicted.state!.count).toBe(9);
+    // Until the client gives it up.
+    await vi.advanceTimersByTimeAsync(10_000);
+    await expect(waiting).rejects.toMatchObject({ reason: "not_connected" });
     expect(predicted.state).toBe(room.state);
     room.close();
   });

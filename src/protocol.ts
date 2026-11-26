@@ -22,8 +22,13 @@ import type { Patch } from "./patch.js";
  * Version 4 adds the room's clock: while the simulation runs, `welcome`
  * says where the clock is (`ms` and `epoch`), and `clock` frames say it
  * again every few seconds, whenever it starts, stops or moves on.
+ *
+ * Version 5 adds commands that outlive a connection: a client that names
+ * itself with `client` in the query is told in `welcome` which of its
+ * commands the room has handled (`c`, `from` and `refused`), so that it can
+ * send the others again, and the room applies none of them twice.
  */
-export const PROTOCOL_VERSION = 4;
+export const PROTOCOL_VERSION = 5;
 
 /** The keepalive a client sends, as a plain text frame. @internal */
 export const PING = "ping";
@@ -49,7 +54,13 @@ export interface Player {
 export interface CommandFrame<Command = unknown> {
   /** Frame type. */
   t: "cmd";
-  /** Chosen by the client, unique per connection, echoed in the answer. */
+  /**
+   * Chosen by the client and echoed in the answer. Unique per connection; a
+   * client that names itself (`client` in the query, version 5) numbers its
+   * commands and leaves 1, 2, 3 and so on for as long as it lives, across
+   * connections, and the room takes one whose `id` is not above the latest it
+   * has handled for a command it has seen before.
+   */
   id: number;
   /** The command, as the room's `parseCommand` will receive it. */
   data: Command;
@@ -84,6 +95,39 @@ export interface WelcomeFrame<View = unknown> {
   ms?: number;
   /** Version 4, while the simulation runs: as in `ClockFrame`. */
   epoch?: number;
+  /**
+   * Version 5, to a client that named itself and that the room knows, on a
+   * new connection to a seat the player already had: the `id` of the latest
+   * command or leave of that client's the room has handled, applied or
+   * refused, or 0 for none. `state` shows every one of them that was
+   * applied. What the client sent after it never arrived, or was lost when
+   * the room went back to its last save: the client sends those again, in
+   * order, before anything new.
+   *
+   * Absent when the room knows nothing of what the client sent before, and
+   * the client gives up waiting for it: the seat is newly taken, the room
+   * last heard from another client of the same player, the room does not
+   * remember commands, or the `welcome` is one sent on a connection that was
+   * open already.
+   */
+  c?: number;
+  /**
+   * With `c`, when the room cannot say what became of the client's earliest
+   * commands: it can say of those after this `id`, up to `c`, and not of
+   * those up to it. A command the client is still waiting to hear about, and
+   * whose `id` is not above this, is given up as one whose outcome is not
+   * known. Absent when the room can say of every command up to `c`, which is
+   * nearly always: see the protocol reference for when it cannot.
+   */
+  from?: number;
+  /**
+   * With `c`: the latest of those commands that were refused, oldest first,
+   * each with the reason its `reject` frame gave, cut to 120 characters.
+   * Every other command after `from` and up to `c` was applied. The room
+   * remembers the last eight refusals of a client, and leaves this out when
+   * there are none.
+   */
+  refused?: [id: number, reason: string][];
   /** This player's whole view. */
   state: View;
   /** Everyone with a seat, in join order. */
