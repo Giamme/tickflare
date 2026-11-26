@@ -10,8 +10,9 @@ import {
 } from "../protocol.js";
 import { BINARY_PATCHES } from "../binary.js";
 import { DeltaSender, type SeatedSocket } from "./delta.js";
-import { MAX_CLOSE_REASON, readFrame, refuse } from "./frames.js";
-import { NAME_HEADER, PLAYER_HEADER, ROOM_HEADER, type RoomNamespace } from "./gateway.js";
+import { SpectatorLine, SPECTATOR_ID_TAG, SPECTATOR_TAG } from "./spectators.js";
+import { MAX_CLOSE_REASON, readFrame, refuse, type ClientFrame } from "./frames.js";
+import { NAME_HEADER, PLAYER_HEADER, ROOM_HEADER, SPECTATOR_HEADER, type RoomNamespace } from "./gateway.js";
 import { RateLimiter } from "./limiter.js";
 import { SignalSender, type Signal } from "./signals.js";
 import { Tracker } from "./tracked.js";
@@ -146,6 +147,8 @@ interface SocketInfo {
   resumes: boolean;
   /** The name its client gave itself, if it gave one. */
   client: string | undefined;
+  /** It is a spectator's: `id` is then undefined, since nobody's seat is behind it. */
+  spectator: boolean;
 }
 /**
  * In a room with more than `PRESENCE_CROWD` connections, the least time
@@ -285,6 +288,78 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
   protected tickRate = 0;
 
   /**
+   * How many times a second a ticking room sends what changed, when that is
+   * to be less often than it simulates. 0, the default, sends after every
+   * tick, and so does any rate that is not below `tickRate`.
+   *
+   * With `tickRate = 60` and `patchRate = 20` the room moves things sixty
+   * times a second and sends every third tick, in one patch that takes each
+   * player's view from the last one sent to now. What a patch costs, the
+   * comparison of every player's view and the bytes, is then paid a third
+   * as often; a tick costs what it did. With a rate that does not divide
+   * `tickRate` the gaps between patches differ by a tick, and average out.
+   *
+   * What waits for the patch: the `ack` of a command, since it says that
+   * the view shows the command, and messages sent with `send()` and
+   * `broadcast()` from `onTick`, so that they still arrive after the patch
+   * that shows their tick. Whatever is waiting goes out at once when the
+   * simulation stops, and in a tick that removes a player. A lockstep room
+   * sends every turn, whatever this says.
+   *
+   * `RoomClient.patchRate` tells the client, and `BufferedInterpolator`
+   * keeps as much more of a delay as it takes to always have two patches to
+   * draw between.
+   */
+  protected patchRate = 0;
+
+  /**
+   * How many connections may watch the room without a seat in it. 0, the
+   * default, lets nobody watch.
+   *
+   * A spectator connects with `?spectate=1` (`new RoomClient(url, {
+   * spectate: true })`) and is sent `spectatorView()`, kept up to date as a
+   * player's view is. They take no seat: they are not among `players`, no
+   * hook but `onSpectate` hears of them, what they send is refused, and a
+   * room with nobody but spectators connected is empty. They also hear what
+   * the room sends with `broadcast()`, and who is here.
+   *
+   * Not for lockstep rooms, whose state is on the clients.
+   */
+  protected maxSpectators = 0;
+
+  /**
+   * How far behind the room its spectators are, in milliseconds. 0, the
+   * default, sends them every change as the players are sent it.
+   *
+   * With a delay, nothing reaches a spectator sooner than that after the
+   * players: not the view, not who is here, not a broadcast. It is what
+   * keeps someone who watches from telling someone who plays what they
+   * cannot see yet. A spectator who connects waits this long for their first
+   * view, unless others are watching already.
+   *
+   * What it costs: the changes of that long are held in memory, and a room
+   * that would be asleep stays awake for as long after each change, while
+   * someone watches.
+   */
+  protected spectatorDelayMs = 0;
+
+  /**
+   * How many ticks of the state a ticking room keeps to look back at with
+   * `stateAt`. 0, the default, keeps none.
+   *
+   * It is for judging a command by what its player was looking at when they
+   * sent it, which is a moment ago: a shot at a runner drawn where they were
+   * a tenth of a second back. Set it to as many ticks as the lag you mean to
+   * forgive: 12 at 60 ticks a second is 200 ms. It is also as far as a client
+   * that lies about what it saw can reach back, so no more than that.
+   *
+   * Kept in memory, as the JSON the room has of each tick anyway: it costs no
+   * work in a tick, and as many states of memory as it is long. A room that
+   * restarts, or whose simulation stops, has none until it has ticked again.
+   */
+  protected historyTicks = 0;
+
+  /**
    * While the room is ticking, the most ticks it runs back to back to catch
    * up when it wakes late. The simulation keeps to a fixed clock: tick `n`
    * is due `n / tickRate` seconds after the clock started, and a room that
@@ -383,6 +458,10 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
   /** Timer name to the time it fires, in epoch milliseconds. */
   #timers = new Map<string, number>();
   #committed: Committed = { state: "", roster: "[]", timers: "[]" };
+  /** What the spectators are sent, and when: see `SpectatorLine`. */
+  #line = new SpectatorLine(() => this.#watching());
+  /** The state after each of the last `historyTicks` ticks, by tick: see `stateAt`. In order of tick. */
+  #history = new Map<number, string>();
   /** Seats given up during this event. Their sockets are closed once the event is over. */
   #removed: { id: string; reason: string }[] = [];
   /** The timers changed, so the object's alarm has to be moved before the event ends. */
@@ -400,6 +479,8 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
   #signals: Signal[] = [];
   /** Messages for players, as frames, waiting for the end of the event. `to` null is everyone. */
   #mail: { to: string | null; frame: string }[] = [];
+  /** Messages sent from ticks that no patch has followed yet: see `patchRate`. */
+  #heldMail: { to: string | null; frame: string }[] = [];
   /** While ticking: the commands each socket has had applied and not yet been told about. */
   #owed = new Map<WebSocket, number[]>();
   /** The command being handled, and who sent it. */
@@ -581,6 +662,30 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     return this.state;
   }
 
+  /**
+   * What spectators see: one view for all of them. Defaults to the whole
+   * state, in a room where that is what players see too. A room with a
+   * `view()` of its own hides something from its players, and has to say
+   * here what someone who watches may see: until it does, it takes no
+   * spectators.
+   */
+  protected spectatorView(): unknown {
+    return this.state;
+  }
+
+  /**
+   * Someone asks to watch, in a room with `maxSpectators`. Throw
+   * `reject("reason")` to turn them away. `player.connected` says whether
+   * they also hold a seat and are connected to it. A hook like the others:
+   * what it changes is kept.
+   */
+  protected onSpectate(_player: Player): void {}
+
+  /** How many spectators are connected. */
+  protected get spectators(): number {
+    return this.#watching().length;
+  }
+
   /** Everyone with a seat, in join order. */
   protected get players(): Player[] {
     // One pass over the sockets, not one per player: a join tells everyone this list.
@@ -596,6 +701,28 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
   /** Number of ticks run so far. */
   protected get tick(): number {
     return this.#tick;
+  }
+
+  /**
+   * The state as it was after tick `tick`, which is what the patch of that
+   * tick showed, or undefined if the room does not have it: `historyTicks`
+   * is 0, the tick is older than that many ticks or has not run yet, or the
+   * simulation has stopped or the room restarted since. The latest it has is
+   * `stateAt(this.tick)`, the state as the last tick left it, without what
+   * commands did since. Where there is none, judge by `this.state`.
+   *
+   * A tick with a fraction, as `BufferedInterpolator.drawnTick()` gives it,
+   * is taken as the nearest whole one. Where half a tick matters, take the
+   * ticks on either side and blend what you need from them.
+   *
+   * It is the whole state, not a player's view of it, and a copy of your
+   * own, made from that tick's JSON on every call: it costs what the state
+   * weighs to parse, so call it once for a command and keep what it gave.
+   * Changing the copy changes nothing in the room.
+   */
+  protected stateAt(tick: number): State | undefined {
+    const kept = this.#history.get(Math.round(tick));
+    return kept === undefined ? undefined : (JSON.parse(kept) as State);
   }
 
   /** The id this room is reached under, once someone has connected through the gateway. */
@@ -727,7 +854,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     this.#mail.push({ to: playerId, frame: messageFrame(message) });
   }
 
-  /** `send` to every player who is connected. */
+  /** `send` to every player who is connected, and to those who watch: see `maxSpectators`. */
   protected broadcast(message: unknown): void {
     this.#mail.push({ to: null, frame: messageFrame(message) });
   }
@@ -901,7 +1028,9 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
 
   /** Durable Object entry point for connections and HTTP requests from the gateway. Tickflare's: override `onHttp` instead. */
   override async fetch(request: Request): Promise<Response> {
-    const playerId = request.headers.get(PLAYER_HEADER);
+    // Someone who asks to watch comes under a header of their own: see `routeToRoom`.
+    const watcherId = request.headers.get(SPECTATOR_HEADER);
+    const playerId = request.headers.get(PLAYER_HEADER) ?? watcherId;
     if (!playerId) {
       return new Response("Missing player identity", { status: 401 });
     }
@@ -925,6 +1054,12 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
       }
     }
     const asked = new URL(request.url).searchParams;
+    // By the header, or by the query alone when the gateway in front is not `routeToRoom`.
+    if (watcherId !== null || asked.get("spectate") === "1") {
+      const response = this.#spectate(playerId, name);
+      await this.#finish();
+      return response;
+    }
     const marks: string[] = [];
     if (asked.get("patches") === BINARY_PATCHES) marks.push(BINARY_TAG);
     if (Number(asked.get("v")) >= 2) marks.push(V2_TAG);
@@ -1127,6 +1262,90 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     return new Response(null, { status: 101, webSocket: client });
   }
 
+  /** Someone asks to watch: see `maxSpectators`. */
+  #spectate(playerId: string, name: string | undefined): Response {
+    const pair = new WebSocketPair();
+    const client = pair[0];
+    const server = pair[1];
+    const tag = SPECTATOR_ID_TAG + playerId;
+    // Cloudflare takes no tag longer than this.
+    if (!(this.maxSpectators > 0) || patchesEachTick.has(this) || tag.length > 256) {
+      return refuse(client, server, CloseCode.JoinRejected, "no_spectators");
+    }
+    if (this.view !== Room.prototype.view && this.spectatorView === Room.prototype.spectatorView) {
+      console.error(
+        "[tickflare] this room has a view() of its own and no spectatorView(): it has to say what a spectator may see before it takes any.",
+      );
+      return refuse(client, server, CloseCode.JoinRejected, "no_spectators");
+    }
+    const others = this.#watching().filter((ws) => !this.ctx.getTags(ws).includes(tag));
+    if (others.length >= this.maxSpectators) {
+      return refuse(client, server, CloseCode.RoomFull, "spectators_full");
+    }
+    const player: Player = { id: playerId, connected: this.#isConnected(playerId) };
+    if (name !== undefined) player.name = name;
+    const asked = this.#apply(() => this.onSpectate(player));
+    if (!asked.ok) return refuse(client, server, CloseCode.JoinRejected, asked.reason);
+
+    // One connection per spectator: the newest wins.
+    for (const old of this.ctx.getWebSockets(tag)) {
+      try {
+        old.close(CloseCode.Replaced, "replaced");
+      } catch {
+        // Already closed.
+      }
+    }
+    // Before this socket is among those the line sends to: what a line without a delay lets out
+    // at once is in the welcome.
+    if (!this.#line.running) this.#show(true);
+    this.ctx.acceptWebSocket(server, [SPECTATOR_TAG, tag]);
+    this.#heard.set(server, Date.now());
+    // Nothing of the room as it is now: who they are, then what the others have been shown. For
+    // the first to watch there is no such view yet, and it follows when its time has come.
+    this.#send(server, {
+      t: "spectating",
+      v: 5,
+      you: playerId,
+      tickRate: this.tickRate,
+      ...(this.#patchRate() > 0 ? { patchRate: this.#patchRate() } : {}),
+      delay: Math.max(0, this.spectatorDelayMs),
+      players: this.#line.players ?? [],
+    });
+    const shown = this.#line.shown;
+    if (shown) this.#send(server, { t: "state", seq: shown.seq, tick: shown.tick, state: shown.view });
+    return new Response(null, { status: 101, webSocket: client });
+  }
+
+  /** The open sockets of the spectators. */
+  #watching(): WebSocket[] {
+    return this.ctx.getWebSockets(SPECTATOR_TAG).filter((ws) => ws.readyState === SOCKET_OPEN);
+  }
+
+  /**
+   * The players have just been sent the state as it is now: the spectators'
+   * line takes their view of it. `starting` when it is to start whoever is
+   * watching, for a spectator who is about to be.
+   */
+  #show(starting = false): void {
+    if (!this.#line.running && !starting) {
+      // Stopped while someone watches: it held too much, and starts over.
+      if (!(this.maxSpectators > 0) || this.#watching().length === 0) return;
+      starting = true;
+    }
+    if (!starting && !this.#line.keep(this.#watching().length > 0)) return;
+    let view: unknown;
+    try {
+      view = this.spectatorView();
+    } catch (err) {
+      console.error("[tickflare] spectatorView() failed; the spectators keep the view they have:", err);
+      return;
+    }
+    const delay = Math.max(0, this.spectatorDelayMs);
+    const begins = !this.#line.running;
+    this.#line.take(view, this.#seq, this.#tick, delay);
+    if (begins) this.#line.tell(this.players, delay);
+  }
+
   /**
    * Sends a socket everything from the start: who they are, the players and
    * their whole view. `resumed`, on a new connection of a client that held
@@ -1141,6 +1360,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
       tick: this.#tick,
       tickRate: this.tickRate,
       ...(this.#loop !== undefined && this.#socketInfo(ws).clock ? this.#clockReading(Date.now()) : {}),
+      ...(this.#patchRate() > 0 ? { patchRate: this.#patchRate() } : {}),
       ...(resumed ? { c: resumed.last } : {}),
       ...(resumed && resumed.from > 0 ? { from: resumed.from } : {}),
       ...(resumed && resumed.refused.length > 0 ? { refused: resumed.refused } : {}),
@@ -1172,6 +1392,18 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
 
   #receive(ws: WebSocket, message: string | ArrayBuffer): void {
     const playerId = this.#playerOf(ws);
+    if (!playerId && this.#socketInfo(ws).spectator) {
+      // Watching is all a spectator does. Answered by id, so that a client's promise settles.
+      if (typeof message !== "string" || message.length > this.maxMessageLength) return;
+      let frame: ClientFrame | undefined;
+      try {
+        frame = readFrame(JSON.parse(message));
+      } catch {
+        return;
+      }
+      if (frame) this.#send(ws, { t: "reject", id: frame.id, reason: "spectator" });
+      return;
+    }
     // A socket whose seat is gone is about to be closed; ignore what it still sends.
     if (!playerId || !this.#roster.includes(playerId)) return;
     // What the room notes on the socket of a client that named itself decides what its commands
@@ -1509,9 +1741,16 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     } else if (!wanted && this.#loop !== undefined) {
       clearTimeout(this.#loop);
       this.#loop = undefined;
-      // Send what changed since the last tick, or it would never go out.
+      // Send what changed since the last patch, or it would never go out.
       this.#broadcastTick();
+      if (this.#heldMail.length > 0) {
+        this.#mail.unshift(...this.#heldMail.splice(0));
+        this.#deliverMail();
+      }
       if (this.#unsaved) this.#writeRoom();
+      // From here on the players are shown every change as it is made: no tick stands for what
+      // they see, so there is none to look back at.
+      this.#history.clear();
       this.#tellClock(Date.now());
     }
   }
@@ -1546,6 +1785,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     }
     const until = Math.min(due, this.#tick + cap);
     const eachTick = patchesEachTick.has(this);
+    const before = this.#tick;
     let ran = 0;
     let halted = false;
     while (this.#tick < until) {
@@ -1576,9 +1816,36 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
       this.#ticksSinceSave = 0;
       if (this.#unsaved) this.#writeRoom();
     }
-    this.#broadcastTick();
+    if (this.#patchDue(before) || this.#removed.length > 0) {
+      // Before what these ticks sent, which `#finish` delivers: messages follow the patch.
+      if (this.#heldMail.length > 0) this.#mail.unshift(...this.#heldMail.splice(0));
+      this.#broadcastTick();
+    } else if (this.#mail.length > 0) {
+      // No patch for these ticks yet. What they sent waits for it, so that a message never
+      // arrives before the state it is about. A player who is being removed has to hear why
+      // before the connection closes, which is why such a tick sends.
+      this.#heldMail.push(...this.#mail.splice(0));
+    }
     if (moved || now - this.#clockToldAt >= CLOCK_EVERY_MS) this.#tellClock(now);
     this.#finish(false).catch((err) => console.error("[tickflare] tick cleanup failed:", err));
+  }
+
+  /** `patchRate` where it holds anything back, and 0 where the room sends after every tick. */
+  #patchRate(): number {
+    const rate = this.patchRate;
+    return rate > 0 && rate < this.tickRate && !patchesEachTick.has(this) ? rate : 0;
+  }
+
+  /**
+   * Whether a patch is due now that the ticks after `before` have run. With
+   * a `patchRate`, patches fall due that many times a second by the count of
+   * ticks, so a room that catches up sends no more often than one that
+   * keeps time.
+   */
+  #patchDue(before: number): boolean {
+    const rate = this.#patchRate();
+    if (rate === 0) return true;
+    return Math.floor((this.#tick * rate) / this.tickRate) > Math.floor((before * rate) / this.tickRate);
   }
 
   #runTick(): void {
@@ -1590,6 +1857,26 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
       console.error("[tickflare] onTick keeps failing; the simulation is paused until the next event");
       this.#failedTicks = 0;
       this.#stalled = true;
+    }
+    this.#remember();
+  }
+
+  /** Keeps the state the tick that just ran left, and lets go of those older than `historyTicks`. */
+  #remember(): void {
+    const keep = Math.floor(this.historyTicks) || 0;
+    if (keep <= 0) {
+      if (this.#history.size > 0) this.#history.clear();
+      return;
+    }
+    // `onEmpty` may have run after the tick, and what it wrote is not in the JSON yet.
+    this.#freshen();
+    const json = this.#committed.state;
+    const last = this.#history.get(this.#tick - 1);
+    // A tick that changed nothing keeps the string the one before it keeps, not one more like it.
+    this.#history.set(this.#tick, last === json ? last : json);
+    for (const tick of this.#history.keys()) {
+      if (tick > this.#tick - keep) break;
+      this.#history.delete(tick);
     }
   }
 
@@ -1702,6 +1989,21 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
           } catch (err) {
             console.error(`[tickflare] could not send the state to ${id}:`, err);
           }
+        }
+      }
+    }
+
+    // Spectators whose connections outlasted the instance: what was on its way to them went with
+    // it, so their view starts over. A room that no longer takes any lets them go.
+    const watching = this.#watching();
+    if (watching.length > 0 && this.maxSpectators > 0) {
+      this.#show(true);
+    } else {
+      for (const ws of watching) {
+        try {
+          ws.close(CloseCode.JoinRejected, "no_spectators");
+        } catch {
+          // Already closed.
         }
       }
     }
@@ -1976,6 +2278,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
    * one that nothing is known about gets its whole view.
    */
   #broadcastState(before: string): void {
+    this.#show();
     const sockets = this.#seatedSockets();
     if (sockets.length === 0) return;
     const custom = this.view !== Room.prototype.view;
@@ -2015,6 +2318,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
       shows,
     );
     this.#answer();
+    this.#show();
   }
 
   /** The version of the protocol spoken on this socket: the one its client asked for, or the newest this room knows. */
@@ -2057,6 +2361,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
 
     const players = this.players;
     const change = this.#presenceChange(players);
+    if (change && this.#line.running) this.#line.tell(players, Math.max(0, this.spectatorDelayMs));
     let whole: string | undefined;
     let brief: string | undefined;
     for (const { ws } of sockets) {
@@ -2110,6 +2415,8 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
     const mail = this.#mail.splice(0);
     let everyone: { ws: WebSocket; id: string }[] | undefined;
     for (const { to, frame } of mail) {
+      // What is said to everyone is said to those who watch as well, when their time comes.
+      if (to === null && this.#line.running) this.#line.say(frame, Math.max(0, this.spectatorDelayMs));
       const sockets =
         to === null
           ? (everyone ??= this.#seatedSockets()).map(({ ws }) => ws)
@@ -2172,6 +2479,7 @@ export abstract class Room<State, Command = unknown, Env = Cloudflare.Env> exten
         clock: tags.includes(V4_TAG),
         resumes: tags.includes(V5_TAG),
         client: this.rememberCommands ? tags.find((tag) => tag.startsWith(CLIENT_TAG))?.slice(CLIENT_TAG.length) : undefined,
+        spectator: tags.includes(SPECTATOR_TAG),
       };
       this.#infos.set(ws, info);
     }

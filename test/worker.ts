@@ -4,6 +4,7 @@ import {
   LockstepRoom,
   Matchmaker,
   Room,
+  parseWith,
   recentMatches,
   recordMatches,
   reject,
@@ -14,6 +15,7 @@ import {
   type Authenticated,
   type PasswordReset,
   type Player,
+  type StandardSchemaV1,
 } from "../src/server/index.js";
 
 export interface TestState {
@@ -400,6 +402,8 @@ export class AskedSnapRoom extends SnapRoom {
 /** A lockstep room at 50 turns a second. */
 export class TurnRoom extends LockstepRoom<TurnInput> {
   protected override tickRate = 50;
+  // Ignored: a lockstep room sends every turn. Every lockstep test would fail if it were not.
+  protected override patchRate = 5;
   protected override maxInputsPerTurn = 3;
   protected override seatTimeoutMs = 400;
   protected override matchQueue = this.env.MATCHES;
@@ -495,6 +499,304 @@ export class QuietRoom extends TickRoom {
   protected override onDisconnect(player: Player): void {
     this.state.log.push(`gone:${player.id}`);
   }
+}
+
+export interface LedgerState {
+  /** How many times each command was applied, by the key it came with. Anything but 1 is a fault. */
+  seen: Record<string, number>;
+  /** The keys in the order they were applied. */
+  order: string[];
+  /** Goes up by one a tick, in the ticking kind. */
+  ticks: number;
+}
+
+export type LedgerCommand = { type: "mark" | "refuse"; key: string };
+
+/**
+ * A room that writes down every command it applies, for the tests that drop
+ * connections and restart rooms at random: a command that was lost shows as
+ * a key that is missing, and one applied twice as a count of two.
+ */
+export class LedgerRoom extends Room<LedgerState, LedgerCommand> {
+  protected override maxCommandsPerSecond = Number.POSITIVE_INFINITY;
+
+  protected initialState(): LedgerState {
+    return { seen: {}, order: [], ticks: 0 };
+  }
+
+  protected parseCommand(raw: unknown): LedgerCommand {
+    const input = raw as { type?: unknown; key?: unknown } | null;
+    if ((input?.type !== "mark" && input?.type !== "refuse") || typeof input.key !== "string") reject("bad_command");
+    return { type: input.type, key: input.key };
+  }
+
+  protected onCommand(_player: Player, command: LedgerCommand): void {
+    this.state.seen[command.key] = (this.state.seen[command.key] ?? 0) + 1;
+    this.state.order.push(command.key);
+    // Refused after it has written: none of it may stay.
+    if (command.type === "refuse") reject("no");
+  }
+}
+
+/** LedgerRoom with a simulation: 50 ticks a second, saved every 150 ms, so that a restart goes back a little. */
+export class TickLedgerRoom extends LedgerRoom {
+  protected override tickRate = 50;
+  protected override saveIntervalMs = 150;
+
+  protected override onTick(): void {
+    this.state.ticks += 1;
+  }
+}
+
+export interface PacedState {
+  ticks: number;
+  /** What each player's commands added up to. */
+  sums: Record<string, number>;
+  /** Asked to stop: it does at the next tick that sends a message. */
+  stopping: boolean;
+  over: boolean;
+}
+
+export type PacedCommand = { type: "add"; n: number } | { type: "stop" } | { type: "kick"; who: string };
+
+/** A schema written by hand to the Standard Schema specification, as a library's would be. */
+const pacedCommand: StandardSchemaV1<unknown, PacedCommand> = {
+  "~standard": {
+    version: 1,
+    vendor: "tickflare-test",
+    validate(value) {
+      const input = value as { type?: unknown; n?: unknown; who?: unknown } | null;
+      if (input?.type === "stop") return { value: { type: "stop" } };
+      if (input?.type === "kick") {
+        return typeof input.who === "string" ? { value: { type: "kick", who: input.who } } : { issues: [{ message: "Expected a player", path: ["who"] }] };
+      }
+      if (input?.type !== "add") return { issues: [{ message: "Unknown command", path: ["type"] }] };
+      // What the schema gives back is what the room gets: a number sent as text is made one.
+      const n = typeof input.n === "string" ? Number(input.n) : input.n;
+      return typeof n === "number" && Number.isFinite(n) ? { value: { type: "add", n } } : { issues: [{ message: "Expected a number", path: ["n"] }] };
+    },
+  },
+};
+
+/** Ticks fifty times a second and sends ten times: every fifth tick. */
+export class PacedRoom extends Room<PacedState, PacedCommand> {
+  protected override tickRate = 50;
+  protected override patchRate = 10;
+
+  protected initialState(): PacedState {
+    return { ticks: 0, sums: {}, stopping: false, over: false };
+  }
+
+  protected parseCommand(raw: unknown): PacedCommand {
+    return parseWith(pacedCommand, raw);
+  }
+
+  protected override shouldTick(): boolean {
+    return !this.state.over;
+  }
+
+  protected override onTick(): void {
+    this.state.ticks += 1;
+    // A message from a tick that is followed by no patch of its own. A room that was asked to
+    // stop does so in such a tick, with the message still waiting for a patch.
+    if (this.state.ticks % 5 === 2) {
+      this.broadcast({ beat: this.state.ticks });
+      if (this.state.stopping) this.state.over = true;
+    }
+    for (const player of this.players) {
+      if (this.state.sums[player.id] === -1) {
+        this.send(player.id, { bye: this.state.ticks });
+        this.removePlayer(player.id, "kicked");
+      }
+    }
+  }
+
+  protected onCommand(player: Player, command: PacedCommand): void {
+    if (command.type === "add") this.state.sums[player.id] = (this.state.sums[player.id] ?? 0) + command.n;
+    else if (command.type === "stop") this.state.stopping = true;
+    // Removed by the next tick, whichever that is.
+    else this.state.sums[command.who] = -1;
+  }
+}
+
+/** A rate that does not divide the tick rate: the gaps between patches are two ticks and three. */
+export class UnevenRoom extends PacedRoom {
+  protected override patchRate = 20;
+}
+
+/** Asks for more patches than there are ticks, which is one a tick. */
+export class EagerRoom extends PacedRoom {
+  protected override patchRate = 80;
+}
+
+export interface HistoryState {
+  /** Where the runner is: one further with every tick. */
+  x: number;
+  playing: boolean;
+  /** Each shot, with where the runner was at the tick it named and where it was when the shot arrived. */
+  shots: { tick: number; was: number | null; now: number; hit: boolean }[];
+  /** What a "span" command found the room to have: see `HistoryRoom.onCommand`. */
+  spans: { tick: number; has: boolean[]; latest: number | null }[];
+}
+export type HistoryCommand =
+  | { type: "shoot"; tick: number; x: number }
+  | { type: "span" }
+  | { type: "scribble"; tick: number }
+  | { type: "play"; on: boolean };
+
+/**
+ * Ticks fifty times a second and keeps the state of its last ten ticks.
+ * Rooms named "none-…" keep none, and those named "short-…" keep three.
+ */
+export class HistoryRoom extends Room<HistoryState, HistoryCommand> {
+  protected override tickRate = 50;
+  protected override historyTicks = 10;
+
+  protected initialState(): HistoryState {
+    return { x: 0, playing: true, shots: [], spans: [] };
+  }
+
+  protected parseCommand(raw: unknown): HistoryCommand {
+    return raw as HistoryCommand;
+  }
+
+  protected override shouldTick(): boolean {
+    return this.state.playing;
+  }
+
+  protected override onTick(): void {
+    if (this.roomId?.startsWith("none-")) this.historyTicks = 0;
+    if (this.roomId?.startsWith("short-")) this.historyTicks = 3;
+    this.state.x += 1;
+  }
+
+  protected onCommand(_player: Player, command: HistoryCommand): void {
+    switch (command.type) {
+      case "shoot": {
+        const then = this.stateAt(command.tick);
+        this.state.shots.push({ tick: command.tick, was: then?.x ?? null, now: this.state.x, hit: then?.x === command.x });
+        break;
+      }
+      case "span":
+        this.state.spans.push({
+          tick: this.tick,
+          // The tick to come, the latest, and those nine, ten, three and two before it.
+          has: [-1, 0, 9, 10, 3, 2].map((back) => this.stateAt(this.tick - back) !== undefined),
+          latest: this.stateAt(this.tick)?.x ?? null,
+        });
+        break;
+      case "scribble": {
+        const then = this.stateAt(command.tick);
+        if (then) then.x = -1;
+        break;
+      }
+      case "play":
+        this.state.playing = command.on;
+        break;
+    }
+  }
+}
+
+export interface WatchedState {
+  count: number;
+  /** One number per player, which `ClosedRoom` hides from everyone else. */
+  hands: Record<string, number>;
+  log: string[];
+}
+export type WatchedCommand =
+  | { type: "add"; n: number }
+  | { type: "shout"; text: string }
+  | { type: "census" }
+  | { type: "kick"; who: string };
+
+/** Event mode. Two may watch, and see what the players see. Nobody whose id starts with "banned". */
+export class WatchedRoom extends Room<WatchedState, WatchedCommand> {
+  protected override maxSpectators = 2;
+
+  protected initialState(): WatchedState {
+    return { count: 0, hands: {}, log: [] };
+  }
+
+  protected parseCommand(raw: unknown): WatchedCommand {
+    return raw as WatchedCommand;
+  }
+
+  protected override onJoin(player: Player): void {
+    this.state.hands[player.id] = 7 + Object.keys(this.state.hands).length;
+    this.state.log.push(`join:${player.id}`);
+  }
+
+  protected override onDisconnect(player: Player): void {
+    this.state.log.push(`drop:${player.id}`);
+  }
+
+  protected override onEmpty(): void {
+    this.state.log.push("empty");
+  }
+
+  protected override onSpectate(player: Player): void {
+    if (player.id.startsWith("banned")) throw reject("banned");
+    this.state.log.push(`watch:${player.id}:${player.connected ? "seated" : "unseated"}`);
+  }
+
+  protected onCommand(player: Player, command: WatchedCommand): void {
+    switch (command.type) {
+      case "add":
+        this.state.count += command.n;
+        break;
+      case "shout":
+        this.broadcast({ said: command.text, by: player.id });
+        this.send(player.id, { whispered: command.text });
+        break;
+      case "census":
+        this.state.log.push(`watching:${this.spectators}`);
+        break;
+      case "kick":
+        this.removePlayer(command.who, "kicked");
+        break;
+    }
+  }
+}
+
+/** The same, with the spectators 400 ms behind. */
+export class LateRoom extends WatchedRoom {
+  protected override spectatorDelayMs = 400;
+}
+
+/** Shows each player their own hand only, and does not say what a spectator may see. */
+export class ClosedRoom extends WatchedRoom {
+  protected override view(player: Player): unknown {
+    return { count: this.state.count, hand: this.state.hands[player.id] ?? null };
+  }
+}
+
+/** The same, and it says: a spectator sees the count and how many hands there are. */
+export class HiddenRoom extends ClosedRoom {
+  protected override spectatorView(): unknown {
+    return { count: this.state.count, hands: Object.keys(this.state.hands).length };
+  }
+}
+
+/** Ticks fifty times a second, with the spectators 300 ms behind. */
+export class LateTicks extends Room<{ n: number }, { type: "noop" }> {
+  protected override tickRate = 50;
+  protected override maxSpectators = 2;
+  protected override spectatorDelayMs = 300;
+
+  protected initialState(): { n: number } {
+    return { n: 0 };
+  }
+
+  protected parseCommand(raw: unknown): { type: "noop" } {
+    return raw as { type: "noop" };
+  }
+
+  protected override onTick(): void {
+    this.state.n += 1;
+    if (this.state.n % 10 === 0) this.broadcast({ beat: this.state.n });
+  }
+
+  protected onCommand(): void {}
 }
 
 /** Signs the join tokens accepted under /secure. */
@@ -732,6 +1034,17 @@ export default {
       (await routeToMatchmaker(request, { matchmakers: env.PATIENT, prefix: "/patient", authenticate: whoIs })) ??
       (await routeToRoom(request, { rooms: env.EDGE, prefix: "/edge", authenticate: whoIs })) ??
       (await routeToRoom(request, { rooms: env.LAZY, prefix: "/lazy", authenticate: whoIs })) ??
+      (await routeToRoom(request, { rooms: env.PACED, prefix: "/paced", authenticate: whoIs })) ??
+      (await routeToRoom(request, { rooms: env.UNEVEN, prefix: "/uneven", authenticate: whoIs })) ??
+      (await routeToRoom(request, { rooms: env.EAGER, prefix: "/eager", authenticate: whoIs })) ??
+      (await routeToRoom(request, { rooms: env.HISTORY, prefix: "/history", authenticate: whoIs })) ??
+      (await routeToRoom(request, { rooms: env.WATCHED, prefix: "/watched", authenticate: whoIs })) ??
+      (await routeToRoom(request, { rooms: env.LATE, prefix: "/late", authenticate: whoIs })) ??
+      (await routeToRoom(request, { rooms: env.CLOSED, prefix: "/closed", authenticate: whoIs })) ??
+      (await routeToRoom(request, { rooms: env.HIDDEN, prefix: "/hidden", authenticate: whoIs })) ??
+      (await routeToRoom(request, { rooms: env.LATETICKS, prefix: "/lateticks", authenticate: whoIs })) ??
+      (await routeToRoom(request, { rooms: env.LEDGER, prefix: "/ledger", authenticate: whoIs })) ??
+      (await routeToRoom(request, { rooms: env.TICKLEDGER, prefix: "/tickledger", authenticate: whoIs })) ??
       (await routeToRoom(request, { rooms: env.HALF, prefix: "/half", authenticate: whoIs })) ??
       (await routeToMatchmaker(request, { matchmakers: env.RANKED, prefix: "/ranked", authenticate: whoIs })) ??
       (await routeToMatchmaker(request, { matchmakers: env.PARTIES, prefix: "/parties", authenticate: whoIsInParty })) ??

@@ -11,6 +11,7 @@ Every limit here is one of three kinds: Cloudflare's, which nobody can lift; Tic
 | A message from a player | 16 KB and 30 a second by default; both are settings | Tickflare, to protect the room |
 | Transport | WebSockets: ordered and reliable, no UDP | Cloudflare |
 | What a restart loses | Up to `saveIntervalMs` of a ticking room, five seconds by default | Tickflare |
+| When a deploy restarts a room | Only if it is still awake five minutes later; the delay is a setting. [By Cloudflare's documentation](#when-a-deploy-reaches-a-room), not yet measured | Cloudflare |
 | A room nobody is in | Stands still and stays, until your code says otherwise | Tickflare |
 | Storage | 10 GB a room, 10 GB for accounts and match history | Cloudflare |
 | Where a room runs | Where it was created; it does not move | Cloudflare |
@@ -79,14 +80,14 @@ Each row is from runs of a few minutes, with every player on one machine in a da
 Two things in Tickflare's design set these numbers:
 
 - **The whole state is turned into JSON whenever it is saved or sent whole, and once or twice a tick.** In event mode that is every command that changes something: the state is written in full each time, and compared with what the players hold to send them the difference. While ticking it is the tick itself, which is compared whole so that `onTick` can run on plain objects, and the save every few seconds. What a command, a join or a timer costs in between is only what it touches: the room [follows a hook's writes](./rooms#the-state-inside-a-hook) rather than going through the state after it. A hook that changes nothing, or is refused, costs the same in a room of any size.
-- **`view()` runs for every connected player on every tick**, and each result is compared with what that player was sent last.
+- **`view()` runs for every connected player on every tick**, and each result is compared with what that player was sent last. With a [`patchRate`](./state-sync#sending-less-often-than-you-simulate) it is every patch instead of every tick.
 
 **What you can do today**
 
 - Send each player what they can see. A `view()` that filters by sight is the single biggest saving, in time and in bandwidth.
 - Keep what never changes out of the state: a map, unit definitions. Send it once as a message, or let the page load it.
 - In event mode, keep a large state out of rooms that take many commands: each one that changes anything writes all of it. Tick instead, even slowly, and the state is written every few seconds.
-- Tick slower and let screens interpolate. Ten ticks a second is enough for most of what Tickflare aims at.
+- Tick slower and let screens interpolate. Ten ticks a second is enough for most of what Tickflare aims at. Where the simulation needs a finer step than the players need updates, keep the step and [send less often](./state-sync#sending-less-often-than-you-simulate).
 - Past a few hundred players, split the world [across rooms](./worlds).
 - For many units and few players, use [lockstep](./lockstep): the room never touches the simulation.
 
@@ -107,6 +108,7 @@ Frames are JSON, and what is sent after a change is a patch: it names what chang
 So a hundred units moving ten times a second is about 6 KB a second to every player who sees them, and a thousand about 60 KB a second. Cloudflare does not charge for it, but a player on a phone pays for it and a poor connection will not carry it.
 
 - **Round what you send.** A position with all its decimals costs three times one rounded to a tenth, on the wire as in JSON. `Math.round(x * 10) / 10`, in the simulation or in `view()`.
+- **Send less often than you simulate.** The figures above are per patch, and a room sends one after every tick unless it has a [`patchRate`](./state-sync#sending-less-often-than-you-simulate). At 60 ticks and 20 patches a second a unit that keeps moving is in 20 patches a second, not 60.
 - **A client of your own has to offer compression** (`permessage-deflate`), or it is sent the JSON as it is, unless it asks for binary patches. To see whether a connection has it, look for `Sec-WebSocket-Extensions` among the response headers of the WebSocket in your browser's developer tools.
 - **Compression costs the room nothing we could measure.** Rooms ticked as fast with it as without, up to 1.2 MB of JSON a second to each of twenty players.
 
@@ -132,7 +134,7 @@ The state is one JSON document. It is saved whole: a ticking room writes all of 
 
 That is deliberate. Cloudflare bills a room's storage by the row written, whatever the row holds, and a row written is most of what a move costs in a room that sleeps. One row for the whole state is the cheapest save there is; a state cut into parts that are saved separately would cost more, not less.
 
-**How large it can be.** Cloudflare limits a row to 2 MB, so a state longer than 1.5 MB is spread over rows, one for each 1.5 MB, and each save writes them all. There is no fixed ceiling after that, but the state is held in memory three times over while a room is busy: as objects, as the JSON that was last saved, and as the copy that players are patched against. A room has 128 MB. We have run states of 4 MB; expect trouble somewhere past ten, and long before that every save and every join is moving megabytes.
+**How large it can be.** Cloudflare limits a row to 2 MB, so a state longer than 1.5 MB is spread over rows, one for each 1.5 MB, and each save writes them all. There is no fixed ceiling after that, but the state is held in memory three times over while a room is busy: as objects, as the JSON that was last saved, and as the copy that players are patched against. A room has 128 MB. We have run states of 4 MB; expect trouble somewhere past ten, and long before that every save and every join is moving megabytes. A room with [`historyTicks`](./state-sync#judging-a-command-by-what-its-player-saw) holds the JSON of that many more states, which is for states counted in kilobytes: twelve ticks of 50 KB are 600 KB.
 
 **What you can do today**
 
@@ -177,16 +179,41 @@ In state sync a player's own command can be [shown on the click](./state-sync#sh
 
 ## Restarts and deploys
 
-Every deploy of your Worker restarts every room. Cloudflare gives no warning of it, to you or to Tickflare.
+A room is restarted when a deploy gives it new code while it is awake, and when Cloudflare restarts it for reasons of its own, such as an update of its runtime. Neither comes with a warning, to you or to Tickflare.
 
-- **Players are disconnected.** The client reconnects by itself and gets a fresh view. `onDisconnect` is not called for players dropped this way, though their seat timeout still starts. On Cloudflare, 39 rooms made to restart with 20 to 100 players in them lost every connection, and were ticking again for all of their players, reconnected, two seconds later (1.7 to 2.7).
+### When a deploy reaches a room
+
+Until 30 October 2026 every deploy restarted every room at once. Since then Cloudflare [defers code updates](https://developers.cloudflare.com/durable-objects/deployments/durable-objects-code-updates/) to Durable Objects, and that is the default. What follows is from Cloudflare's documentation. We have not measured rooms through a deploy since, and the figures further down are of restarts we caused ourselves.
+
+- **A room that is asleep starts on the new code at its next event**, with its players still connected. An event-mode room between moves takes a deploy without anyone noticing.
+- **A room that is awake keeps the code it has** until it goes to sleep or until `max_delay` has passed, five minutes unless you say otherwise. Then it is restarted. A room is asleep once it has heard nothing for ten seconds and has no timer running, which a ticking room never is: a deploy restarts the rooms that are still ticking when the delay runs out, and a match that ends within it is not interrupted. The same goes for a lockstep room during a match, whichever clock it runs on.
+- **You set the delay**, up to a day, in the Wrangler configuration, for all the Durable Object classes of the Worker at once:
+
+  ```jsonc
+  "durable_objects": {
+    "bindings": [{ "name": "ROOMS", "class_name": "Duel" }],
+    "code_update_strategy": { "mode": "deferred", "max_delay": 1800 } // seconds
+  }
+  ```
+
+  `"mode": "immediate"` restarts every room at once, as before. One deploy can differ from the configuration: `npx wrangler deploy --durable-objects-code-update-mode immediate` for a fix that cannot wait, or `deferred 30s`.
+- **It is best effort.** Cloudflare says a room can be restarted sooner, and restarts that are not for a deploy are not delayed at all. So everything under [what a restart does](#what-a-restart-does) still holds: it happens later, and to fewer rooms.
+- **Two versions run side by side for as long as the delay.** The Worker in front, with your gateway and whatever page it serves, has the new code at once; a busy room has it up to `max_delay` later, and its neighbours in a [world](./worlds) not at the same moment. Keep what they say to each other readable both ways across a deploy: commands and the shape of the state between client and room, what a room [signals](./worlds#seeing-across-a-border) or hands over to another. Tickflare's own parts are: a client and a room settle on the older [protocol version](../reference/protocol) of the two, and its gateway never lets a room from before there were spectators seat one.
+
+### What a restart does
+
+- **Players are disconnected.** The client reconnects by itself and gets a fresh view. `onDisconnect` is not called for players dropped this way, though their seat timeout still starts. On Cloudflare, 39 rooms that we made restart themselves with 20 to 100 players in them lost every connection, and were ticking again for all of their players, reconnected, two seconds later (1.7 to 2.7).
 - **A ticking room goes back** to its last save: up to `saveIntervalMs`, five seconds by default. An event-mode room loses nothing: it saves every move before anyone sees it.
 - **Commands on their way are neither lost nor applied twice.** The room saves which commands it has handled with the state, and tells each client when it reconnects. The client [sends the others again](./client#when-the-connection-drops), those the room went back on included, as long as it had no answer to them yet. A command the room had already answered is gone with the rest of what the save does not hold.
 - **A restart that keeps the connections** stops the match for up to 30 seconds. Cloudflare can take a room out of memory without closing its WebSockets, to move it or after a minute or two without an incoming event. The room then hears nothing until its alarm, which a running simulation keeps 30 seconds ahead and which also keeps such evictions from happening in the first place. When it fires, the room resumes from its last save and sends every player the whole view again. Commands that were on their way just then are answered with `disconnected`: on a connection that stayed open, the room cannot tell which of them its save holds.
 - **A lockstep room loses no orders.** Its turn counter goes back by up to `saveIntervalMs` of empty turns, or with the players' clock skips ahead by as much.
 - **The state is loaded as it was saved.** If a deploy changes the shape of your state, rooms already running still have the old shape. There is no migration step: read old shapes with care, or let old matches finish first.
 
-**What you can do today.** Deploy when few matches are running. Call `saveNow()` after the moments you could not bear to lose. A save is one row, so a shorter `saveIntervalMs` is cheap.
+**What you can do today.**
+
+- **Let matches finish on the code they began with.** Set `max_delay` a little above the length of your longest match, and a deploy restarts only what outlives it. The price: a fix reaches a running match when it ends, unless you deploy it with `--durable-objects-code-update-mode immediate`, and the two versions have that much longer to get along.
+- **For a deploy that must restart rooms**, pick a time when few matches are running.
+- **Call `saveNow()`** after the moments you could not bear to lose. A save is one row, so a shorter `saveIntervalMs` is cheap.
 
 ## Rooms nobody is in
 
@@ -217,7 +244,7 @@ A match that has to reach a result whoever is watching, a ranked one for instanc
 - **A player who is alone among absent opponents makes no snapshots.** The room goes on serving the last one everyone agreed on, and whoever returns runs the turns since.
 - **Without `save` and `load`, rejoining replays the match from the first turn**, and takes longer the longer the match has run.
 - **Every screen holds the whole game.** There is no hidden information, and a modified client can show what the game hides.
-- **A desync is noticed, not settled.** The room knows that two simulations differed and at which turn, not which one is wrong.
+- **A desync is noticed, not settled.** The room knows that two simulations differed, at which turn, whose they were and, with a simulation that can be saved, [where they differed](./lockstep#finding-a-desync). It does not know which one is wrong, and does nothing to bring them back together.
 - **Anyone the gateway lets through can read a room's recording**, seated or not.
 - **A lockstep client does not follow a handover** to another room.
 - **With the players' clock**, the game stands still while nobody is connected.
@@ -234,6 +261,16 @@ A match that has to reach a result whoever is watching, a ranked one for instanc
 ## Worlds
 
 Seeing across a border is a recipe built on `signal`, not something a room does by itself, and a room cannot act on a neighbour's units.
+
+## Spectators
+
+[Spectators](./spectators) are new, and have run only in the tests, on one machine. What to expect:
+
+- **A spectator costs what a player costs to send to**, and nothing else: one view is worked out for all of them. How many a room carries next to its players has not been measured on Cloudflare.
+- **A delay is held in memory**: every frame the spectators have not been sent yet. Past 16 million characters the room starts their view over.
+- **A room that sleeps forgets what its spectators hold.** When it wakes with spectators connected it sends them the whole view again.
+- **One view for all of them**, no view for each, and none in lockstep rooms.
+- **Not in the Godot and Unity clients.**
 
 ## Clients
 

@@ -26,10 +26,12 @@ export class Skirmish extends LockstepRoom<Order> {
 }
 ```
 
+`parseInput` can also hand the checking to a schema, as [`parseCommand` can](./rooms#checking-commands-with-a-schema): `return parseWith(Order, raw)`.
+
 That is the whole server side. `LockstepRoom` is a `Room`, so the gateway, seats, `seatTimeoutMs`, `maxPlayers`, matchmaking and match results work as for any other room. Two more options:
 
 - `maxInputsPerTurn` (default 32): inputs one player may send within a single turn. More are refused.
-- `onDesync(turn)`: called when two players report different hashes for the same turn.
+- `onDesync(turn, players)`: called when two players report different hashes for the same turn, with the ids of the two. `onDesyncExplained(desync)` follows when the room has found [where they differ](#finding-a-desync).
 - `snapshotIntervalMs` (default one minute) and `maxSnapshotLength`: see [Snapshots](#snapshots).
 
 If you override `onJoin`, `onDisconnect` or `onReconnect`, call `super` so the event still reaches the turn stream.
@@ -98,7 +100,37 @@ The simulation lives in `client.sim` once it has caught up (`client.ready`), and
 - **Players are part of the stream.** Joining, leaving, dropping and reconnecting arrive as entries with `event` set, so every simulation sees them at the same turn. Every way of losing a seat (leaving, `seatTimeoutMs`, `removePlayer`) arrives as `leave`.
 - **Even pacing.** A real network delivers turns in fits. The client holds one turn in reserve (`bufferTurns`, default 1) and advances at the room's pace, so movement doesn't stutter. An order is visible one to two turns after it reaches the room; show the player their click straight away.
 - **Catching up.** On every connect and reconnect the client asks the room for what it is missing, then follows the live turns. A client that dropped and still has its simulation is sent the turns it missed. One that has none, after a reload or on another device, starts from the room's latest [snapshot](#snapshots) and the turns since, or from turn 1 of the recording if there is no snapshot. Either way it ends in the same state as everyone else's.
-- **Desyncs.** Every `hashEvery` turns (default 20) each client reports a hash of its simulation: [`fingerprint`](#snapshots) of what `save` returns, or your own `hash(sim)`, a number or a string of at most 64 characters. Without `save` or `hash` nothing is reported. When two players disagree about the same turn, the room records it in the view's `desync`, `onDesync(turn)` runs on the server, and every client's `onDesync` fires. One player alone can't trigger it.
+- **Desyncs.** Every `hashEvery` turns (default 20) each client reports a hash of its simulation: [`fingerprint`](#snapshots) of what `save` returns, or your own `hash(sim)`, a number or a string of at most 64 characters. Without `save` or `hash` nothing is reported. When two players disagree about the same turn, the room records it in the view's `desync`, `onDesync(turn, players)` runs on the server, and every client's `onDesync` fires. One player alone can't trigger it. The room then [finds out where the two differ](#finding-a-desync).
+
+### Finding a desync
+
+A desync is a bug in the simulation: something in `step` that is not the same on every machine. Knowing the turn is rarely enough to find it, so the room also says whose simulations differed and where. With a simulation that has `save`, there is nothing to set up:
+
+```ts
+const game = new LockstepClient<Order, Sim>(url, {
+  create, step, save, load,
+  onDesync: (turn, desync) => console.warn(`desync at turn ${turn} between`, desync.players),
+  onDesyncExplained: (desync) => console.table(desync.differs),
+});
+// path           values
+// units.tank.x   ["14", "14.5"]
+// random         ["2891336453", "1012194634"]
+```
+
+- **Who.** `desync.players` are the two players whose hashes differed, in the order the room heard from them. With more players in the room, compare with who else is still in step to see which side is the odd one out.
+- **Where.** Each client keeps what `save` returned at the last two turns it reported a hash for. When the room flags a desync, the two clients send it what they had at that turn, the room compares the two, and puts the first eight places where they differ in `desync.differs`: a path into what `save` returns, and the two values as JSON text in the order of `players`. Every client's `onDesyncExplained` fires, and `onDesyncExplained(desync)` runs on the server, which is the place to log it.
+- **What it finds is where the two had come apart by that turn**, which is up to `hashEvery` turns after the step that went wrong. One unit a little off usually points at the code that moves it. The random generator's state differing means one client drew a number the other did not.
+- **An empty list** means what the two saved is the same: the difference is in something `save` leaves out, or that only a `hash` of your own covers.
+- **With a `hash` of your own** the client saves nothing between snapshots, since that is what the hash is there to avoid. Pass `explainDesyncs: true` to have it keep what `save` returns at every hashed turn anyway.
+- **It costs** two copies of the saved simulation in memory on each client, and two uploads of it per desync, no longer than `maxSnapshotLength`. A match desyncs once: the first is the only one the room records.
+
+`differences(a, b)` is the comparison the room makes, exported from `tickflare` and `tickflare/client`. It is useful in a test of your own that runs one recording twice, or on two machines, and expects nothing to differ:
+
+```ts
+import { differences, runReplay } from "tickflare";
+
+expect(differences(save(runReplay(replay, simulation)), save(runReplay(replay, simulation)))).toEqual([]);
+```
 
 ## Letting the room sleep between turns
 
@@ -176,5 +208,5 @@ When the match ends, call `this.finishMatch(result)` from a hook. With `matchBuc
 ## What is not there yet
 
 - A game whose simulation cannot be saved as JSON gets no snapshots: a client that reloads replays the recording from turn 1.
-- A desync tells you that and when two simulations differed, not which player is wrong.
+- A desync tells you when two simulations differed, whose, and [where](#finding-a-desync), not which of the two is wrong, and nothing puts them back in step.
 - A lockstep client doesn't follow a [handover](./worlds) to another room.

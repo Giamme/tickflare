@@ -34,6 +34,31 @@ describe("BufferedInterpolator", () => {
     expect(glide.at("a", 550)!.x).toBeCloseTo(35);
   });
 
+  it("keeps a tick more than there are between two patches, when the room sends less often than it ticks", () => {
+    // 60 ticks a second and 20 patches: three ticks between two patches.
+    const paced = { ...room(60), patchRate: 20 };
+    expect(new BufferedInterpolator(paced, ["x"]).delay).toBe(4);
+    // 50 and 20: two ticks between some patches and three between others. It keeps to the three.
+    expect(new BufferedInterpolator({ ...room(50), patchRate: 20 }, ["x"]).delay).toBe(4);
+    // Asked for, it is what was asked for, and a room that sends after every tick is as before.
+    expect(new BufferedInterpolator(paced, ["x"], { delayTicks: 6 }).delay).toBe(6);
+    expect(new BufferedInterpolator({ ...room(60), patchRate: 60 }, ["x"]).delay).toBe(2);
+    expect(new BufferedInterpolator(room(60), ["x"]).delay).toBe(2);
+
+    // With a state every third tick, it draws between the two on either side of four ticks back.
+    const glide = new BufferedInterpolator(paced, ["x"]);
+    const at = (tick: number) => (tick * 1000) / 60;
+    for (const tick of [3, 6, 9, 12]) {
+      paced.tick = tick;
+      glide.update({ a: { x: tick * 10 } }, tick, at(tick));
+    }
+    expect(glide.at("a", at(12))!.x).toBeCloseTo(80);
+    expect(glide.at("a", at(13))!.x).toBeCloseTo(90);
+    // When patches stop it carries on for five ticks, which is past where the next one was due.
+    expect(glide.at("a", at(21))!.x).toBeCloseTo(170);
+    expect(glide.at("a", at(30))!.x).toBeCloseTo(170);
+  });
+
   it("keeps an even pace when patches arrive bunched", () => {
     const source = room();
     const glide = new BufferedInterpolator(source, ["x"]);
@@ -94,6 +119,27 @@ describe("BufferedInterpolator", () => {
     for (let tick = 1; tick <= 5; tick++) feed(glide, source, tick, tick * 10);
     source.stopped = 5;
     expect(glide.at("a", 510)!.x).toBe(50);
+  });
+
+  it("says which tick it draws, for a command to tell the room what its player saw", () => {
+    const source = room();
+    const glide = new BufferedInterpolator(source, ["x"]);
+    expect(glide.drawnTick(0)).toBeUndefined();
+    for (let tick = 1; tick <= 5; tick++) feed(glide, source, tick, tick * 10);
+    // The dot is at ten times the tick, so what `at` shows says which tick that is.
+    expect(glide.drawnTick(500)).toBeCloseTo(3);
+    expect(glide.drawnTick(550)).toBeCloseTo(3.5);
+    expect(glide.at("a", 550)!.x).toBeCloseTo(glide.drawnTick(550)! * 10);
+    // Stopped, it shows the latest state, and says that one's tick.
+    source.stopped = 5;
+    expect(glide.drawnTick(560)).toBe(5);
+    glide.clear();
+    expect(glide.drawnTick(560)).toBeUndefined();
+
+    // So it does in event mode, where there is no clock to go by.
+    const still = new BufferedInterpolator({ tick: 7, tickRate: 0 }, ["x"]);
+    still.update({ a: { x: 1 } });
+    expect(still.drawnTick()).toBe(7);
   });
 
   it("times the patches as they arrive when the room does not say where its clock is", () => {

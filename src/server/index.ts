@@ -7,14 +7,18 @@
  * @module tickflare
  */
 export { Room, Rejection, reject, type ActOutcome } from "./room.js";
+export { parseWith, type StandardSchemaIssue, type StandardSchemaResult, type StandardSchemaV1 } from "./schema.js";
 export { plain } from "./tracked.js";
 export { LockstepRoom, type LockstepCommand, type LockstepState } from "./lockstep.js";
 export {
+  differences,
   fingerprint,
   runReplay,
   seededRandom,
   stepThrough,
   type CatchUp,
+  type Desync,
+  type DesyncDifference,
   type LockstepView,
   type TurnsMessage,
   type Replay,
@@ -57,6 +61,7 @@ export {
   routeToRoom,
   NAME_HEADER,
   PLAYER_HEADER,
+  SPECTATOR_HEADER,
   type Authenticated,
   type MatchmakerRouteOptions,
   type RoomNamespace,
@@ -81,6 +86,7 @@ export {
   type PresenceFrame,
   type RejectFrame,
   type ServerMessage,
+  type SpectatingFrame,
   type StateFrame,
   type WelcomeFrame,
 } from "../protocol.js";

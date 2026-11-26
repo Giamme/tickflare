@@ -44,6 +44,8 @@ This is the only reliable way to keep a secret in a multiplayer game. Anything y
 
 `view()` runs as part of the event, so keep it cheap. It shouldn't change the state.
 
+A room that takes [spectators](./spectators) says what they may see in the same way, with `spectatorView()`. Until it does, a room with a `view()` takes none: someone who watched with the whole state before them could tell a player everything `view()` hides.
+
 ## Views that share a public part
 
 In a ticking room with many players, building and comparing a view per player per tick is the main cost. When the views have a large public part, build it once and return the same object from every `view()` call:

@@ -101,7 +101,7 @@ A **WebGL** build has no `ClientWebSocket`, which is what the client talks throu
 
 Both clients have the browser client's [`Interpolator`](./state-sync#smoothing-on-the-client) and [`Predictor`](./state-sync#showing-a-player-s-own-moves-at-once), and behave as they do: the three are checked against the same cases. They do not have `BufferedInterpolator` yet, nor the room's clock it draws by: they speak version 3 of the protocol.
 
-`TickflareInterpolator` glides each moving thing from where it is drawn to its latest position, over one tick:
+`TickflareInterpolator` glides each moving thing from where it is drawn to its latest position, over one tick. Against a room that [sends less often than it ticks](./state-sync#sending-less-often-than-you-simulate), give it the time between two patches instead, `1000.0 / 20` for a `patchRate` of 20: these two clients do not read the rate from the room yet.
 
 ```gdscript
 var glide := TickflareInterpolator.new(1000.0 / room.tick_rate, ["x", "y"])
@@ -151,6 +151,8 @@ Draw(predicted.State);
 One difference from the browser: the browser's predictor never touches the room's state and makes new objects only for what it changes. These clients change their state in place, so the predictor works on a copy of the room's state, made again when a frame arrives or a command is sent or answered, not on every drawn frame. For a large state, predict a part of it: give the predictor something room-like whose `state` is that part (in Unity, an `ITickflareRoomView`).
 
 ## What they do not have yet
+
+**Spectators.** Neither client can [watch a room without a seat](./spectators) yet.
 
 **Lockstep.** A lockstep client runs the game's simulation itself, and every client has to compute exactly the same thing. Between engines that is out of reach: GDScript, C# and JavaScript write numbers as text differently, and the room compares hashes as text. Within one engine it is possible, if the simulation keeps to integer arithmetic and away from the engine's physics, which is not deterministic across machines, and if the game hashes its own state. Neither client has it yet; a game in Godot or Unity uses event mode or state sync.
 

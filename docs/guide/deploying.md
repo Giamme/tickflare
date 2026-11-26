@@ -52,7 +52,22 @@ Cloudflare needs a migration entry whenever a Durable Object class is added, ren
 ]
 ```
 
-Changing a room's code doesn't need a migration. A redeploy restarts rooms with the new code, and they pick up their saved state, seats and timers. Players reconnect on their own. Rooms keep the state the old code saved, so if you change its shape, handle the old shape where you read it.
+Changing a room's code doesn't need a migration. Rooms keep the state the old code saved, so if you change its shape, handle the old shape where you read it.
+
+### When rooms get new code
+
+Not all at once. Cloudflare gives a room that is asleep the new code at its next event, with its players still connected. A room that is awake, which a room is for as long as it ticks, keeps the code it has until it sleeps or until five minutes have passed, and is then restarted: it picks up its saved state, seats and timers, and its players reconnect on their own.
+
+The five minutes are yours to set, from none to a day. A game played in matches of twenty minutes might let them finish:
+
+```jsonc
+"durable_objects": {
+  "bindings": [{ "name": "ROOMS", "class_name": "Duel" }],
+  "code_update_strategy": { "mode": "deferred", "max_delay": 1500 } // seconds
+}
+```
+
+And a fix that cannot wait for them goes out with `npx wrangler deploy --durable-objects-code-update-mode immediate`. Until a room has the new code, the Worker in front of it and the page your players load are a version ahead of it. [Restarts and deploys](./limits#restarts-and-deploys) has what that asks of your code and what a restart costs a match. This is how Cloudflare [documents it](https://developers.cloudflare.com/durable-objects/deployments/durable-objects-code-updates/) since October 2026; we have not measured it yet.
 
 ### Types
 

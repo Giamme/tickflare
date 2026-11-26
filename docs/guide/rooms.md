@@ -35,7 +35,7 @@ Three hooks are required. The rest have defaults.
 | Hook | Called when | Notes |
 | --- | --- | --- |
 | `initialState()` | The room is used for the first time | Required |
-| `parseCommand(raw)` | A command arrives | Required. Turn untrusted input into a `Command`; throwing refuses it |
+| `parseCommand(raw)` | A command arrives | Required. Turn untrusted input into a `Command`, by hand or [with a schema](#checking-commands-with-a-schema); throwing refuses it |
 | `onCommand(player, command)` | After `parseCommand` | Required. Change `this.state`; call `reject(reason)` to refuse |
 | `onJoin(player)` | A player takes a seat for the first time | `reject(reason)` turns them away |
 | `onDisconnect(player)` | A seated player's last connection closes | They keep their seat |
@@ -46,11 +46,41 @@ Three hooks are required. The rest have defaults.
 | `onTick(dt)` | `tickRate` times a second, in [state sync](./state-sync) | `dt` is always `1 / tickRate` seconds |
 | `shouldTick()` | After every event and every tick | Return false to pause the simulation |
 | `view(player)` | Before the state is sent to a player | What that player may see. Defaults to everything |
+| `onSpectate(player)` | Someone asks to [watch](./spectators) a room with `maxSpectators` | `reject(reason)` turns them away |
+| `spectatorView()` | Before the state is sent to those who watch | What a spectator may see. Defaults to everything, in a room without a `view()` of its own |
 | `onHttp(request, player)` | An HTTP request to `/rooms/<id>/...` | For reading, e.g. a scoreboard. Defaults to 404 |
 | `onArrive(player, carry)` | Another room [handed a player over](./worlds) | Defaults to `onJoin` |
 | `onSignal(fromRoomId, data)` | Another room sent this one a [signal](./worlds#seeing-across-a-border) | |
 
 Every hook receives a `Player`: `{ id, connected, name? }`. [Players and seats](./players) explains the seat lifecycle in detail.
+
+### Checking commands with a schema
+
+Everything a client sends is untrusted, and `parseCommand` is where it is checked. If you already describe your data with Zod, Valibot, ArkType or another library that implements [Standard Schema](https://standardschema.dev), hand the schema to `parseWith` and let it do the checking:
+
+```ts
+import { Room, parseWith } from "tickflare";
+import { z } from "zod";
+
+const Command = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("move"), x: z.number(), y: z.number() }),
+  z.object({ type: z.literal("say"), text: z.string().max(200) }),
+]);
+type Command = z.infer<typeof Command>;
+
+export class Game extends Room<State, Command> {
+  protected parseCommand(raw: unknown) {
+    return parseWith(Command, raw);
+  }
+}
+```
+
+The same with Valibot: `v.variant("type", [v.object({ … }), …])` for the schema and `v.InferOutput<typeof Command>` for the type.
+
+- **The room gets what the schema gives back**, not what was sent: unknown keys stripped, defaults filled in, strings trimmed, whatever the schema does.
+- **What does not fit is refused** as by `reject()`, with the first thing the schema found wrong and where: `invalid_command: Invalid input: expected number, received string (at x)`. The text is the library's, cut to 120 characters, and the client gets it as the reason. To send a reason of your own, catch what `parseWith` throws and call `reject()` with it.
+- **The checks have to be synchronous.** A schema with an asynchronous check cannot be used in a hook: `parseWith` logs why and the command is refused with `invalid_command`.
+- **Tickflare depends on none of these libraries.** It reads the interface they share, so the one you use is the only one installed. In a [lockstep](./lockstep) room, `parseInput` takes a schema the same way.
 
 ## Options
 
@@ -60,9 +90,13 @@ Options are fields you override:
 | --- | --- | --- |
 | `maxPlayers` | `Infinity` | Distinct players who may hold a seat at once |
 | `seatTimeoutMs` | `Infinity` | How long a disconnected player keeps their seat |
+| `maxSpectators` | `0` | Connections that may [watch without a seat](./spectators). 0 lets nobody |
+| `spectatorDelayMs` | `0` | How far behind the players the spectators are kept |
 | `maxCommandsPerSecond` | `30` | Frames one player may send a second, and in one burst |
 | `maxMessageLength` | `16384` | Longest frame accepted, in characters |
 | `tickRate` | `0` | Ticks a second. 0 is event mode |
+| `patchRate` | `0` | While ticking, patches a second, when that is to be fewer than ticks: [simulate at one rate and send at another](./state-sync#sending-less-often-than-you-simulate). 0 sends after every tick |
+| `historyTicks` | `0` | While ticking, how many ticks of the state are kept for [`stateAt(tick)`](./state-sync#judging-a-command-by-what-its-player-saw). 0 keeps none |
 | `saveIntervalMs` | `5000` | While ticking, how often the state is written |
 | `trackChanges` | `true` | Follow what each hook writes, instead of comparing the whole state after it. See [The state inside a hook](#the-state-inside-a-hook) |
 | `rememberCommands` | `true` | Remember which commands of each client were handled, so that [none is lost or applied twice](./client#when-the-connection-drops) when a connection drops. Turn it off in a ticking room that records commands in tables of its own without calling `saveNow()` |
@@ -84,8 +118,10 @@ These are available on `this` while a hook runs:
 | --- | --- |
 | `state` | The authoritative state. Change it in place |
 | `players` | Everyone with a seat, in join order |
+| `spectators` | How many [spectators](./spectators) are connected |
 | `roomId` | The id this room is reached under |
 | `seq`, `tick` | Changes and ticks so far |
+| `stateAt(tick)` | The state as an earlier tick left it, in a room with `historyTicks`: [judging a command by what its player saw](./state-sync#judging-a-command-by-what-its-player-saw) |
 | `setTimer(name, ms)` / `clearTimer(name)` | [Timers](./timers-messages-async#timers) that survive restarts |
 | `send(playerId, message)` / `broadcast(message)` | [Messages](./timers-messages-async#messages) outside the state |
 | `defer(task)` / `act(hook)` | [Async work](./timers-messages-async#async-work) after the hook |

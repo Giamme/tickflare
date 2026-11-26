@@ -40,9 +40,11 @@ What it holds, all read-only:
 | `you` | This player's id, once connected |
 | `status` | `connecting`, `open` or `closed` |
 | `tick`, `tickRate` | Ticks run so far, and ticks a second (0 in event mode) |
+| `patchRate` | Patches a second while the room ticks: `tickRate`, unless the room [sends less often than it ticks](./state-sync#sending-less-often-than-you-simulate) |
 | `serverTick()` | The tick the room is on right now, by estimate, fraction included: see [keeping time](./state-sync#keeping-time). Undefined in event mode |
 | `rtt` | The round trip to the room in milliseconds, smoothed. Measured every few seconds while the room ticks, otherwise with the keepalive |
 | `unconfirmed` | The commands sent that `state` does not show yet, oldest first |
+| `spectating`, `delayMs` | Whether this client [watches without a seat](#watching-without-a-seat), and how far behind the room it is kept |
 
 ### Sending commands
 
@@ -56,7 +58,7 @@ try {
 
 `send()` resolves once the room has applied the command and `room.state` shows the result: at once in event mode, with the next tick in a room that is ticking. Until then the command is in `room.unconfirmed`, and [`Predictor`](./state-sync#showing-a-player-s-own-moves-at-once) can show its effect before the room does. It rejects with a `CommandRejected` whose `reason` is what the room passed to `reject()`, or:
 
-- `invalid_command`: `parseCommand` threw something other than `reject()`;
+- `invalid_command`: `parseCommand` threw something other than `reject()`. From a room that [checks commands with a schema](./rooms#checking-commands-with-a-schema) it is followed by what was wrong: `invalid_command: Expected number (at x)`;
 - `internal_error`: a hook threw;
 - `rate_limited`: the player sent too much;
 - `not_connected`: the command never left the client. There was no connection, and none came in time. It was not applied;
@@ -88,6 +90,23 @@ One thing can still happen twice. A command that changed nothing in the state co
 
 - `room.leave()` gives up the seat. The room runs `onLeave`, then closes the connection, and `status` becomes `closed`. It rejects if `onLeave` called `reject()`.
 - `room.close()` closes the connection for good but keeps the seat, as if the tab were closed. No reconnect follows.
+
+### Watching without a seat
+
+`new RoomClient(url, { spectate: true })` asks to watch the room, not to play in it. A room that takes [spectators](./spectators) lets it in, and from there the client is the one you know: `state` is what the room shows its spectators, `players` and the `presence` event say who is playing, and `message` brings what the room broadcasts.
+
+```ts
+const room = new RoomClient<SpectatorView>(url, { token, spectate: true });
+room.on("status", (status) => {
+  if (status === "open" && !room.state && room.delayMs > 0) showWaiting(room.delayMs);
+});
+room.on("state", (view) => render(view));
+```
+
+- `send` and `leave` reject with `spectator`. Call `close()` to stop watching.
+- A room may keep its spectators behind. `room.delayMs` says by how much, once connected, and the first to watch is `open` with no `state` until that long has passed.
+- If the room takes no spectators, or as many are watching as may, `status` goes to `closed` with `CloseCode.JoinRejected` or `CloseCode.RoomFull`, and the client does not try again.
+- `room.serverTick()` is undefined for a spectator: see [smoothing](./spectators#smoothing).
 
 ### Reconnecting
 

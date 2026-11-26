@@ -1,4 +1,4 @@
-import type { CatchUp, LockstepView, Replay, Snapshot, TurnEntry, TurnsMessage } from "../lockstep.js";
+import { differences, type CatchUp, type Desync, type DesyncDifference, type LockstepView, type Replay, type Snapshot, type TurnEntry, type TurnsMessage } from "../lockstep.js";
 import type { Player } from "../protocol.js";
 import { Room, patchEachTick, reject } from "./room.js";
 import { pieces } from "./storage.js";
@@ -142,6 +142,8 @@ export abstract class LockstepRoom<Input, Env = Cloudflare.Env> extends Room<
   #hashes = new Map<number, { hash: string; by: string }>();
   /** For the latest turns a snapshot could be of: the first hash reported, and everyone who reported that one. */
   #vouched = new Map<number, { hash: string; by: Set<string> }>();
+  /** What the players of a desync have sent of their simulations at that turn, as JSON text, until both have. */
+  #explanations = new Map<string, string>();
   /** A snapshot that has arrived and waits for the other players to report its hash, and who sent it. */
   #candidate: (Snapshot & { by: string }) | undefined;
   /** Names this run of the room: see `CatchUp.epoch`. */
@@ -159,8 +161,21 @@ export abstract class LockstepRoom<Input, Env = Cloudflare.Env> extends Room<
    */
   protected abstract parseInput(raw: unknown): Input;
 
-  /** Two players reported different hashes for `turn`: their simulations have diverged. */
-  protected onDesync(_turn: number): void {}
+  /**
+   * Two players reported different hashes for `turn`: their simulations have
+   * diverged. `players` are the two. Where they differ is not known yet: see
+   * `onDesyncExplained`.
+   */
+  protected onDesync(_turn: number, _players: [string, string]): void {}
+
+  /**
+   * Both players of a desync have sent what their simulations had saved at
+   * that turn, and the room has compared the two: `desync.differs` says
+   * where they differed. It is in the view too, so every client is told.
+   * The place to log it. Not called when a client had nothing to send: a
+   * simulation without `save`, or a player who was gone by then.
+   */
+  protected onDesyncExplained(_desync: Desync & { players: [string, string]; differs: DesyncDifference[] }): void {}
 
   protected initialState(): LockstepState<Input> {
     const seed = crypto.getRandomValues(new Uint32Array(1))[0]!;
@@ -311,9 +326,9 @@ export abstract class LockstepRoom<Input, Env = Cloudflare.Env> extends Room<
       }
     } else if (first.by !== player.id && first.hash !== command.h && !this.state.desync) {
       // It takes two players to disagree: one changing their mind proves nothing.
-      this.state.desync = { turn: command.n };
+      this.state.desync = { turn: command.n, players: [first.by, player.id] };
       this.#candidate = undefined; // Nobody can say which simulation a snapshot should be of.
-      this.onDesync(command.n);
+      this.onDesync(command.n, [first.by, player.id]);
     }
   }
 
@@ -499,6 +514,41 @@ export abstract class LockstepRoom<Input, Env = Cloudflare.Env> extends Room<
   }
 
   /**
+   * One of the two players of a desync sends what their simulation had saved
+   * at that turn. When both have, the room says where the two differ.
+   */
+  async #explain(request: Request, params: URLSearchParams, player: Player): Promise<Response> {
+    const waiting = (): Desync | undefined => {
+      const desync = this.state.desync;
+      return desync?.players?.includes(player.id) && desync.differs === undefined && Number(params.get("turn")) === desync.turn
+        ? desync
+        : undefined;
+    };
+    // Checked before the body is read, and again after: the other player's may have settled it.
+    if (!waiting()) return new Response("Nothing this room is waiting for", { status: 409 });
+    const data = await textUpTo(request, this.maxSnapshotLength * 3);
+    if (data === undefined || data.length > this.maxSnapshotLength) return new Response("Too long", { status: 413 });
+    try {
+      JSON.parse(data);
+    } catch {
+      return new Response("Not JSON", { status: 400 });
+    }
+    const desync = waiting();
+    if (!desync) return new Response("Nothing this room is waiting for", { status: 409 });
+    this.#explanations.set(player.id, data);
+    const [one, other] = desync.players!.map((id) => this.#explanations.get(id));
+    if (one === undefined || other === undefined) return new Response("Held until the other player's arrives", { status: 202 });
+    this.#explanations.clear();
+    const differs = differences(JSON.parse(one), JSON.parse(other));
+    await this.act(() => {
+      const explained = { ...desync, players: desync.players!, differs };
+      this.state.desync = explained;
+      this.onDesyncExplained(explained);
+    });
+    return new Response("Compared", { status: 201 });
+  }
+
+  /**
    * Closes the turn: whatever arrived since the last one becomes this turn's
    * entries. A turn with something in it is one row in the recording, written
    * before any player is sent it; `#resume` is what lets the room itself be
@@ -539,7 +589,9 @@ export abstract class LockstepRoom<Input, Env = Cloudflare.Env> extends Room<
 
   /**
    * `GET …/replay` is the recording, or the end of it for a client that is
-   * catching up. `POST …/snapshot` is a player's client sending a snapshot.
+   * catching up. `POST …/snapshot` is a player's client sending a snapshot,
+   * and `POST …/desync` one sending what it had saved at a turn two players
+   * disagreed on.
    * If you override this, pass on what is not yours with `super.onHttp`.
    */
   protected override onHttp(request: Request, player: Player): Response | Promise<Response> {
@@ -549,6 +601,9 @@ export abstract class LockstepRoom<Input, Env = Cloudflare.Env> extends Room<
     }
     if (request.method === "POST" && url.pathname.endsWith("/snapshot")) {
       return this.#offered(request, url.searchParams, player);
+    }
+    if (request.method === "POST" && url.pathname.endsWith("/desync")) {
+      return this.#explain(request, url.searchParams, player);
     }
     return new Response("Not found", { status: 404 });
   }

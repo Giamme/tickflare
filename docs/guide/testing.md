@@ -88,4 +88,4 @@ await runDurableObjectAlarm(env.ROOMS.get(env.ROOMS.idFromName(room)));
 
 ## Restarts
 
-`evictDurableObject(stub)` from `cloudflare:test` throws a room out of memory with its sockets still open, as a deploy or an eviction would. The next event rebuilds it from storage. Use it to check that your room survives with its state, seats and timers intact.
+`evictDurableObject(stub)` from `cloudflare:test` throws a room out of memory with its sockets still open, as Cloudflare does with a room that has nothing to do, and as a deploy does with one that is asleep. The next event rebuilds it from storage. Use it to check that your room survives with its state, seats and timers intact.
