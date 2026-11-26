@@ -201,6 +201,38 @@ draw(predicted.state);
 <div class="tf-recipe">
 <div>
 
+### Shots judged by what the player saw
+
+What a player sees is a little in the past, and a room that checks a shot against where things are now calls a good aim a miss. This one keeps its last ticks and checks the shot against the tick that player was looking at. [Lag compensation](/guide/state-sync#judging-a-command-by-what-its-player-saw)
+
+</div>
+<div>
+
+```ts
+export class Arena extends Room<State, Command> {
+  protected override tickRate = 60;
+  protected override historyTicks = 12; // 200 ms
+
+  protected onCommand(player: Player, command: Command): void {
+    // Where everyone was when this player pulled the trigger.
+    const then = this.stateAt(command.tick) ?? this.state;
+    const target = then.dots[command.target];
+    if (target && hits(then.dots[player.id], command.aim, target)) {
+      this.state.dots[command.target].hp -= 10;
+    }
+  }
+}
+
+// In the page: the tick that was on screen goes with the shot.
+room.send({ type: "shoot", target, aim, tick: glide.drawnTick() });
+```
+
+</div>
+</div>
+
+<div class="tf-recipe">
+<div>
+
 ### Connections that drop
 
 A command that was on its way when the connection dropped is neither lost nor applied twice. Back in the room, the client learns what became of it and sends it again if it never arrived, through a deploy too. There is nothing to write. [When the connection drops](/guide/client#when-the-connection-drops)
@@ -216,6 +248,32 @@ try {
 } catch (error) {
   // The room refused it, or ten seconds went by
   // without a connection (keepCommandsMs).
+}
+```
+
+</div>
+</div>
+
+<div class="tf-recipe">
+<div>
+
+### Commands checked by a schema
+
+Everything a client sends is untrusted. Describe your commands once with Zod, Valibot or ArkType, and the room refuses what does not fit, with what was wrong and where. [Checking commands with a schema](/guide/rooms#checking-commands-with-a-schema)
+
+</div>
+<div>
+
+```ts
+const Command = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("move"), x: z.number(), y: z.number() }),
+  z.object({ type: z.literal("say"), text: z.string().max(200) }),
+]);
+
+export class Game extends Room<State, z.infer<typeof Command>> {
+  protected parseCommand(raw: unknown) {
+    return parseWith(Command, raw);
+  }
 }
 ```
 
@@ -241,6 +299,30 @@ export class Poker extends Room<State, Command> {
     };
   }
 }
+```
+
+</div>
+</div>
+
+<div class="tf-recipe">
+<div>
+
+### Spectators
+
+A friend who came late, a caster or a player who is out can watch without a seat. Keep them a few seconds behind the players, so that what they see is no help to someone still playing. [Spectators](/guide/spectators)
+
+</div>
+<div>
+
+```ts
+export class Arena extends Room<State, Command> {
+  protected override maxSpectators = 50;
+  protected override spectatorDelayMs = 5_000;
+}
+
+// In the page
+const room = new RoomClient<State>(url, { token, spectate: true });
+room.on("state", (state) => render(state));
 ```
 
 </div>
@@ -424,6 +506,8 @@ b1 00 02 02 00 01 01 03 08                          9 bytes
 </div>
 
 </section>
+
+<WhatsNew />
 
 <div class="tf-closing">
 

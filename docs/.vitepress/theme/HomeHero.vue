@@ -2,6 +2,7 @@
 import { ref } from "vue";
 import { withBase } from "vitepress";
 import ModeDemos from "./ModeDemos.vue";
+import { data as release } from "./release.data";
 
 const install = "npm install tickflare";
 const copied = ref(false);
@@ -20,6 +21,11 @@ async function copy(): Promise<void> {
 <template>
   <section class="tf-hero">
     <div class="tf-hero-text">
+      <a class="tf-release" href="#new">
+        <span class="tf-release-version">v{{ release.version }}</span>
+        <span v-if="release.dated" class="tf-release-date">{{ release.dated }}</span>
+        <span class="tf-release-more">What is new</span>
+      </a>
       <h1 class="tf-headline">Multiplayer rooms that run on Cloudflare.</h1>
       <p class="tf-sub">
         Each room is one Durable Object. You write the rules in TypeScript; Tickflare keeps every
@@ -59,6 +65,53 @@ async function copy(): Promise<void> {
 
 .tf-hero-text {
   max-width: 64rem;
+}
+
+/* Which version this is, from package.json and the changelog, and the way to what it brought. */
+.tf-release {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+  margin: 0 0 20px;
+  padding: 5px 14px 5px 6px;
+  border-radius: 999px;
+  background: var(--tf-paper);
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--tf-slate);
+  text-decoration: none;
+}
+
+.tf-release-version {
+  padding: 1px 9px;
+  border-radius: 999px;
+  background: var(--tf-ink);
+  color: var(--vp-c-bg);
+  font-family: var(--vp-font-family-mono);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/* On a phone the three do not fit on a line, and the date is the one to go: the section it leads to has it. */
+@media (max-width: 439px) {
+  .tf-release-date {
+    display: none;
+  }
+}
+
+.tf-release-more {
+  font-weight: 600;
+  color: var(--tf-flare-text);
+}
+
+.tf-release:hover .tf-release-more {
+  text-decoration: underline;
+}
+
+.tf-release:focus-visible {
+  outline: 2px solid var(--tf-flare);
+  outline-offset: 2px;
 }
 
 .tf-headline {

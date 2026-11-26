@@ -1,5 +1,9 @@
 import { readFileSync } from "node:fs";
 import { defineConfig, type DefaultTheme } from "vitepress";
+import { readRelease } from "./release";
+
+// The version in the navigation is the one in package.json, which the release commit writes.
+const { version } = readRelease();
 
 /** The API reference sidebar TypeDoc writes, as one group per entry point: `tickflare`, then `tickflare/client`. */
 function apiSidebar(): DefaultTheme.SidebarItem[] {
@@ -96,7 +100,14 @@ export default defineConfig({
       { text: "Guide", link: "/guide/introduction", activeMatch: "^/guide/" },
       { text: "Reference", link: "/reference/protocol", activeMatch: "^/reference/" },
       { text: "API", link: "/api/", activeMatch: "^/api/" },
-      { text: "Changelog", link: "/reference/upgrading" },
+      {
+        text: `v${version}`,
+        items: [
+          { text: "Changelog", link: "/reference/upgrading" },
+          { text: "tickflare on npm", link: "https://www.npmjs.com/package/tickflare" },
+          { text: "Releases on GitHub", link: "https://github.com/Giamme/tickflare/releases" },
+        ],
+      },
     ],
     sidebar: {
       "/guide/": guide,
