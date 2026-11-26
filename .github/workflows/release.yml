@@ -160,7 +160,16 @@ jobs:
             fi
             npm ci
           fi
-          npm publish
+          if ! npm publish; then
+            # npm tries trusted publishing first and, when npmjs.com turns that down, goes on with
+            # NPM_TOKEN without a word: all that shows is the E404 of a publish it may not make.
+            # Why trusted publishing was turned down is only in npm's own log.
+            echo "::group::What npm's log says about trusted publishing"
+            grep -h -i "oidc" "$HOME"/.npm/_logs/*-debug-*.log || echo "Nothing: npm did not try it."
+            echo "::endgroup::"
+            echo "::error::npm refused the publish. The group above has what npm logged about trusted publishing. On npmjs.com the package's trusted publisher has to be GitHub Actions with $GITHUB_REPOSITORY_OWNER, ${GITHUB_REPOSITORY#*/}, release.yml and no environment."
+            exit 1
+          fi
 
       - name: Release on GitHub
         if: steps.publish.outputs.version != ''
