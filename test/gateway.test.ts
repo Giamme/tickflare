@@ -90,4 +90,38 @@ describe("routeToRoom", () => {
     const p1 = await connect(freshRoom(), "p1", { "x-tickflare-player": "admin" });
     expect((await p1.next("welcome")).you).toBe("p1");
   });
+
+  it("names someone who asks to watch under a header of their own, and nobody else", async () => {
+    // What the gateway hands the room, for a namespace that keeps it.
+    const forwarded = async (url: string, headers: Record<string, string> = {}) => {
+      let seen: Request | undefined;
+      const rooms = {
+        idFromName: (name: string) => name as unknown as DurableObjectId,
+        get: () => ({
+          fetch: async (request: Request) => {
+            seen = request;
+            return new Response("ok");
+          },
+        }),
+      };
+      await routeToRoom(new Request(url, { headers: { Upgrade: "websocket", ...headers } }), {
+        rooms,
+        authenticate: (request) => new URL(request.url).searchParams.get("player")!,
+      });
+      return seen!.headers;
+    };
+
+    // A room that runs code from before there were spectators reads the player's header, and
+    // seats whoever it names. It must not find one on a request to watch.
+    const watching = await forwarded("https://tickflare.test/rooms/abc?player=s1&spectate=1", {
+      "x-tickflare-spectator": "admin",
+      "x-tickflare-player": "admin",
+    });
+    expect(watching.get("x-tickflare-spectator")).toBe("s1");
+    expect(watching.get("x-tickflare-player")).toBeNull();
+
+    const playing = await forwarded("https://tickflare.test/rooms/abc?player=p1", { "x-tickflare-spectator": "admin" });
+    expect(playing.get("x-tickflare-player")).toBe("p1");
+    expect(playing.get("x-tickflare-spectator")).toBeNull();
+  });
 });

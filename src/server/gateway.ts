@@ -2,6 +2,11 @@ import type { Party } from "./tokens.js";
 
 /** Header the gateway uses to tell a room who is connecting. Never trusted from the client. */
 export const PLAYER_HEADER = "x-tickflare-player";
+/**
+ * Header the gateway uses to tell a room who asks to watch it, in place of
+ * `PLAYER_HEADER`: see `routeToRoom`. Never trusted from the client.
+ */
+export const SPECTATOR_HEADER = "x-tickflare-spectator";
 /** Header the gateway uses to tell a room the id it is known by. */
 export const ROOM_HEADER = "x-tickflare-room";
 /** Header the gateway uses to tell a room the player's name, URI-encoded. Never trusted from the client. */
@@ -98,6 +103,14 @@ export async function routeToRoom(
 
   const headers = identityHeaders(request, identity);
   headers.set(ROOM_HEADER, roomId);
+  if (upgrade && new URL(request.url).searchParams.get("spectate") === "1") {
+    // Someone who asks to watch is named under a header of their own. Cloudflare can leave a
+    // busy room on older code for minutes after the Worker in front of it has the new: a room
+    // from before there were spectators knows only the player's header, and would seat whoever
+    // it names. Without it, such a room turns the request away, and the client tries again.
+    headers.delete(PLAYER_HEADER);
+    headers.set(SPECTATOR_HEADER, identity.id);
+  }
 
   const stub = options.rooms.get(options.rooms.idFromName(roomId));
   return stub.fetch(new Request(request, { headers }));
@@ -137,6 +150,7 @@ type Checked = { id: string; name?: string; party?: Party };
 function identityHeaders(request: Request, identity: Checked): Headers {
   const headers = new Headers(request.headers);
   headers.set(PLAYER_HEADER, identity.id);
+  headers.delete(SPECTATOR_HEADER);
   if (identity.name === undefined) headers.delete(NAME_HEADER);
   else headers.set(NAME_HEADER, encodeURIComponent(identity.name));
   if (identity.party === undefined) headers.delete(PARTY_HEADER);

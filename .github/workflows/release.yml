@@ -14,6 +14,10 @@ name: Release
 #    not on npm yet is tested, tagged, published to npm with provenance, and given a GitHub
 #    release with its notes; the docs are deployed again for the changelog page.
 #
+# If the publish fails after the tag is pushed (npm refusing it, say) and main gets further changes
+# before a run succeeds, that run still publishes what the tag names, from a checkout of the tag:
+# what is on npm under a version is what its tag holds, not what main has become since.
+#
 # A tag pushed by hand (a pre-release or a hotfix made locally with changelogger) is published the
 # same way. What this workflow pushes with its own token starts no workflow, CI included, which
 # is why it runs the tests itself and starts the docs deploy itself.
@@ -85,6 +89,11 @@ jobs:
             git tag -a "v$version" -m "Tickflare $version"
             echo "tag=v$version" >> "$GITHUB_OUTPUT"
           fi
+          if [ "$GITHUB_REF_TYPE" = "branch" ] && [ "$(git rev-parse "v$version^{commit}")" != "$(git rev-parse HEAD)" ]; then
+            # An earlier run tagged this version and could not publish it, and main has moved on
+            # since. What goes out is what the tag names.
+            echo "from=v$version" >> "$GITHUB_OUTPUT"
+          fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Cut a release if anything is unreleased
@@ -129,6 +138,7 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           VERSION: ${{ steps.publish.outputs.version }}
+          FROM: ${{ steps.publish.outputs.from }}
         run: |
           if npm view "tickflare@$VERSION" version > /dev/null 2>&1; then
             echo "tickflare@$VERSION is on npm already."
@@ -138,6 +148,18 @@ jobs:
           # which runs on Node 22, rather than whatever npm is newest.
           npm install -g npm@^11.5.1
           npm --version
+          if [ -n "$FROM" ]; then
+            # The files of the tag, in a directory of their own, built there. The run that made the
+            # tag tested them before it pushed it.
+            git worktree add --detach "$RUNNER_TEMP/tagged" "$FROM"
+            cd "$RUNNER_TEMP/tagged"
+            tagged=$(node -p "require('./package.json').version")
+            if [ "$tagged" != "$VERSION" ]; then
+              echo "::error::The tag $FROM holds version $tagged, not $VERSION."
+              exit 1
+            fi
+            npm ci
+          fi
           npm publish
 
       - name: Release on GitHub

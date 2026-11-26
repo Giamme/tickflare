@@ -59,16 +59,17 @@ The room saves every change before anyone hears about it, rolls back what `rejec
 ## What's in it
 
 - **Three sync modes** on one room kernel: [event mode](docs/guide/rooms.md) for turn-based games, [state sync](docs/guide/state-sync.md) for real-time ones, [lockstep](docs/guide/lockstep.md) for strategy games with many units.
-- **Patches, not snapshots**: a player is sent what changed in their own [view](docs/guide/state-and-views.md) of the state, after a move as after a tick.
+- **Patches, not snapshots**: a player is sent what changed in their own [view](docs/guide/state-and-views.md) of the state, after a move as after a tick, and a room can [simulate more often than it sends](docs/guide/state-sync.md#sending-less-often-than-you-simulate).
 - **[Lockstep snapshots](docs/guide/lockstep.md#snapshots)**: a player who joins or reloads late starts from a simulation the other players' clients saved and agreed on, not from the first turn.
 - **[Rooms that end](docs/guide/rooms.md#when-a-room-is-over)**: a hook for when the last player is gone, rooms that delete themselves with their storage, and matches that [play on](docs/guide/state-sync.md#playing-on-with-nobody-connected) with nobody connected.
+- **[Spectators](docs/guide/spectators.md)**: connections that watch without a seat, with a view of their own, kept as many seconds behind the players as the room says.
 - **[Identity](docs/guide/identity.md)** decided once, at the gateway, with signed join tokens.
 - **[Accounts](docs/guide/accounts.md)** on D1: guests, sign-up, sessions, password recovery, player data, stats and leaderboards.
 - **[Matchmaking](docs/guide/matchmaking.md)** by skill and region, with parties and teams, which reserves a room near its players, and **[match results](docs/guide/match-results.md)** through a Queue into D1, with replays in R2.
 - **[Worlds across rooms](docs/guide/worlds.md)**: handover between rooms and seeing across borders.
 - **[A report of what each room cost](docs/guide/costs.md#checking-what-you-are-billed-for)**, from Cloudflare's own analytics, which marks rooms that stayed awake with nobody in them.
 - **[Clients for Godot and Unity](docs/guide/engines.md)**, with the browser client's interpolation and prediction, and **[a written-down protocol](docs/reference/protocol.md)** for other engines, with binary patches for those whose WebSocket is not compressed.
-- **[A client](docs/guide/client.md)** for browsers and Node that reconnects on its own, with [no command lost or applied twice](docs/guide/client.md#when-the-connection-drops) on the way, and **[prediction](docs/guide/state-sync.md#showing-a-players-own-moves-at-once)**: a player's own move shows on the click and is corrected by the room.
+- **[A client](docs/guide/client.md)** for browsers and Node that reconnects on its own, with [no command lost or applied twice](docs/guide/client.md#when-the-connection-drops) on the way, and **[prediction](docs/guide/state-sync.md#showing-a-players-own-moves-at-once)**: a player's own move shows on the click and is corrected by the room. For shots, the room can [judge a command by the tick its player was looking at](docs/guide/state-sync.md#judging-a-command-by-what-its-player-saw).
 - **[Measured on Cloudflare](docs/guide/limits.md#the-same-rooms-on-cloudflare)**: what a room holds, such as five hundred players who each see their own part of the world at ten ticks a second, with every run written down, the ones that fell short included.
 
 ## Install

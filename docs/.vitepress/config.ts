@@ -30,6 +30,7 @@ const guide: DefaultTheme.SidebarItem[] = [
       { text: "Rooms and hooks", link: "/guide/rooms" },
       { text: "Players and seats", link: "/guide/players" },
       { text: "State and views", link: "/guide/state-and-views" },
+      { text: "Spectators", link: "/guide/spectators" },
       { text: "Timers, messages and async work", link: "/guide/timers-messages-async" },
     ],
   },

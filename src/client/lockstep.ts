@@ -3,6 +3,7 @@ import {
   fingerprintOfText,
   stepThrough,
   type CatchUp,
+  type Desync,
   type LockstepView,
   type Replay,
   type Simulation,
@@ -12,6 +13,9 @@ import {
 import { RoomClient, type CloseDetail, type ConnectionStatus } from "./index.js";
 import { TurnPacer } from "./pacer.js";
 import { roomIn, withFreshToken, type TokenSource } from "./token.js";
+
+/** For how many of the latest hashed turns the saved simulation is kept: see `LockstepClientOptions.explainDesyncs`. */
+const SAVES_KEPT = 2;
 
 /**
  * The simulation to run, what to report and how to connect. `create` and
@@ -41,8 +45,23 @@ export interface LockstepClientOptions<Input, Sim> extends Simulation<Input, Sim
   onTurn?(sim: Sim, turn: number): void;
   /** The simulation has caught up with the room and is live. */
   onReady?(sim: Sim, turn: number): void;
-  /** Two players' simulations differed at `turn`. */
-  onDesync?(turn: number): void;
+  /** Two players' simulations differed at `turn`. `desync.players` says whose. */
+  onDesync?(turn: number, desync: Desync): void;
+  /**
+   * The room has compared what the two players' simulations had saved at
+   * that turn: `desync.differs` says where they differed, as paths into what
+   * `save` returns with the two values. Called for every player, a while
+   * after `onDesync`, and not at all when a client had nothing to send.
+   */
+  onDesyncExplained?(desync: Desync): void;
+  /**
+   * With a `hash` of your own: also keep what `save` returns at each turn
+   * a hash is reported, so that the room can be told where two simulations
+   * differ. It costs a `save` every `hashEvery` turns, which a hash of your
+   * own is there to avoid, so it is off unless asked for. A simulation with
+   * `save` and no `hash` keeps it anyway: it is what it fingerprints.
+   */
+  explainDesyncs?: boolean;
   /** The connection's status changed: see `RoomClientOptions.onStatus`. */
   onStatus?(status: ConnectionStatus, detail?: CloseDetail): void;
   /**
@@ -58,7 +77,11 @@ export interface LockstepClientOptions<Input, Sim> extends Simulation<Input, Sim
    * the room may answer with only the rest: see `CatchUp`.
    */
   loadReplay?(url: string): Promise<Replay<Input> | CatchUp<Input>>;
-  /** How to send the room a snapshot. Defaults to a `POST` of `data` to `url` with `fetch`. */
+  /**
+   * How to send the room a snapshot, or what the simulation had saved at a
+   * turn it differed from another's. Defaults to a `POST` of `data` to `url`
+   * with `fetch`.
+   */
   sendSnapshot?(url: string, data: string): Promise<unknown>;
 }
 
@@ -100,6 +123,9 @@ export class LockstepClient<Input = unknown, Sim = unknown> {
   /** Guards against an older catch-up finishing after a newer one started. */
   #syncId = 0;
   #desyncReported = false;
+  #desyncExplained = false;
+  /** What `save` returned at the latest turns a hash was reported for, as JSON text: see `#explain`. */
+  #saved = new Map<number, string>();
   /** The run of the room the simulation was built in: see `CatchUp.epoch`. */
   #epoch: string | undefined;
   /** Turns between snapshots, as the room says. 0 when it keeps none. */
@@ -192,7 +218,13 @@ export class LockstepClient<Input = unknown, Sim = unknown> {
   #receive(view: LockstepView<Input>): void {
     if (view.desync && !this.#desyncReported) {
       this.#desyncReported = true;
-      this.#options.onDesync?.(view.desync.turn);
+      this.#options.onDesync?.(view.desync.turn, view.desync);
+      void this.#explain(view.desync);
+    }
+    if (view.desync?.differs && !this.#desyncExplained) {
+      this.#desyncExplained = true;
+      this.#saved.clear();
+      this.#options.onDesyncExplained?.(view.desync);
     }
     this.#snapshotEvery = view.snapshotEvery ?? 0;
     if (this.#needsSync) {
@@ -356,13 +388,42 @@ export class LockstepClient<Input = unknown, Sim = unknown> {
     const snapshot = this.#snapshotEvery > 0 && turn % this.#snapshotEvery === 0;
     // Only live turns are reported: hashes of old turns have nobody left to be compared with.
     if (live && hash && (snapshot || turn % hashEvery === 0)) {
-      const data = snapshot && save && load && this.#sendsSnapshots() ? JSON.stringify(save(sim)) : undefined;
-      // With no hash of the game's own, the text about to be sent is the text to fingerprint.
+      const sends = snapshot && save !== undefined && load !== undefined && this.#sendsSnapshots();
+      // Saved for a snapshot, to be fingerprinted, or to say later where it differed from another's.
+      const keeps = save !== undefined && !this.#desyncReported && (!this.#options.hash || this.#options.explainDesyncs === true);
+      const data = save !== undefined && (sends || keeps) ? JSON.stringify(save(sim)) : undefined;
+      // With no hash of the game's own, the text at hand is the text to fingerprint.
       const reported = data !== undefined && !this.#options.hash ? fingerprintOfText(data) : hash(sim);
+      if (data !== undefined && keeps) {
+        this.#saved.set(turn, data);
+        // The room finds two hashes differ within a round trip of the second: the last two turns cover it.
+        for (const old of this.#saved.keys()) if (this.#saved.size > SAVES_KEPT) this.#saved.delete(old);
+      }
       this.#room.send({ k: "h", n: turn, h: reported }).catch(() => {});
-      if (data !== undefined) void this.#sendSnapshot(data, turn, reported);
+      if (data !== undefined && sends) void this.#sendSnapshot(data, turn, reported);
     }
     if (live) this.#options.onTurn?.(sim, turn);
+  }
+
+  /**
+   * Two simulations differed, and this is one of them: sends the room what
+   * this one had saved at that turn, if it still has it, so that the room
+   * can say where the two differ.
+   */
+  async #explain(desync: Desync): Promise<void> {
+    const data = this.#saved.get(desync.turn);
+    this.#saved.clear();
+    if (data === undefined || desync.differs !== undefined || !desync.players?.includes(this.#room.you ?? "")) return;
+    try {
+      const to = new URL(this.#snapshotUrl);
+      to.pathname = to.pathname.replace(/snapshot$/, "desync");
+      to.searchParams.set("turn", String(desync.turn));
+      const { token } = this.#options;
+      const url = token ? await withFreshToken(to.toString(), this.#roomId, token) : to.toString();
+      await (this.#options.sendSnapshot ?? sendSnapshot)(url, data);
+    } catch (err) {
+      console.warn("[tickflare] could not send the room what this simulation had when it differed from another", err);
+    }
   }
 
   /** One client sends the snapshots: that of the connected player whose id sorts first. */

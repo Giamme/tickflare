@@ -29,6 +29,21 @@ declare namespace Cloudflare {
     REGIONAL: DurableObjectNamespace<import("./worker").RegionalMatchmaker>;
     FLAKY: DurableObjectNamespace<import("./worker").FlakyLobby>;
     NAMES: DurableObjectNamespace<import("./worker").NameRoom>;
+    PACED: DurableObjectNamespace<import("./worker").PacedRoom>;
+    UNEVEN: DurableObjectNamespace<import("./worker").UnevenRoom>;
+    EAGER: DurableObjectNamespace<import("./worker").EagerRoom>;
+    HISTORY: DurableObjectNamespace<import("./worker").HistoryRoom>;
+    WATCHED: DurableObjectNamespace<import("./worker").WatchedRoom>;
+    LATE: DurableObjectNamespace<import("./worker").LateRoom>;
+    CLOSED: DurableObjectNamespace<import("./worker").ClosedRoom>;
+    HIDDEN: DurableObjectNamespace<import("./worker").HiddenRoom>;
+    LATETICKS: DurableObjectNamespace<import("./worker").LateTicks>;
+    LEDGER: DurableObjectNamespace<import("./worker").LedgerRoom>;
+    TICKLEDGER: DurableObjectNamespace<import("./worker").TickLedgerRoom>;
+    /** Set from the environment in vitest.config.ts, for test/random.test.ts. */
+    RANDOM_RUNS: string;
+    RANDOM_SEEDS: string;
+    RANDOM_TRACE: string;
     MATCHES: Queue<import("../src/protocol.js").MatchResult>;
     DB: D1Database;
     REPLAYS: R2Bucket;

@@ -136,7 +136,9 @@ describe("lockstep", () => {
     p1.send({ k: "h", n: 6, h: "one" });
     p2.send({ k: "h", n: 6, h: "other" });
     await until(() => p1.state!.desync !== null && p2.state!.desync !== null, "the desync flag");
-    expect(p1.state!.desync).toEqual({ turn: 6 });
+    // Whose they were, in the order the room heard from them.
+    expect(p1.state!.desync!.turn).toBe(6);
+    expect([...p1.state!.desync!.players!].sort()).toEqual(["p1", "p2"]);
   });
 
   it("needs two players to disagree, about a turn that has happened", async () => {

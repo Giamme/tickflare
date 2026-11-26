@@ -12,6 +12,8 @@ interface Player {
 
 `this.players` lists everyone with a seat, in join order. Clients get the same list in `room.players` and in `presence` events, so a page can show who is in the room and who is away.
 
+Someone who only watches has no seat: see [Spectators](./spectators).
+
 ## How a seat starts and ends
 
 ```
