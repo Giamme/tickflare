@@ -55,6 +55,6 @@ Around the room kernel there are the services a game usually needs, built on Clo
 
 ## Status
 
-Tickflare is at version 0.1, its first public release, on npm as `tickflare`. Expect the API to change before 1.0: the [changelog](../reference/upgrading) says how versions work until then, and lists every change with what to do about it.
+Tickflare is on npm as `tickflare`, and has not reached version 1.0. Expect the API to change before it does: the [changelog](../reference/upgrading) says how versions work until then, and lists every version with what it changed and what to do about it.
 
 [Limits and known gaps](./limits) lists what is not there yet.

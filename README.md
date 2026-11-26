@@ -1,6 +1,7 @@
 # Tickflare
 
 [![CI](https://github.com/Giamme/tickflare/actions/workflows/ci.yml/badge.svg)](https://github.com/Giamme/tickflare/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/tickflare)](https://www.npmjs.com/package/tickflare)
 
 A multiplayer game framework for Cloudflare Workers and Durable Objects.
 
@@ -79,7 +80,7 @@ npm install tickflare
 npm install --save-dev wrangler
 ```
 
-Tickflare is at 0.1: expect the API to change before 1.0. The [changelog](CHANGELOG.md) says how versions work until then, and what to change when one breaks something.
+Tickflare has not reached 1.0: expect the API to change before it does. The [changelog](CHANGELOG.md) says how versions work until then, and what to change when one breaks something.
 
 ## Examples
 
